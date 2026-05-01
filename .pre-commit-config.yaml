@@ -1,21 +1,17 @@
 # prek-compatible hook configuration. Run with `prek run` (or `pre-commit run`).
 # Auto-update with `prek auto-update --cooldown-days 7`.
+# All third-party hook revs are pinned to commit SHAs; trailing comment is the tag.
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.12
+    rev: 6fec9b7edb08fd9989088709d864a7826dc74e80  # v0.15.12
     hooks:
       - id: ruff
         args: [--fix]
       - id: ruff-format
 
-  - repo: https://github.com/astral-sh/ty-pre-commit
-    rev: 0.0.34
-    hooks:
-      - id: ty-check
-
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -27,17 +23,28 @@ repos:
       - id: detect-private-key
 
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.24.1
+    rev: a4727cbbcd26d7098e96b9cb738169b59711ae51  # v1.24.1
     hooks:
       - id: zizmor
 
   - repo: https://github.com/koalaman/shellcheck-precommit
-    rev: v0.11.0
+    rev: 99470f5e12208ff0fb17ab81c3c494f7620a1d8d  # v0.11.0
     hooks:
       - id: shellcheck
 
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.12.0-2
+    rev: 2a30809d16bc7a60d9b97353c797f42b510d3368  # v3.12.0-2
     hooks:
       - id: shfmt
         args: [-i=2, -ci]
+
+  # ty has no first-party pre-commit hook (astral-sh hasn't shipped one yet).
+  # Run it as a local hook against the workspace's pinned ty version (in pyproject.toml dev deps).
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty type check
+        entry: uv run ty check
+        language: system
+        types: [python]
+        pass_filenames: false

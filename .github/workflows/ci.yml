@@ -57,4 +57,4 @@ jobs:
           persist-credentials: false
 
       - name: zizmor
-        uses: zizmorcore/zizmor-action@2eaf42bcccfed62978cee0905902acbc294d5123  # v1.24.1
+        uses: zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e  # v0.5.3
