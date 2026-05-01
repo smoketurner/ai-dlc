@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "RUN.FAILED",
+  "description": "The run reached a terminal failure state.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "type",
+    "timestamp",
+    "run_id",
+    "correlation_id",
+    "actor_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "enum": ["1.0"] },
+    "event_id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["RUN.FAILED"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "causation_id": { "type": ["string", "null"], "format": "uuid" },
+    "actor_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_slug", "failed_state", "error_class", "error_message", "retryable"],
+      "properties": {
+        "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "failed_state": { "type": "string", "minLength": 1 },
+        "error_class": { "type": "string", "minLength": 1 },
+        "error_message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      }
+    }
+  }
+}

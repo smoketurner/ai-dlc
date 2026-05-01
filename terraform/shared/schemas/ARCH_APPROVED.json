@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "ARCH.APPROVED",
+  "description": "A reviewer approved the ADR; implementation may begin.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "type",
+    "timestamp",
+    "run_id",
+    "correlation_id",
+    "actor_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "enum": ["1.0"] },
+    "event_id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["ARCH.APPROVED"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "causation_id": { "type": ["string", "null"], "format": "uuid" },
+    "actor_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project_slug", "adr_s3_key", "reviewer"],
+      "properties": {
+        "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "adr_s3_key": { "type": "string", "minLength": 1 },
+        "reviewer": { "type": "string", "minLength": 1 },
+        "comment": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

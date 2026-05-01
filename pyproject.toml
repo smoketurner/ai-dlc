@@ -19,6 +19,7 @@ dev = [
     "pytest-mock>=3.14",
     "moto[all]>=5.1",
     "pip-audit>=2.10",
+    "boto3-stubs[bedrock-agentcore,dynamodb,events,s3,sqs,stepfunctions]==1.43.2",
 ]
 
 [tool.ruff]
@@ -49,6 +50,7 @@ ignore = [
     "D203",             # blank-line-before-class (conflicts with D211)
     "D213",             # multi-line-summary-second-line (conflicts with D212)
     "ANN401",           # allow Any in narrow cases
+    "TRY003",           # we pass short messages with structured context kwargs to typed errors
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -58,15 +60,18 @@ convention = "google"
 max-complexity = 8
 
 [tool.ruff.lint.pylint]
-max-args = 5
+max-args = 8
 max-positional-args = 5
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 
+[tool.ruff.lint.isort]
+known-first-party = ["common", "architect", "implementer", "dashboard"]
+
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "D"]                   # asserts and missing docstrings allowed in tests
-"**/tests/**" = ["S101", "D"]
+"tests/**" = ["S101", "D", "PLR2004"]        # asserts, missing docstrings, magic-number comparisons in tests
+"**/tests/**" = ["S101", "D", "PLR2004"]
 
 [tool.ruff.format]
 line-ending = "lf"
