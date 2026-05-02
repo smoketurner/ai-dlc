@@ -3,9 +3,9 @@
 
 ARG PYTHON_VERSION=3.14
 
-# Always-latest uv variant — astral doesn't publish per-uv-version × per-python
-# combos. Reproducibility comes from uv.lock, not the uv binary version.
-FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS builder
+# Trixie variant ships uv 0.11.x (matches pyproject required-version >=0.11);
+# the bookworm variant lags at uv 0.9.x.
+FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-trixie-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -26,7 +26,7 @@ COPY services/dashboard/ services/dashboard/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --package dashboard
 
-FROM --platform=linux/arm64 python:${PYTHON_VERSION}-slim-bookworm AS runtime
+FROM --platform=linux/arm64 python:${PYTHON_VERSION}-slim-trixie AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
