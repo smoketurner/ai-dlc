@@ -1,6 +1,8 @@
 provider "aws" {
-  region  = var.region
-  profile = "aidlc-admin"
+  region = var.region
+  # `null` means "no profile, use env-var creds". Locally this resolves to
+  # the SSO profile via the variable's default; CI sets TF_VAR_aws_profile="".
+  profile = var.aws_profile != "" ? var.aws_profile : null
 
   default_tags {
     tags = merge(

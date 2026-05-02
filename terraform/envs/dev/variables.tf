@@ -89,6 +89,12 @@ variable "dashboard_image_tag" {
   default     = "latest"
 }
 
+variable "aws_profile" {
+  description = "AWS shared-credentials profile name. Defaults to the local SSO profile; CI sets this to \"\" so the provider falls through to env-var credentials supplied by OIDC."
+  type        = string
+  default     = "aidlc-admin"
+}
+
 variable "dashboard_acm_certificate_arn" {
   description = "ACM certificate ARN for the dashboard ALB HTTPS listener. Null = HTTP-only (dev only)."
   type        = string
