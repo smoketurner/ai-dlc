@@ -3,9 +3,10 @@
 # Two-stage uv build: deps installed in a cached layer, source copied separately.
 
 ARG PYTHON_VERSION=3.14
-ARG UV_VERSION=0.11.8
 
-FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:${UV_VERSION}-python${PYTHON_VERSION}-bookworm-slim AS builder
+# Always-latest uv variant — astral doesn't publish per-uv-version × per-python
+# combos. Reproducibility comes from uv.lock, not the uv binary version.
+FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
