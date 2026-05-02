@@ -9,6 +9,26 @@
     </div>
     <span class="px-2 py-0.5 rounded text-xs bg-slate-200" x-text="lastType || '{{ summary.status }}'"></span>
   </div>
+  {% if summary.total_cost_usd or summary.total_token_in %}
+  <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white shadow-sm rounded p-4 text-sm">
+    <div>
+      <dt class="text-slate-500 text-xs uppercase tracking-wide">tasks</dt>
+      <dd class="font-mono">{{ summary.tasks_completed }}/{{ summary.tasks_total }}</dd>
+    </div>
+    <div>
+      <dt class="text-slate-500 text-xs uppercase tracking-wide">tokens in</dt>
+      <dd class="font-mono">{{ "{:,}".format(summary.total_token_in) }}</dd>
+    </div>
+    <div>
+      <dt class="text-slate-500 text-xs uppercase tracking-wide">tokens out</dt>
+      <dd class="font-mono">{{ "{:,}".format(summary.total_token_out) }}</dd>
+    </div>
+    <div>
+      <dt class="text-slate-500 text-xs uppercase tracking-wide">cost</dt>
+      <dd class="font-mono">${{ "%.4f"|format(summary.total_cost_usd) }}</dd>
+    </div>
+  </dl>
+  {% endif %}
   <ul class="bg-white shadow-sm rounded divide-y">
     {% for ev in events %}
     <li class="px-4 py-3 text-sm flex items-baseline gap-3">

@@ -153,13 +153,19 @@ Per the logical-groupings preference, the three planned modules (`ecr_dashboard`
 
 13 unit tests on the webhook handler cover HMAC verify, review-event parsing, comment-magic-string parsing, JSON round-tripping.
 
-## Phase 8 — Eval set + observability hardening ⬜
+## Phase 8 — Eval set + observability hardening 🟡
 
-- [ ] `docs/eval-set/` with 10 representative SDLC tasks
-- [ ] AgentCore Evaluations wiring (when GA)
-- [ ] Recommendations + Batch Evaluations + A/B Tests loop
-- [ ] Tighten alarm thresholds based on observed dev traffic
-- [ ] Dashboard: cost-per-run + token-usage breakdown panels
+- [x] `docs/eval-set/` — 10 representative SDLC cases ([README](eval-set/README.md)): empty-repo bootstrap, small feature add, cross-cutting feature, bug fix, refactor, dep upgrade, MEMORY.md learning, conflict resolution, HITL reject loop, long-session resume. Each case has an intent prompt, expected behaviour, and observable pass criteria (cost cap, PR count, files touched, presence of acceptance-criteria coverage). They drive manual smoke testing today and become the AgentCore Evaluations suite when that lands.
+- [x] Dashboard cost + token breakdown — `event_projector` upserts a per-run `STATE` row with `tasks_completed` + `total_token_in/out` + `total_cost_usd` + `total_duration_ms` from `RUN.COMPLETED` envelopes; runs list shows tokens-in/out + cost columns; run-detail page shows the full breakdown panel. Two new projector tests cover the state-row upsert + RUN.COMPLETED capture.
+- [ ] AgentCore Evaluations wiring (deferred — service is preview, no Terraform support yet). Trigger to revisit: `aws_bedrockagentcore_evaluation` lands in the AWS provider.
+- [ ] Recommendations + Batch Evaluations + A/B Tests loop (deferred — same trigger).
+- [ ] Tighten alarm thresholds (deferred — needs real dev traffic to set the right p99 / error-rate cutoffs). Trigger: 7+ days of run data on the daily-spend + per-agent metrics.
+
+---
+
+## Status
+
+All eight phases now have their main deliverables in place — the platform stands up via `terraform apply` (modulo first-time bootstrap), the agents are container-buildable, and the spec-driven pipeline + dashboard are wired end-to-end. The remaining ⬜ items are deferred behind concrete triggers (live AWS smoke runs, AgentCore Evaluations GA, real dev traffic for alarm tuning).
 
 ---
 

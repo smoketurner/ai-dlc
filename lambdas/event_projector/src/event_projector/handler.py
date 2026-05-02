@@ -77,6 +77,7 @@ def handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
     if run_id is None:
         return {"ok": False, "error": "missing run_id"}
     upsert_run_event(run_id=run_id, event_type=event_type, envelope=detail)
+    update_run_state(run_id=run_id, event_type=event_type, envelope=detail)
     forward_to_memory(detail)
     return {"ok": True, "run_id": run_id, "type": event_type}
 
@@ -100,6 +101,50 @@ def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str,
             "envelope": {"S": json.dumps(envelope)},
         },
         ConditionExpression="attribute_not_exists(sk)",
+    )
+
+
+def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
+    """Upsert the run's STATE row with current status + cumulative metrics.
+
+    The STATE row at sk=`STATE` is what the dashboard reads. We update it on
+    every event so the runs list stays current; on RUN.COMPLETED we capture
+    cost + token totals + tasks_completed for the dashboard panels.
+    """
+    payload = envelope.get("payload") or {}
+    expr_parts = ["#s = :status", "updated_at = :ts"]
+    names = {"#s": "status"}
+    values = {
+        ":status": {"S": event_type or "UNKNOWN"},
+        ":ts": {"S": envelope.get("timestamp", "")},
+    }
+    if isinstance(payload.get("project_slug"), str) and payload["project_slug"]:
+        expr_parts.append("project_slug = if_not_exists(project_slug, :proj)")
+        values[":proj"] = {"S": payload["project_slug"]}
+    if isinstance(payload.get("spec_slug"), str) and payload["spec_slug"]:
+        expr_parts.append("spec_slug = :spec")
+        values[":spec"] = {"S": payload["spec_slug"]}
+    if event_type == "RUN.COMPLETED":
+        expr_parts.extend(
+            [
+                "tasks_completed = :tc",
+                "total_token_in = :ti",
+                "total_token_out = :to_",
+                "total_cost_usd = :cost",
+                "total_duration_ms = :dur",
+            ],
+        )
+        values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
+        values[":ti"] = {"N": str(int(payload.get("total_token_in", 0)))}
+        values[":to_"] = {"N": str(int(payload.get("total_token_out", 0)))}
+        values[":cost"] = {"N": str(float(payload.get("total_cost_usd", 0)))}
+        values[":dur"] = {"N": str(int(payload.get("total_duration_ms", 0)))}
+    ddb().update_item(
+        TableName=runs_table(),
+        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+        UpdateExpression="SET " + ", ".join(expr_parts),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
     )
 
 

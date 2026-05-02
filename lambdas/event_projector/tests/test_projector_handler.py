@@ -99,11 +99,46 @@ def test_eventbridge_event_writes_run_row() -> None:
     assert out["ok"] is True
     items = ddb().query(
         TableName=TABLE,
-        KeyConditionExpression="pk = :p",
-        ExpressionAttributeValues={":p": {"S": "RUN#run-1"}},
+        KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":p": {"S": "RUN#run-1"}, ":prefix": {"S": "EVENT#"}},
     )["Items"]
     assert len(items) == 1
     assert items[0]["type"]["S"] == "SPEC.READY"
+
+
+def test_run_state_row_upserted_with_status() -> None:
+    handler(eb_event(envelope()), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["status"]["S"] == "SPEC.READY"
+    assert state["project_slug"]["S"] == "demo"
+    assert state["spec_slug"]["S"] == "add-healthz"
+
+
+def test_run_completed_captures_cost_and_tokens() -> None:
+    completed = envelope(
+        type="RUN.COMPLETED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "tasks_completed": 3,
+            "total_token_in": 12000,
+            "total_token_out": 4500,
+            "total_cost_usd": 0.42,
+            "total_duration_ms": 90_000,
+        },
+    )
+    handler(eb_event(completed), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["status"]["S"] == "RUN.COMPLETED"
+    assert state["tasks_completed"]["N"] == "3"
+    assert state["total_token_in"]["N"] == "12000"
+    assert state["total_cost_usd"]["N"] == "0.42"
 
 
 def test_duplicate_event_id_silently_skipped() -> None:
