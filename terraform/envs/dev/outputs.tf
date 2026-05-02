@@ -139,6 +139,23 @@ output "agent_runtime_arns" {
   value       = module.agents.runtime_arns
 }
 
+# pipeline ---------------------------------------------------------------------
+
+output "api_endpoint" {
+  description = "ai-dlc HTTP API endpoint (POST /v1/runs, /v1/runs/{id}/decide, /webhooks/github)."
+  value       = module.pipeline.api_endpoint
+}
+
+output "state_machine_arn" {
+  description = "SDLC pipeline Step Functions state machine ARN."
+  value       = module.pipeline.state_machine_arn
+}
+
+output "platform_lambda_arns" {
+  description = "Map of platform Lambda name → ARN."
+  value       = module.pipeline.lambda_arns
+}
+
 # ci_cd ------------------------------------------------------------------------
 
 output "github_actions_terraform_role_arn" {

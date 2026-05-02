@@ -110,16 +110,19 @@ The Architect produces a three-document spec bundle (`requirements.md`, `design.
 - [ ] Local smoke: `uv run python -m architect.app` against dev memory + gateway (deferred — needs Bedrock model access)
 - [ ] AWS smoke: build + push image, set `architect_image_tag = "<sha>"`, apply, then `aws bedrock-agentcore-runtime invoke-agent-runtime ...` returns `spec_s3_prefix`
 
-## Phase 5 — Lambdas + Step Functions + API Gateway ⬜
+## Phase 5 — Pipeline orchestration 🟡
 
-- [ ] `lambdas/entry_adapter/` — API GW → events:PutEvents REQUEST.RECEIVED
-- [ ] `lambdas/hitl_handler/` — `.waitForTaskToken` REQUEST_APPROVAL + DECIDE (called by dashboard or API GW)
-- [ ] `lambdas/event_projector/` — DDB Streams + EventBridge → DDB read model + AgentCore Memory `CreateEvent`
-- [ ] `lambdas-build.yml` workflow (uv build → zip → S3)
-- [ ] `terraform/modules/lambdas/{entry_adapter, hitl_handler, event_projector}/`
-- [ ] `terraform/modules/sdlc_workflow/` — Step Functions Standard ASL: `Receive → InvokeArchitect → SPEC.READY → WaitForSpecApproval → Map(tasks) { InvokeImplementer → TASK.READY → WaitForTaskApproval } → RUN.COMPLETED`
-- [ ] `terraform/modules/api_gateway/` — HTTP API + JWT authorizer + routes
-- [ ] End-to-end smoke: `POST /v1/runs` → run reaches `WaitForSpecApproval` → approve via API → first TASK gate → approve → `RUN.COMPLETED`
+Consolidated into a single `pipeline` Terraform module per the logical-groupings preference: 3 platform Lambdas + the Step Functions state machine + API Gateway live in one module.
+
+- [x] `lambdas/entry_adapter/` — POST /v1/runs body → idempotency-keyed DDB put → events:PutEvents `REQUEST.RECEIVED`; powertools Logger; 5 unit tests under moto.
+- [x] `lambdas/hitl_handler/` — Two ops: `REQUEST_APPROVAL` (Step Functions `.waitForTaskToken` caller, persists token in approvals table) and `DECIDE` (resolves a gate by calling SendTaskSuccess/Failure); 5 unit tests.
+- [x] `lambdas/event_projector/` — EventBridge consumer (single-event payload) + DDB Streams batch consumer (passthrough placeholder); writes the runs read-model row + forwards envelope to AgentCore Memory `CreateEvent`; 5 unit tests with mocked AgentCore client.
+- [x] `terraform/modules/pipeline/` — single module: 3 Lambdas via `terraform-aws-modules/lambda` (build_in_docker arm64), Step Functions Standard state machine using JSONata + `aws-sdk:bedrockagentcore:invokeAgentRuntime` native integration, HTTP API Gateway with Cognito JWT authorizer, EventBridge → projector wiring.
+- [x] State machine ASL (`asl/sdlc.asl.json.tftpl`): `Receive → PutInitialState → InvokeArchitect → PublishSpecReady → WaitForSpecApproval → IterateTasks (Map MaxConcurrency=1) { InvokeImplementer → PublishTaskReady → WaitForTaskApproval } → PublishCompleted`. `MarkFailed` catches every failure path and emits `RUN.FAILED`.
+- [x] API Gateway routes: `POST /v1/runs` (JWT, → entry_adapter), `POST /v1/runs/{run_id}/decide` (JWT, → hitl_handler DECIDE), `POST /webhooks/github` (no auth, reserved for the dashboard's HMAC-verified handler in Phase 7).
+- [x] `module.pipeline` wired into `envs/dev/main.tf`; outputs the API endpoint, state-machine ARN, and platform Lambda ARNs.
+- [ ] Lambda zip build deferred from CI — terraform-aws-modules/lambda packages on apply with `build_in_docker = true`. No standalone `lambdas-build.yml` workflow needed; revisit if local Docker becomes a bottleneck.
+- [ ] End-to-end smoke (deferred — needs live AWS): `POST /v1/runs` → run reaches `WaitForSpecApproval` → approve via API → first TASK gate → approve → `RUN.COMPLETED`.
 
 ## Phase 6 — Implementer agent ⬜
 

@@ -15,6 +15,7 @@
 #   messaging    → crypto (secrets)
 #   observability → crypto (logs)
 #   agents       → crypto, state, auth
+#   pipeline     → crypto, state, messaging, auth, agents
 ################################################################################
 
 module "crypto" {
@@ -111,4 +112,32 @@ module "agents" {
   }
 
   github_oauth = var.github_oauth
+}
+
+module "pipeline" {
+  source = "../../modules/pipeline"
+
+  env              = var.env
+  logs_kms_key_arn = module.crypto.key_arns["logs"]
+
+  bus_name = module.messaging.bus_name
+  bus_arn  = module.messaging.bus_arn
+
+  runs_table            = module.state.runs_table
+  runs_table_arn        = module.state.runs_table_arn
+  runs_stream_arn       = module.state.runs_stream_arn
+  approvals_table       = module.state.approvals_table
+  approvals_table_arn   = module.state.approvals_table_arn
+  approvals_stream_arn  = module.state.approvals_stream_arn
+  idempotency_table     = module.state.idempotency_table
+  idempotency_table_arn = module.state.idempotency_table_arn
+
+  memory_id  = module.agents.memory_id
+  memory_arn = module.agents.memory_arn
+
+  agent_runtime_arns = module.agents.runtime_arns
+
+  cognito_user_pool_arn = module.auth.user_pool_arn
+  cognito_audience      = [module.auth.client_id]
+  cognito_issuer_url    = module.auth.issuer_url
 }

@@ -53,6 +53,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         requirements_summary=spec.requirements.summary[:1024],
         design_summary=spec.design.approach[:1024],
         task_count=len(spec.tasks),
+        task_ids=[t.id for t in spec.tasks],
         proposed_adrs=spec.design.proposed_adrs,
         session_id=payload.run_id,
     )

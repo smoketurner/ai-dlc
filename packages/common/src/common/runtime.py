@@ -53,6 +53,7 @@ class ArchitectResult(_Frozen):
     requirements_summary: Annotated[str, Field(max_length=1024)]
     design_summary: Annotated[str, Field(max_length=1024)]
     task_count: Annotated[int, Field(ge=1)]
+    task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
     proposed_adrs: list[str] = Field(default_factory=list)
     session_id: str
 

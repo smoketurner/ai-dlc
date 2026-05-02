@@ -1,0 +1,214 @@
+{
+  "Comment": "ai-dlc spec-driven SDLC pipeline.",
+  "StartAt": "Receive",
+  "QueryLanguage": "JSONata",
+  "States": {
+    "Receive": {
+      "Type": "Pass",
+      "Next": "PutInitialState",
+      "Output": {
+        "run_id": "{% $states.input.run_id %}",
+        "correlation_id": "{% $states.input.correlation_id %}",
+        "project_slug": "{% $states.input.project_slug %}",
+        "intent": "{% $states.input.intent %}",
+        "actor_id": "{% $states.input.actor_id %}"
+      }
+    },
+    "PutInitialState": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Arguments": {
+        "TableName": "${runs_table}",
+        "Item": {
+          "pk": { "S": "{% 'RUN#' & $states.input.run_id %}" },
+          "sk": { "S": "STATE" },
+          "status": { "S": "RUNNING" },
+          "project_slug": { "S": "{% $states.input.project_slug %}" },
+          "intent": { "S": "{% $states.input.intent %}" }
+        }
+      },
+      "Next": "InvokeArchitect",
+      "ResultPath": null
+    },
+    "InvokeArchitect": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+      "Arguments": {
+        "AgentRuntimeArn": "${architect_runtime_arn}",
+        "Qualifier": "DEFAULT",
+        "RuntimeSessionId": "{% $states.input.run_id & '-architect' %}",
+        "ContentType": "application/json",
+        "Accept": "application/json",
+        "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'intent': $states.input.intent, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': $states.input.actor_id }) %}"
+      },
+      "TimeoutSeconds": 1800,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "MarkFailed", "Output": "{% $states.errorOutput %}" }
+      ],
+      "Output": {
+        "run_id": "{% $states.input.run_id %}",
+        "correlation_id": "{% $states.input.correlation_id %}",
+        "project_slug": "{% $states.input.project_slug %}",
+        "spec": "{% $parse($states.result.Payload) %}"
+      },
+      "Next": "PublishSpecReady"
+    },
+    "PublishSpecReady": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "ai-dlc.architect",
+            "DetailType": "SPEC.READY",
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'SPEC.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'architect', 'payload': $states.input.spec }) %}"
+          }
+        ]
+      },
+      "Next": "WaitForSpecApproval",
+      "ResultPath": null
+    },
+    "WaitForSpecApproval": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Arguments": {
+        "FunctionName": "${hitl_function_name}",
+        "Payload": {
+          "op": "REQUEST_APPROVAL",
+          "task_token": "{% $states.context.Task.Token %}",
+          "run_id": "{% $states.input.run_id %}",
+          "project_slug": "{% $states.input.project_slug %}",
+          "gate_ref": "spec",
+          "summary": "{% $states.input.spec.requirements_summary %}"
+        }
+      },
+      "HeartbeatSeconds": 86400,
+      "TimeoutSeconds": 604800,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "MarkFailed", "Output": "{% $states.errorOutput %}" }
+      ],
+      "Output": {
+        "run_id": "{% $states.input.run_id %}",
+        "correlation_id": "{% $states.input.correlation_id %}",
+        "project_slug": "{% $states.input.project_slug %}",
+        "spec": "{% $states.input.spec %}"
+      },
+      "Next": "IterateTasks"
+    },
+    "IterateTasks": {
+      "Type": "Map",
+      "ItemsPath": "$.spec.task_ids",
+      "MaxConcurrency": 1,
+      "Parameters": {
+        "task_id.$": "$$.Map.Item.Value",
+        "run_id.$": "$.run_id",
+        "correlation_id.$": "$.correlation_id",
+        "project_slug.$": "$.project_slug",
+        "spec_slug.$": "$.spec.spec_slug",
+        "spec_s3_prefix.$": "$.spec.spec_s3_prefix"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "InvokeImplementer",
+        "States": {
+          "InvokeImplementer": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+            "Arguments": {
+              "AgentRuntimeArn": "${implementer_runtime_arn}",
+              "Qualifier": "DEFAULT",
+              "RuntimeSessionId": "{% $states.input.run_id & '-' & $states.input.task_id %}",
+              "ContentType": "application/json",
+              "Accept": "application/json",
+              "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug, 'spec_s3_prefix': $states.input.spec_s3_prefix, 'task_id': $states.input.task_id, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system' }) %}"
+            },
+            "TimeoutSeconds": 3600,
+            "Output": {
+              "run_id": "{% $states.input.run_id %}",
+              "correlation_id": "{% $states.input.correlation_id %}",
+              "project_slug": "{% $states.input.project_slug %}",
+              "task_id": "{% $states.input.task_id %}",
+              "result": "{% $parse($states.result.Payload) %}"
+            },
+            "Next": "PublishTaskReady"
+          },
+          "PublishTaskReady": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Arguments": {
+              "Entries": [
+                {
+                  "EventBusName": "${bus_name}",
+                  "Source": "ai-dlc.implementer",
+                  "DetailType": "TASK.READY",
+                  "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'TASK.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'implementer', 'payload': $merge([$states.input.result, { 'task_id': $states.input.task_id }]) }) %}"
+                }
+              ]
+            },
+            "Next": "WaitForTaskApproval",
+            "ResultPath": null
+          },
+          "WaitForTaskApproval": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+            "Arguments": {
+              "FunctionName": "${hitl_function_name}",
+              "Payload": {
+                "op": "REQUEST_APPROVAL",
+                "task_token": "{% $states.context.Task.Token %}",
+                "run_id": "{% $states.input.run_id %}",
+                "project_slug": "{% $states.input.project_slug %}",
+                "gate_ref": "{% 'task:' & $states.input.task_id %}",
+                "pr_url": "{% $states.input.result.pr_url %}",
+                "summary": "{% $states.input.result.diff_summary %}"
+              }
+            },
+            "HeartbeatSeconds": 86400,
+            "TimeoutSeconds": 604800,
+            "End": true
+          }
+        }
+      },
+      "Next": "PublishCompleted"
+    },
+    "PublishCompleted": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "ai-dlc.system",
+            "DetailType": "RUN.COMPLETED",
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'RUN.COMPLETED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'tasks_completed': $count($states.input.spec.task_ids), 'total_duration_ms': 0, 'total_token_in': 0, 'total_token_out': 0, 'total_cost_usd': 0 } }) %}"
+          }
+        ]
+      },
+      "End": true
+    },
+    "MarkFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "ai-dlc.system",
+            "DetailType": "RUN.FAILED",
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'RUN.FAILED', 'run_id': $exists($states.input.run_id) ? $states.input.run_id : 'unknown', 'correlation_id': $exists($states.input.correlation_id) ? $states.input.correlation_id : 'unknown', 'actor_id': 'system', 'payload': { 'project_slug': $exists($states.input.project_slug) ? $states.input.project_slug : 'unknown', 'failed_state': 'unknown', 'error_class': 'StatesAll', 'error_message': $string($states.input), 'retryable': false } }) %}"
+          }
+        ]
+      },
+      "End": true
+    }
+  }
+}
