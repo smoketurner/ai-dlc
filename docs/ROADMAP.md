@@ -124,17 +124,17 @@ Consolidated into a single `pipeline` Terraform module per the logical-groupings
 - [ ] Lambda zip build deferred from CI — terraform-aws-modules/lambda packages on apply with `build_in_docker = true`. No standalone `lambdas-build.yml` workflow needed; revisit if local Docker becomes a bottleneck.
 - [ ] End-to-end smoke (deferred — needs live AWS): `POST /v1/runs` → run reaches `WaitForSpecApproval` → approve via API → first TASK gate → approve → `RUN.COMPLETED`.
 
-## Phase 6 — Implementer agent ⬜
+## Phase 6 — Implementer agent 🟡
 
-The Implementer reads an approved spec, picks the next unchecked task from `tasks.md`, and opens **one PR for that task only**. On approval, the spec's `tasks.md` is updated to check the box; control returns to Step Functions to invoke the Implementer again for the next task. The loop terminates when `tasks.md` has no unchecked items.
+The Implementer reads an approved spec, picks one unchecked task from `tasks.md` by id, and opens **one PR for that task only**. On approval, the SDLC pipeline's Map state advances to the next task; the loop terminates when every task has been approved.
 
-- [ ] `agents/implementer/pyproject.toml`
-- [ ] `agents/implementer/Dockerfile`
-- [ ] `agents/implementer/src/implementer/{app.py, client.py, options.py, tools.py, hooks.py, prompts.py, tasks.py}` — `tasks.py` parses/updates the Markdown checklist
-- [ ] `agents/implementer/src/implementer/skills/{ai-dlc-conventions, memory-md-writer}/`
-- [ ] `module "agent_implementer"` in `envs/dev/main.tf`
-- [ ] Wire `Map(tasks)` task state into `sdlc_workflow` ASL
-- [ ] Full pipeline: `POST /v1/runs` → spec PR → approve → task-1 PR → approve → ... → task-N PR → approve → `RUN.COMPLETED`
+- [x] `agents/implementer/pyproject.toml` (workspace member; claude-agent-sdk 0.1.72, bedrock-agentcore 1.8, common path-dep, httpx, pydantic)
+- [x] `agents/implementer/Dockerfile` (python:3.14-slim ARM64; Node 22 + `@anthropic-ai/claude-code` for the SDK CLI subprocess; git for repo ops)
+- [x] `agents/implementer/src/implementer/{app.py, client.py, options.py, hooks.py, prompts.py, tasks.py, repo_ops.py}` — `tasks.py` parses + flips checkboxes (10 unit tests); `hooks.py` enforces the deny-list at the PreToolUse boundary; `repo_ops.py` wraps git + GitHub REST.
+- [x] Step Functions Map state already iterates per-task; the Implementer's `ImplementerInput`/`ImplementerResult` contract matches the existing `InvokeImplementer` ASL.
+- [x] `module.agents` runtime resource is generic over agents — flip `implementer_image_tag` once CI pushes an image and the runtime is provisioned.
+- [ ] Skills (`ai-dlc-conventions`, `memory-md-writer`) — deferred. Phase 6 ships without Claude Skills; system prompt + hooks cover guard-rails. Promote when an actual gap appears.
+- [ ] Full pipeline smoke (deferred — needs live AWS + GitHub OAuth): `POST /v1/runs` → spec PR → approve → task-1 PR → approve → ... → `RUN.COMPLETED`.
 
 ## Phase 7 — Dashboard ⬜
 
