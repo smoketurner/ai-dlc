@@ -61,7 +61,7 @@ test-eval:                     ## Run agent eval cases (live AWS, gated).
 	$(PYTEST) -m eval
 
 audit:                         ## pip-audit against the lockfile.
-	$(UV) run pip-audit --strict --disable-pip
+	$(UV) run pip-audit --strict --disable-pip -r <($(UV) export --frozen --format requirements-txt)
 
 hooks-install:                 ## Install git hooks via prek.
 	$(PREK) install
