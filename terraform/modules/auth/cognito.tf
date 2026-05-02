@@ -41,7 +41,7 @@ resource "aws_cognito_user_pool" "this" {
   }
 
   auto_verified_attributes = ["email"]
-  deletion_protection      = "ACTIVE"
+  deletion_protection      = "INACTIVE"
 
   tags = merge(var.tags, {
     Name      = local.pool_name
