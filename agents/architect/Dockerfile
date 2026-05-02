@@ -15,13 +15,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock .python-version ./
-COPY packages/common/pyproject.toml packages/common/
+# Workspace members must be present in full (uv builds them); only the leaf
+# project's source can be deferred to a separate, source-cacheable layer.
+COPY packages/common/ packages/common/
 COPY agents/architect/pyproject.toml agents/architect/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --package architect
 
-COPY packages/common/ packages/common/
 COPY agents/architect/ agents/architect/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
