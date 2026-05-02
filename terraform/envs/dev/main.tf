@@ -17,6 +17,7 @@
 #   agents       → crypto, state, auth
 #   pipeline     → crypto, state, messaging, auth, agents
 #   dashboard    → crypto, network, registry, state, messaging, auth, pipeline
+#   improvement  → crypto, state, messaging
 ################################################################################
 
 module "crypto" {
@@ -193,4 +194,25 @@ module "dashboard" {
   cognito_user_pool_id        = module.auth.user_pool_id
   cognito_user_pool_client_id = module.auth.client_id
   cognito_user_pool_domain    = module.auth.domain
+}
+
+module "improvement" {
+  source = "../../modules/improvement"
+
+  env              = var.env
+  logs_kms_key_arn = module.crypto.key_arns["logs"]
+  s3_kms_key_arn   = module.crypto.key_arns["s3-artifacts"]
+
+  bus_name = module.messaging.bus_name
+  bus_arn  = module.messaging.bus_arn
+
+  runs_table      = module.state.runs_table
+  runs_table_arn  = module.state.runs_table_arn
+  runs_stream_arn = module.state.runs_stream_arn
+
+  artifacts_bucket     = module.state.artifacts_bucket
+  artifacts_bucket_arn = module.state.artifacts_bucket_arn
+
+  sdlc_state_machine_arn = module.pipeline.state_machine_arn
+  alerts_topic_arn       = module.observability.alerts_topic_arn
 }

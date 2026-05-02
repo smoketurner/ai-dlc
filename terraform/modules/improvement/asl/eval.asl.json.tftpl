@@ -1,0 +1,118 @@
+{
+  "Comment": "ai-dlc eval runner — runs the case set through the live SDLC pipeline.",
+  "StartAt": "LoadCases",
+  "QueryLanguage": "JSONata",
+  "States": {
+    "LoadCases": {
+      "Type": "Task",
+      "Resource": "${eval_runner_function_arn}",
+      "Arguments": {
+        "op": "load_cases",
+        "override_cases": "{% $exists($states.input.override_cases) ? $states.input.override_cases : null %}"
+      },
+      "Output": {
+        "cases": "{% $states.result.cases %}"
+      },
+      "Next": "RunCases"
+    },
+    "RunCases": {
+      "Type": "Map",
+      "MaxConcurrency": ${max_concurrency},
+      "ItemsPath": "$.cases",
+      "ResultPath": "$.results",
+      "Parameters": {
+        "case.$": "$$.Map.Item.Value"
+      },
+      "ItemProcessor": {
+        "ProcessorConfig": { "Mode": "INLINE" },
+        "StartAt": "StartSdlcRun",
+        "States": {
+          "StartSdlcRun": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Arguments": {
+              "StateMachineArn": "${sdlc_state_machine_arn}",
+              "Input": {
+                "run_id": "{% 'eval-' & $now() & '-' & $states.input.case.slug %}",
+                "correlation_id": "{% 'eval-' & $now() & '-' & $states.input.case.slug %}",
+                "project_slug": "{% $states.input.case.project_slug %}",
+                "intent": "{% $states.input.case.intent %}",
+                "actor_id": "eval-runner"
+              }
+            },
+            "TimeoutSeconds": 7200,
+            "Catch": [
+              {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "MarkRunFailed",
+                "Output": {
+                  "case": "{% $states.input.case %}",
+                  "error": "{% $states.errorOutput %}"
+                }
+              }
+            ],
+            "Output": {
+              "case": "{% $states.input.case %}",
+              "execution_arn": "{% $states.result.ExecutionArn %}",
+              "run_id": "{% $exists($parse($states.result.Output).run_id) ? $parse($states.result.Output).run_id : 'unknown' %}"
+            },
+            "Next": "Evaluate"
+          },
+          "Evaluate": {
+            "Type": "Task",
+            "Resource": "${eval_runner_function_arn}",
+            "Arguments": {
+              "op": "evaluate_result",
+              "case": "{% $states.input.case %}",
+              "run_id": "{% $states.input.run_id %}"
+            },
+            "Output": {
+              "case_slug": "{% $states.input.case.slug %}",
+              "run_id": "{% $states.input.run_id %}",
+              "passed": "{% $states.result.passed %}",
+              "failures": "{% $states.result.failures %}",
+              "metrics": "{% $states.result.metrics %}"
+            },
+            "Next": "Record"
+          },
+          "Record": {
+            "Type": "Task",
+            "Resource": "${eval_runner_function_arn}",
+            "Arguments": {
+              "op": "record_result",
+              "case_slug": "{% $states.input.case_slug %}",
+              "run_id": "{% $states.input.run_id %}",
+              "passed": "{% $states.input.passed %}",
+              "failures": "{% $states.input.failures %}",
+              "metrics": "{% $states.input.metrics %}"
+            },
+            "Output": {
+              "case_slug": "{% $states.input.case_slug %}",
+              "passed": "{% $states.input.passed %}"
+            },
+            "End": true
+          },
+          "MarkRunFailed": {
+            "Type": "Pass",
+            "Output": {
+              "case_slug": "{% $states.input.case.slug %}",
+              "passed": false,
+              "failures": ["sdlc execution failed"]
+            },
+            "End": true
+          }
+        }
+      },
+      "Next": "Aggregate"
+    },
+    "Aggregate": {
+      "Type": "Task",
+      "Resource": "${eval_runner_function_arn}",
+      "Arguments": {
+        "op": "aggregate_results",
+        "results": "{% $states.input.results %}"
+      },
+      "End": true
+    }
+  }
+}

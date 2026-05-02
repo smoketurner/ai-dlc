@@ -1,0 +1,134 @@
+name: evals
+
+on:
+  pull_request:
+    paths:
+      - "agents/*/src/**/prompts.py"
+      - "agents/*/src/**/options.py"
+      - "agents/*/src/**/hooks.py"
+      - "docs/MEMORY.md"
+      - "docs/eval-set/**"
+      - "terraform/envs/*/main.tf"
+      - ".github/workflows/evals.yml"
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Environment to run evals against.
+        required: true
+        type: choice
+        options: [dev]
+        default: dev
+      cases:
+        description: Comma-separated list of case slugs to run (empty = all).
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-evals:
+    name: run eval suite
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37  # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_EVALS_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Sync cases.yaml to S3
+        env:
+          ARTIFACTS_BUCKET: ${{ vars.AIDLC_ARTIFACTS_BUCKET }}
+        run: |
+          aws s3 cp docs/eval-set/cases.yaml "s3://${ARTIFACTS_BUCKET}/evals/cases.yaml" \
+            --sse aws:kms \
+            --content-type "application/yaml"
+
+      - name: Start eval state machine
+        id: start
+        env:
+          STATE_MACHINE_ARN: ${{ vars.AIDLC_EVAL_STATE_MACHINE_ARN }}
+          INPUT_CASES: ${{ inputs.cases }}
+        run: |
+          if [ -n "${INPUT_CASES}" ]; then
+            python3 -c "import json,sys,os; slugs=os.environ['INPUT_CASES'].split(','); print(json.dumps({'override_cases':[{'slug':s.strip()} for s in slugs if s.strip()]}))" > input.json
+          else
+            echo '{}' > input.json
+          fi
+          arn=$(aws stepfunctions start-execution \
+            --state-machine-arn "${STATE_MACHINE_ARN}" \
+            --name "evals-${GITHUB_SHA::8}-$(date +%s)" \
+            --input file://input.json \
+            --query executionArn --output text)
+          echo "execution_arn=${arn}" >>"$GITHUB_OUTPUT"
+
+      - name: Wait for eval execution
+        id: wait
+        env:
+          EXECUTION_ARN: ${{ steps.start.outputs.execution_arn }}
+        run: |
+          while true; do
+            status=$(aws stepfunctions describe-execution \
+              --execution-arn "${EXECUTION_ARN}" \
+              --query status --output text)
+            case "${status}" in
+              SUCCEEDED) echo "status=succeeded" >>"$GITHUB_OUTPUT"; break ;;
+              FAILED|TIMED_OUT|ABORTED) echo "status=${status,,}" >>"$GITHUB_OUTPUT"; exit 1 ;;
+            esac
+            sleep 30
+          done
+          aws stepfunctions describe-execution \
+            --execution-arn "${EXECUTION_ARN}" \
+            --query output --output text > eval-output.json
+          {
+            echo "summary<<SUMMARY_EOF"
+            cat eval-output.json
+            echo "SUMMARY_EOF"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Comment results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd  # v8.0.0
+        env:
+          EVAL_OUTPUT: ${{ steps.wait.outputs.summary }}
+        with:
+          script: |
+            const out = process.env.EVAL_OUTPUT ?? '{}';
+            const data = JSON.parse(out || '{}');
+            const passRate = (data.pass_rate ?? 0) * 100;
+            const passed = data.passed ?? 0;
+            const total = data.total ?? 0;
+            const body = [
+              `### Eval suite — ${passed}/${total} passed (${passRate.toFixed(1)}%)`,
+              '',
+              '<details><summary>raw output</summary>',
+              '',
+              '```json',
+              JSON.stringify(data, null, 2),
+              '```',
+              '</details>',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

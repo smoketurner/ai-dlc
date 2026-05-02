@@ -1,6 +1,7 @@
 locals {
-  prefix     = "${var.project}-${var.env}"
-  memory_id  = "${var.project}-${var.env}-memory"
+  prefix = "${var.project}-${var.env}"
+  # AgentCore Memory names must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ — no hyphens.
+  memory_id  = replace("${var.project}_${var.env}_memory", "-", "_")
   source_dir = "${path.module}/../../../lambdas"
 
   # Tool Lambda identifiers used as map keys for resources keyed by tool name.

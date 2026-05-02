@@ -28,7 +28,7 @@
         }
       },
       "Next": "InvokeArchitect",
-      "ResultPath": null
+      "Output": "{% $states.input %}"
     },
     "InvokeArchitect": {
       "Type": "Task",
@@ -75,7 +75,7 @@
         ]
       },
       "Next": "WaitForSpecApproval",
-      "ResultPath": null
+      "Output": "{% $states.input %}"
     },
     "WaitForSpecApproval": {
       "Type": "Task",
@@ -106,15 +106,15 @@
     },
     "IterateTasks": {
       "Type": "Map",
-      "ItemsPath": "$.spec.task_ids",
+      "Items": "{% $states.input.spec.task_ids %}",
       "MaxConcurrency": 1,
-      "Parameters": {
-        "task_id.$": "$$.Map.Item.Value",
-        "run_id.$": "$.run_id",
-        "correlation_id.$": "$.correlation_id",
-        "project_slug.$": "$.project_slug",
-        "spec_slug.$": "$.spec.spec_slug",
-        "spec_s3_prefix.$": "$.spec.spec_s3_prefix"
+      "ItemSelector": {
+        "task_id": "{% $states.context.Map.Item.Value %}",
+        "run_id": "{% $states.input.run_id %}",
+        "correlation_id": "{% $states.input.correlation_id %}",
+        "project_slug": "{% $states.input.project_slug %}",
+        "spec_slug": "{% $states.input.spec.spec_slug %}",
+        "spec_s3_prefix": "{% $states.input.spec.spec_s3_prefix %}"
       },
       "ItemProcessor": {
         "ProcessorConfig": { "Mode": "INLINE" },
@@ -155,7 +155,7 @@
               ]
             },
             "Next": "WaitForTaskApproval",
-            "ResultPath": null
+            "Output": "{% $states.input %}"
           },
           "WaitForTaskApproval": {
             "Type": "Task",

@@ -163,9 +163,73 @@ Per the logical-groupings preference, the three planned modules (`ecr_dashboard`
 
 ---
 
+## Phase 9 — Continuous improvement (self-tuning loop) ⬜
+
+The platform should learn from itself. Every rejection is a labeled signal; every clean run is a few-shot example; every model/prompt change is a regression risk. Phase 9 closes the loop, but **never auto-mutates agent prompts** — improvements always land as PRs that humans review (the same trust boundary the platform itself uses).
+
+```
+                                       ┌──────────────────┐
+   every event ─► EventBridge ─►─►─►─► │  Telemetry agent │  auto-categorize rejection reasons
+                                       │  (Haiku 4.5)     │  → labeled records to S3 evals lake
+                                       └────────┬─────────┘
+                                                │
+                                                ▼
+                                       ┌──────────────────┐
+   approved runs ─► DDB stream ─►─►─►─ │  Few-shot miner  │  mine (intent → spec) + (task → diff)
+                                       │                  │  → curated few-shot bank in S3
+                                       └────────┬─────────┘
+                                                │
+   ★ on prompt/model/dep change ─►─►─►─►─►─►─►─►─┤
+   ★ on schedule (nightly)      ─►─►─►─►─►─►─►─►─┤
+                                                ▼
+                                       ┌──────────────────┐
+                                       │  Eval runner     │  runs all docs/eval-set/ cases
+                                       │  (SF distributed │  through the live pipeline
+                                       │   Map)           │  → pass/fail/cost matrix
+                                       └────────┬─────────┘
+                                                │ regression detected?
+                                                ▼
+                                       ┌──────────────────┐
+                                       │  Improvement     │  ★ runs weekly
+                                       │  Proposer        │  reads telemetry + few-shot bank +
+                                       │  (Strands/Opus)  │  eval deltas; opens a PR with
+                                       │                  │  proposed prompt / MEMORY.md edits
+                                       └────────┬─────────┘
+                                                │
+                                                ▼
+                                       PR ─► human reviews ─► merge
+                                       (the gate — never auto-apply)
+```
+
+Three landings, each independently shippable:
+
+### 9a — Telemetry + Few-shot miner ✅
+
+- [x] `lambdas/telemetry/` — EventBridge-triggered Lambda. Categorizes every `*.REJECTED` reason via Bedrock Haiku 4.5 against the fixed 10-category taxonomy. Writes labeled record to `s3://artifacts/evals/rejections/{date}/{run_id}/{gate_ref}.json` and increments per-run (`category_*`, `total_rejections`) + per-project rolling counters (`PROJECT#{slug}` / `REJECTIONS#{YYYY-MM}`) on the runs table. Falls back to `other` on bad model output — never gates the pipeline. **11 unit tests.**
+- [x] `lambdas/few_shot_miner/` — DDB-stream consumer for the runs table with a server-side filter pattern that only forwards `STATE`/`RUN.COMPLETED` rows. On match with `total_rejections == 0`, queries the run's event timeline and writes one `intent_to_spec` example + one `task_to_diff` example per approved task to `s3://artifacts/evals/few-shots/{kind}/{date}/{run_id}/{ix}.json`. **8 unit tests.**
+- [x] `terraform/modules/improvement/` — single logical-grouping module owning the self-improvement infrastructure: telemetry + few_shot_miner Lambdas (built via `terraform-aws-modules/lambda` arm64), EventBridge rule routing `SPEC.REJECTED`/`TASK.REJECTED` to telemetry, DDB stream event-source mapping with the filter pattern. Reserved space for 9b/9c.
+- [x] `module.improvement` wired into `envs/dev/main.tf`; outputs telemetry + miner Lambda ARNs.
+
+### 9b — Eval runner + Drift detector ⬜
+
+- [ ] `terraform/modules/improvement/` adds a Step Functions distributed Map state machine. Maps over the cases in `docs/eval-set/` and invokes the live pipeline once per case. Captures pass/fail/cost matrix.
+- [ ] EventBridge schedule (nightly) + GitHub Actions workflow trigger on PRs that touch `agents/*/prompts.py` / model IDs / `docs/MEMORY.md`.
+- [ ] CloudWatch alarm: trailing-week pass rate < trailing-30-day baseline by > 15% triggers an alarm + opens an automated revert PR for the offending change.
+
+### 9c — Improvement Proposer + A/B routing ⬜
+
+- [ ] `agents/proposer/` — Strands agent (Opus 4.7) added to the `var.agents` map. Reads rejection-category histogram + few-shot bank stats + eval deltas. Outputs a PR proposing **specific edits** to one of `MEMORY.md`, `agents/architect/.../prompts.py`, `agents/implementer/.../prompts.py`, or the agent map (e.g., "promote a Critic agent" / "split the Architect prompt by intent class").
+- [ ] A/B routing — when two prompt variants exist (`prompts.py` + `prompts.b.py`), the agent's `app.py` hashes `run_id` and picks one. Telemetry tags the variant; the proposer compares variants after N=50 runs and recommends a winner.
+
+**Data sample policy:** 100% of rejected runs, 10% of approved (full prompt + output). DSAR redaction needed if user data flows in.
+
+**Out of scope for v1:** auto-applied prompt rewrites; third-party prompt-optimization frameworks (DSPy/MIPRO) — revisit after 9c has proven the loop.
+
+---
+
 ## Status
 
-All eight phases now have their main deliverables in place — the platform stands up via `terraform apply` (modulo first-time bootstrap), the agents are container-buildable, and the spec-driven pipeline + dashboard are wired end-to-end. The remaining ⬜ items are deferred behind concrete triggers (live AWS smoke runs, AgentCore Evaluations GA, real dev traffic for alarm tuning).
+Phases 0-8 have their main deliverables in place — the platform stands up via `terraform apply` (modulo first-time bootstrap), the agents are container-buildable, and the spec-driven pipeline + dashboard are wired end-to-end. Phase 9 (continuous improvement loop) is queued; landings 9a/9b/9c can ship sequentially as the platform accumulates real run data.
 
 ---
 

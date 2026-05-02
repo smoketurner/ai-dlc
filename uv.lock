@@ -10,10 +10,13 @@ members = [
     "common",
     "dashboard",
     "entry-adapter",
+    "eval-runner",
     "event-projector",
+    "few-shot-miner",
     "hitl-handler",
     "implementer",
     "repo-helper",
+    "telemetry",
 ]
 
 [[package]]
@@ -23,7 +26,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
-    { name = "boto3-stubs", extra = ["bedrock-agentcore", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sqs", "stepfunctions"] },
+    { name = "boto3-stubs", extra = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sqs", "stepfunctions"] },
     { name = "moto", extra = ["all"] },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -37,7 +40,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "boto3-stubs", extras = ["bedrock-agentcore", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sqs", "stepfunctions"], specifier = "==1.43.2" },
+    { name = "boto3-stubs", extras = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sqs", "stepfunctions"], specifier = "==1.43.2" },
     { name = "moto", extras = ["all"], specifier = ">=5.1" },
     { name = "pip-audit", specifier = ">=2.10" },
     { name = "pytest", specifier = ">=8.4" },
@@ -318,6 +321,9 @@ wheels = [
 [package.optional-dependencies]
 bedrock-agentcore = [
     { name = "mypy-boto3-bedrock-agentcore" },
+]
+cloudwatch = [
+    { name = "mypy-boto3-cloudwatch" },
 ]
 dynamodb = [
     { name = "mypy-boto3-dynamodb" },
@@ -726,6 +732,29 @@ requires-dist = [
 ]
 
 [[package]]
+name = "eval-runner"
+version = "0.0.0"
+source = { editable = "lambdas/eval_runner" }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "common" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.28.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "botocore", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+]
+
+[[package]]
 name = "event-projector"
 version = "0.0.0"
 source = { editable = "lambdas/event_projector" }
@@ -762,6 +791,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5d/45/c130091c2dfa061bbfe3150f2a5091ef1adf149f2a8d2ae769ecaf6e99a2/fastapi-0.136.1.tar.gz", hash = "sha256:7af665ad7acfa0a3baf8983d393b6b471b9da10ede59c60045f49fbc89a0fa7f", size = 397448, upload-time = "2026-04-23T16:49:44.046Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/ff/2e4eca3ade2c22fe1dea7043b8ee9dabe47753349eb1b56a202de8af6349/fastapi-0.136.1-py3-none-any.whl", hash = "sha256:a6e9d7eeada96c93a4d69cb03836b44fa34e2854accb7244a1ece36cd4781c3f", size = 117683, upload-time = "2026-04-23T16:49:42.437Z" },
+]
+
+[[package]]
+name = "few-shot-miner"
+version = "0.0.0"
+source = { editable = "lambdas/few_shot_miner" }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "common" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.28.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "botocore", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
 ]
 
 [[package]]
@@ -1249,6 +1299,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d5/f7/7dd2a911c5e31f64f0fe9ab3f3e3739433472dc065222222270ac3e92dc3/mypy_boto3_bedrock_agentcore-1.43.1.tar.gz", hash = "sha256:c4a90909366bb8604ca27efb6778013a9b7d6503e2aaeb01922e9317261fc295", size = 46486, upload-time = "2026-04-30T21:16:15.958Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/28/6de7696f28d222871c7d5caf952d90ba9dc19fadec1f5e640c816aa716ee/mypy_boto3_bedrock_agentcore-1.43.1-py3-none-any.whl", hash = "sha256:b45e4b6aca17f812a34598822f894bccadd43668f3b7b718ce572df354de78bd", size = 52432, upload-time = "2026-04-30T21:16:12.908Z" },
+]
+
+[[package]]
+name = "mypy-boto3-cloudwatch"
+version = "1.43.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/14/79/46bb4c161fe95eab01a8c5af24b19eb8e7bbabd2afbe2508e53a4bd057f6/mypy_boto3_cloudwatch-1.43.2.tar.gz", hash = "sha256:a08fb826321b88da8043a4175d7dce7a28119ac22aca6e12d938b0ae33228d05", size = 37715, upload-time = "2026-05-01T20:31:12.325Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/68/f89bdc77e617501d462fa437a9220bc3f5e4d02006efd2b4f5f82645264d/mypy_boto3_cloudwatch-1.43.2-py3-none-any.whl", hash = "sha256:954a9ac4a7d24310aa4df4e3de943fcc1fedb0b1cd0361c51d05951df0ac7918", size = 47177, upload-time = "2026-05-01T20:31:07.383Z" },
 ]
 
 [[package]]
@@ -2949,6 +3008,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "telemetry"
+version = "0.0.0"
+source = { editable = "lambdas/telemetry" }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "common" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.28.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "botocore", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
 ]
 
 [[package]]

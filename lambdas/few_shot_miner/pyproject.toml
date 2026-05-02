@@ -1,0 +1,19 @@
+[project]
+name = "few-shot-miner"
+version = "0.0.0"
+description = "Mine successful runs for few-shot examples (intent→spec, task→diff)."
+requires-python = ">=3.13,<3.15"
+dependencies = [
+    "aws-lambda-powertools==3.28.0",
+    "boto3==1.43.2",
+    "botocore==1.43.2",
+    "common",
+    "pydantic==2.13.3",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.11"]
+build-backend = "uv_build"

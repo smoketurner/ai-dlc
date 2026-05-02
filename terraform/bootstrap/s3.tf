@@ -40,25 +40,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "tfstate" {
   }
 }
 
-resource "aws_s3_bucket_lifecycle_configuration" "tfstate" {
-  bucket = aws_s3_bucket.tfstate.id
-
-  rule {
-    id     = "expire-noncurrent"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days = 90
-    }
-
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
-}
-
 resource "aws_s3_bucket_policy" "tfstate" {
   bucket = aws_s3_bucket.tfstate.id
   policy = data.aws_iam_policy_document.tfstate_bucket.json

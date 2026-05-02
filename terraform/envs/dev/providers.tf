@@ -1,12 +1,13 @@
 provider "aws" {
-  region = var.region
+  region  = var.region
+  profile = "aidlc-admin"
 
   default_tags {
     tags = merge(
       {
         Project   = var.project
         Env       = var.env
-        ManagedBy = "terraform"
+        Terraform = "true"
       },
       var.tags,
     )

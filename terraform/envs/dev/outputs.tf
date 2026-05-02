@@ -178,6 +178,28 @@ output "github_webhook_secret_id" {
   value       = aws_secretsmanager_secret.github_webhook.name
 }
 
+# improvement -----------------------------------------------------------------
+
+output "telemetry_function_arn" {
+  description = "Telemetry Lambda ARN — categorizes rejection events."
+  value       = module.improvement.telemetry_function_arn
+}
+
+output "few_shot_miner_function_arn" {
+  description = "Few-shot miner Lambda ARN — captures (intent→spec) and (task→diff) examples."
+  value       = module.improvement.few_shot_miner_function_arn
+}
+
+output "eval_runner_state_machine_arn" {
+  description = "Eval-runner Step Functions state machine ARN."
+  value       = module.improvement.eval_state_machine_arn
+}
+
+output "eval_drift_alarm_arn" {
+  description = "CloudWatch alarm ARN watching the eval pass-rate baseline."
+  value       = module.improvement.eval_drift_alarm_arn
+}
+
 # ci_cd ------------------------------------------------------------------------
 
 output "github_actions_terraform_role_arn" {
