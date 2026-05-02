@@ -72,21 +72,21 @@ variable "github_oauth" {
 }
 
 variable "architect_image_tag" {
-  description = "ECR image tag for the architect agent. Empty string skips runtime provisioning (use on first apply)."
+  description = "ECR image tag for the architect agent. Defaults to `latest` — Terraform's data.aws_ecr_image resolves it to the current digest at plan time. Set to \"\" once during initial bootstrap (before any image is pushed) to skip runtime provisioning."
   type        = string
-  default     = ""
+  default     = "latest"
 }
 
 variable "implementer_image_tag" {
-  description = "ECR image tag for the implementer agent. Empty string skips runtime provisioning."
+  description = "ECR image tag for the implementer agent. See architect_image_tag for the digest-resolve pattern."
   type        = string
-  default     = ""
+  default     = "latest"
 }
 
 variable "dashboard_image_tag" {
-  description = "ECR image tag for the dashboard. Empty string keeps the ECS service unprovisioned."
+  description = "ECR image tag for the dashboard. See architect_image_tag for the digest-resolve pattern."
   type        = string
-  default     = ""
+  default     = "latest"
 }
 
 variable "dashboard_acm_certificate_arn" {

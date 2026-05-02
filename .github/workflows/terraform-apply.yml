@@ -1,0 +1,90 @@
+name: terraform-apply
+
+# Auto-roll the dev environment whenever:
+#   * a successful image build completes (architect/implementer/dashboard)
+#   * terraform code changes land on main
+#   * a maintainer manually dispatches it
+#
+# Image tags default to "latest" (see terraform/envs/dev/variables.tf).
+# Each apply re-resolves the tag to a digest via data.aws_ecr_image, so the
+# deploy is digest-pinned even though the tag is mutable.
+
+# `workflow_run` is normally risky because the triggered workflow runs with
+# full repo perms even when the upstream was triggered by a fork PR. The two
+# upstream workflows here (images-build, dashboard-build) only trigger on
+# push-to-main and workflow_dispatch — both maintainer-gated — so there is
+# no fork-PR path. The job-level `if` below adds belt-and-braces guards.
+on:
+  workflow_run:  # zizmor: ignore[dangerous-triggers]
+    workflows: [images-build, dashboard-build]
+    types: [completed]
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/terraform-apply.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-apply-dev
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: terraform apply (dev)
+    if: |
+      github.event_name != 'workflow_run'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.head_branch == 'main'
+          && github.event.workflow_run.event != 'pull_request'
+          && github.event.workflow_run.event != 'pull_request_target')
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+    defaults:
+      run:
+        working-directory: terraform/envs/dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37  # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TERRAFORM_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85  # v4.0.0
+        with:
+          terraform_wrapper: false
+
+      - name: Pull SAM Lambda build image
+        # The lambda module v8 calls `docker images` against this tag and
+        # falls back to BUILDING the image (not pulling) when missing.
+        # Pre-pulling avoids the build-fallback path entirely.
+        run: docker pull public.ecr.aws/sam/build-python3.13:latest-arm64
+        working-directory: .
+
+      - name: Terraform init
+        # The backend.tf hardcodes profile=aidlc-admin for local dev. Override
+        # to empty here so the S3 backend uses the OIDC-assumed env-var creds.
+        run: terraform init -backend-config="profile="
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan -no-color
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve -no-color tfplan
