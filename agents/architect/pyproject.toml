@@ -1,0 +1,20 @@
+[project]
+name = "architect"
+version = "0.0.0"
+description = "ai-dlc Architect agent — produces the three-document spec bundle (requirements, design, tasks)."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "bedrock-agentcore==1.8.0",
+    "boto3==1.43.2",
+    "common",
+    "pydantic==2.13.3",
+    "strands-agents==1.38.0",
+    "structlog==25.5.0",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.11"]
+build-backend = "uv_build"

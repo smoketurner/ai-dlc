@@ -12,23 +12,30 @@ variable "env" {
 variable "agents" {
   description = <<-EOT
     Map of agent name → per-agent configuration. Each agent gets its own
-    workload identity and AgentCore Gateway (AWS recommendation). The
-    `targets` field is a subset of the registered tool Lambdas; valid
-    values are `artifact_tool` and `repo_helper`.
+    workload identity, AgentCore Gateway, and (when `image_tag` is set) an
+    AgentCore Runtime backed by an ECR image. The `targets` field is a
+    subset of the registered tool Lambdas; valid values are `artifact_tool`
+    and `repo_helper`. Set `image_tag = ""` on first apply (before CI has
+    pushed an image) to skip provisioning the runtime; flip to `"latest"`
+    or a commit SHA once the image is in ECR.
   EOT
   type = map(object({
     description                         = string
     targets                             = set(string)
     allowed_resource_oauth2_return_urls = optional(list(string), [])
+    image_tag                           = optional(string, "")
+    bedrock_model_id                    = optional(string, "")
   }))
   default = {
     architect = {
-      description = "Architect agent — produces ADRs."
-      targets     = ["artifact_tool"]
+      description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
+      targets          = ["artifact_tool"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
     }
     implementer = {
-      description = "Implementer agent — opens code PRs."
-      targets     = ["artifact_tool", "repo_helper"]
+      description      = "Implementer agent — works the tasks list one PR at a time."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
     }
   }
 
@@ -39,6 +46,11 @@ variable "agents" {
     ])
     error_message = "agents[*].targets values must be a subset of {artifact_tool, repo_helper}."
   }
+}
+
+variable "ecr_repository_urls" {
+  description = "Map of agent name → ECR repository URL (from the registry module)."
+  type        = map(string)
 }
 
 variable "memory_kms_key_arn" {

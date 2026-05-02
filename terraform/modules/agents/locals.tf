@@ -18,4 +18,11 @@ locals {
       }
     }
   ]...)
+
+  # Subset of agents that have a published image tag; runtime resources are
+  # only provisioned for these. Skip an agent on first apply by leaving its
+  # image_tag = "" until CI has pushed at least one image.
+  runtime_agents = {
+    for k, v in var.agents : k => v if v.image_tag != ""
+  }
 }

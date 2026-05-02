@@ -1,0 +1,95 @@
+name: images-build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agents/**"
+      - "packages/common/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/images-build.yml"
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: Build a single agent only.
+        required: false
+        type: choice
+        options: [all, architect, implementer]
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: images-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.agent }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    if: |
+      github.event_name == 'push'
+      || github.event.inputs.agent == 'all'
+      || github.event.inputs.agent == matrix.agent
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: [architect, implementer]
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REPOSITORY: ${{ vars.ECR_REGISTRY }}/ai-dlc/${{ matrix.agent }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ec61189d14ec14c8efccab744f656cffd0e33f37  # v6.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_IMAGE_PUBLISHER_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@1629cc33a9521f764a4704d4d0387513918873b9  # v2.1.4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392  # v3.6.0
+        with:
+          platforms: linux/arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Skip if agent dir missing
+        id: check
+        run: |
+          if [ -d "agents/${AGENT}" ] && [ -f "agents/${AGENT}/Dockerfile" ]; then
+            echo "build=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "build=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::agents/${AGENT} not present yet — skipping"
+          fi
+        env:
+          AGENT: ${{ matrix.agent }}
+
+      - name: Build and push
+        if: steps.check.outputs.build == 'true'
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: agents/${{ matrix.agent }}/Dockerfile
+          platforms: linux/arm64
+          provenance: false
+          push: true
+          tags: |
+            ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha,scope=${{ matrix.agent }}-arm64
+          cache-to: type=gha,mode=max,scope=${{ matrix.agent }}-arm64

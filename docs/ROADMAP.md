@@ -96,19 +96,19 @@ Consolidated into a single `agents` Terraform module since identity, memory, gat
 
 **Memory model:** Hybrid. AgentCore Memory holds cross-session learned facts (4 strategies — `SEMANTIC` for project facts, `USER_PREFERENCE` for per-user prefs, `SUMMARIZATION` for session summaries, `EPISODIC` for the rejection-retry loop); the S3 `memory_md` bucket holds canonical per-project `MEMORY.md` and session snapshots. The artifact_tool Lambda reads/writes the S3 side; agents talk to AgentCore Memory directly via the Bedrock SDK. `MEMORY.md` → AgentCore Memory sync runs on every successful session via `CreateEvent`; the reverse path goes through agent-proposed PRs to `docs/MEMORY.md` (humans gate writes).
 
-## Phase 4 — Architect agent ⬜
+## Phase 4 — Architect agent 🟡
 
 The Architect produces a three-document spec bundle (`requirements.md`, `design.md`, `tasks.md`) under `docs/specs/{slug}/` and may propose ADRs in the design when a cross-cutting decision surfaces.
 
-- [ ] `agents/architect/pyproject.toml`
-- [ ] `agents/architect/Dockerfile` (python:3.14-slim, ARM64, multi-stage uv)
-- [ ] `agents/architect/src/architect/{app.py, agent.py, prompts.py, tools.py, spec.py}` — `spec.py` owns the three-doc Pydantic models + Markdown renderer
-- [ ] `agents/architect/tests/`
-- [ ] `images-build.yml` workflow (docker buildx ARM64 → ECR by SHA; cosign-sign)
-- [ ] `terraform/modules/agentcore_runtime/` parameterized module
-- [ ] `module "agent_architect"` in `envs/dev/main.tf`
-- [ ] Local smoke: `uv run python -m architect.app` against dev memory + gateway
-- [ ] AWS smoke: `aws bedrock-agentcore-runtime invoke-agent-runtime ...` returns spec_s3_prefix
+- [x] `agents/architect/pyproject.toml` (workspace member; strands-agents 1.38, bedrock-agentcore 1.8, common path-dep)
+- [x] `agents/architect/Dockerfile` (python:3.14-slim, ARM64, multi-stage uv)
+- [x] `agents/architect/src/architect/{app.py, agent.py, prompts.py, tools.py, spec.py}` — `spec.py` owns the three-doc Pydantic models + Markdown renderer; `tools.py` exposes plain functions + Strands `@tool` wrappers; `agent.py` uses `Agent.structured_output(SpecBundle, …)` against Opus 4.7
+- [x] `agents/architect/tests/test_spec.py` — 10 unit tests on validation + Markdown rendering
+- [x] `images-build.yml` workflow (docker buildx ARM64 → ECR by SHA + `latest`; OIDC-authenticated; matrix over agents)
+- [x] AgentCore Runtime resource added to the `agents` Terraform module — per-agent role + ECR-digest-pinned container + Cognito JWT authorizer; gated on `image_tag != ""` so initial apply runs without a pushed image
+- [x] `module.agents` in `envs/dev/main.tf` consumes ECR repo URLs and per-agent image tags
+- [ ] Local smoke: `uv run python -m architect.app` against dev memory + gateway (deferred — needs Bedrock model access)
+- [ ] AWS smoke: build + push image, set `architect_image_tag = "<sha>"`, apply, then `aws bedrock-agentcore-runtime invoke-agent-runtime ...` returns `spec_s3_prefix`
 
 ## Phase 5 — Lambdas + Step Functions + API Gateway ⬜
 

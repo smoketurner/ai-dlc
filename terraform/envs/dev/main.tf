@@ -93,5 +93,22 @@ module "agents" {
   cognito_discovery_url = module.auth.discovery_url
   cognito_audience      = [module.auth.client_id]
 
+  ecr_repository_urls = module.registry.repository_urls
+
+  agents = {
+    architect = {
+      description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
+      targets          = ["artifact_tool"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+      image_tag        = var.architect_image_tag
+    }
+    implementer = {
+      description      = "Implementer agent — works the tasks list one PR at a time."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+      image_tag        = var.implementer_image_tag
+    }
+  }
+
   github_oauth = var.github_oauth
 }

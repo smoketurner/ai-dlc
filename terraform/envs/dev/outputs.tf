@@ -134,6 +134,11 @@ output "agent_tool_lambda_arns" {
   value       = module.agents.tool_lambda_arns
 }
 
+output "agent_runtime_arns" {
+  description = "Map of agent name → AgentCore Runtime ARN (empty until images are pushed)."
+  value       = module.agents.runtime_arns
+}
+
 # ci_cd ------------------------------------------------------------------------
 
 output "github_actions_terraform_role_arn" {

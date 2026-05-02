@@ -1,0 +1,187 @@
+################################################################################
+# AgentCore Runtime — one per agent that has a published image_tag.
+#
+# Each runtime gets its own IAM role with the minimum it needs:
+#   * ECR pull on the agent's repository
+#   * bedrock:InvokeModel on the agent's chosen Claude model
+#   * S3 read/write on the artifacts + memory_md prefixes that match the project
+#   * AgentCore Memory CreateEvent / Retrieve / ListEvents on this env's memory
+#   * CloudWatch Logs write
+#
+# Image is digest-pinned via data.aws_ecr_image so CI-driven rollouts replace
+# the runtime atomically when a new image lands.
+################################################################################
+
+data "aws_iam_policy_document" "runtime_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["bedrock-agentcore.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+data "aws_ecr_image" "agent" {
+  for_each = local.runtime_agents
+
+  repository_name = "${var.project}/${each.key}"
+  image_tag       = each.value.image_tag
+}
+
+data "aws_iam_policy_document" "runtime_inline" {
+  for_each = local.runtime_agents
+
+  statement {
+    sid       = "EcrAuth"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "EcrPull"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer",
+    ]
+    resources = [
+      "arn:aws:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${var.project}/${each.key}",
+    ]
+  }
+
+  statement {
+    sid     = "BedrockInvokeModel"
+    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+    ]
+  }
+
+  statement {
+    sid    = "S3Artifacts"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:ListBucket",
+    ]
+    resources = [
+      var.artifacts_bucket_arn,
+      "${var.artifacts_bucket_arn}/*",
+      var.memory_md_bucket_arn,
+      "${var.memory_md_bucket_arn}/*",
+    ]
+  }
+
+  statement {
+    sid       = "S3KmsUse"
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:Decrypt"]
+    resources = [var.s3_kms_key_arn]
+  }
+
+  statement {
+    sid = "AgentCoreMemory"
+    actions = [
+      "bedrock-agentcore:CreateEvent",
+      "bedrock-agentcore:RetrieveMemoryRecords",
+      "bedrock-agentcore:ListEvents",
+      "bedrock-agentcore:GetEvent",
+      "bedrock-agentcore:GetMemory",
+    ]
+    resources = [aws_bedrockagentcore_memory.this.arn]
+  }
+
+  statement {
+    sid = "AgentCoreGateway"
+    actions = [
+      "bedrock-agentcore:InvokeGateway",
+      "bedrock-agentcore:GetGateway",
+      "bedrock-agentcore:ListGatewayTargets",
+    ]
+    resources = [aws_bedrockagentcore_gateway.agent[each.key].gateway_arn]
+  }
+
+  statement {
+    sid = "Logs"
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogStreams",
+    ]
+    resources = ["arn:aws:logs:*:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/runtimes/*"]
+  }
+}
+
+resource "aws_iam_role" "runtime" {
+  for_each = local.runtime_agents
+
+  name               = "${local.prefix}-${each.key}-runtime"
+  assume_role_policy = data.aws_iam_policy_document.runtime_assume.json
+  description        = "Execution role for the ${each.key} AgentCore Runtime."
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-${each.key}-runtime"
+    Component = "agents"
+  })
+}
+
+resource "aws_iam_role_policy" "runtime_inline" {
+  for_each = local.runtime_agents
+
+  name   = "runtime-inline"
+  role   = aws_iam_role.runtime[each.key].id
+  policy = data.aws_iam_policy_document.runtime_inline[each.key].json
+}
+
+resource "aws_bedrockagentcore_agent_runtime" "agent" {
+  for_each = local.runtime_agents
+
+  agent_runtime_name = replace("${local.prefix}-${each.key}", "-", "_")
+  description        = each.value.description
+  role_arn           = aws_iam_role.runtime[each.key].arn
+
+  agent_runtime_artifact {
+    container_configuration {
+      container_uri = "${var.ecr_repository_urls[each.key]}@${data.aws_ecr_image.agent[each.key].image_digest}"
+    }
+  }
+
+  network_configuration {
+    network_mode = "PUBLIC"
+  }
+
+  protocol_configuration {
+    server_protocol = "HTTP"
+  }
+
+  authorizer_configuration {
+    custom_jwt_authorizer {
+      discovery_url    = var.cognito_discovery_url
+      allowed_audience = var.cognito_audience
+    }
+  }
+
+  environment_variables = {
+    AIDLC_ENV               = var.env
+    AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
+    AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
+    AIDLC_S3_KMS_KEY_ARN    = var.s3_kms_key_arn
+    AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
+    AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
+    AIDLC_BEDROCK_MODEL_ID  = each.value.bedrock_model_id
+  }
+
+  tags = merge(var.tags, {
+    Name      = replace("${local.prefix}-${each.key}", "-", "_")
+    Component = "agents"
+  })
+}

@@ -70,3 +70,15 @@ variable "github_oauth" {
   default   = null
   sensitive = true
 }
+
+variable "architect_image_tag" {
+  description = "ECR image tag for the architect agent. Empty string skips runtime provisioning (use on first apply)."
+  type        = string
+  default     = ""
+}
+
+variable "implementer_image_tag" {
+  description = "ECR image tag for the implementer agent. Empty string skips runtime provisioning."
+  type        = string
+  default     = ""
+}
