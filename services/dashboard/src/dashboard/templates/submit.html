@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}submit · ai-dlc{% endblock %}
+{% block content %}
+<div x-data="submitForm()" class="max-w-2xl space-y-4">
+  <h1 class="text-xl font-semibold">Submit a run</h1>
+  <form @submit.prevent="submit" class="space-y-3 bg-white p-4 rounded shadow-sm">
+    <label class="block">
+      <span class="text-sm font-medium">project_slug</span>
+      <input x-model="projectSlug" required minlength="1" maxlength="64"
+             class="mt-1 block w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+    </label>
+    <label class="block">
+      <span class="text-sm font-medium">intent</span>
+      <textarea x-model="intent" required minlength="1" maxlength="4096" rows="6"
+                class="mt-1 block w-full rounded border border-slate-300 px-3 py-2 text-sm font-mono"></textarea>
+    </label>
+    <label class="block">
+      <span class="text-sm font-medium">requestor</span>
+      <input x-model="requestor" required minlength="1" maxlength="128" placeholder="{{ user.email or user.sub }}"
+             class="mt-1 block w-full rounded border border-slate-300 px-3 py-2 text-sm" />
+    </label>
+    <button type="submit" :disabled="busy"
+            class="px-4 py-2 rounded bg-slate-900 text-white text-sm disabled:opacity-50">
+      <span x-show="!busy">Submit</span>
+      <span x-show="busy">Submitting…</span>
+    </button>
+    <p x-show="error" x-text="error" class="text-sm text-red-600"></p>
+  </form>
+</div>
+<script>
+function submitForm() {
+  return {
+    projectSlug: '',
+    intent: '',
+    requestor: '{{ user.email or user.sub }}',
+    busy: false,
+    error: '',
+    async submit() {
+      this.busy = true;
+      this.error = '';
+      try {
+        const resp = await fetch('/v1/runs', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({
+            project_slug: this.projectSlug,
+            intent: this.intent,
+            requestor: this.requestor,
+          }),
+        });
+        if (!resp.ok) {
+          const body = await resp.json().catch(() => ({}));
+          throw new Error(body.detail?.error || `HTTP ${resp.status}`);
+        }
+        const body = await resp.json();
+        window.location.href = `/runs/${body.run_id}`;
+      } catch (e) {
+        this.error = e.message;
+      } finally {
+        this.busy = false;
+      }
+    },
+  };
+}
+</script>
+{% endblock %}

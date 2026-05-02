@@ -1,12 +1,13 @@
 ################################################################################
-# HTTP API Gateway. Three routes:
+# HTTP API Gateway. Two routes (both JWT-protected):
 #
-#   POST /v1/runs                       — JWT-protected; → entry_adapter Lambda
-#   POST /v1/runs/{run_id}/decide       — JWT-protected; → hitl_handler Lambda (DECIDE)
-#   POST /webhooks/github               — unauthenticated; HMAC-verified by the
-#                                         dashboard's webhook receiver in Phase 7.
-#                                         Reserved here so the route + permission
-#                                         exist when the dashboard wires it up.
+#   POST /v1/runs                  — entry_adapter Lambda
+#   POST /v1/runs/{run_id}/decide  — hitl_handler Lambda (DECIDE)
+#
+# The GitHub PR webhook is *not* on this API Gateway — it lands on a
+# separate, unauthenticated rule on the dashboard ALB at /webhooks/github.
+# The dashboard verifies the HMAC signature in-app and forwards to the
+# hitl_handler Lambda directly.
 ################################################################################
 
 resource "aws_apigatewayv2_api" "this" {
@@ -124,13 +125,6 @@ resource "aws_apigatewayv2_route" "post_decide" {
   target             = "integrations/${aws_apigatewayv2_integration.hitl_handler.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
-}
-
-resource "aws_apigatewayv2_route" "post_webhooks_github" {
-  api_id             = aws_apigatewayv2_api.this.id
-  route_key          = "POST /webhooks/github"
-  target             = "integrations/${aws_apigatewayv2_integration.hitl_handler.id}"
-  authorization_type = "NONE"
 }
 
 resource "aws_lambda_permission" "apigw_invoke_hitl" {

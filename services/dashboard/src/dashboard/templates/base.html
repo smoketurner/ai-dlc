@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}ai-dlc{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js" defer></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif; }
+    pre { font-family: "JetBrains Mono", ui-monospace, monospace; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <header class="bg-slate-900 text-slate-100">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center gap-6">
+      <a href="/" class="font-semibold tracking-tight">ai-dlc</a>
+      <nav class="flex gap-4 text-sm text-slate-300">
+        <a href="/" class="hover:text-white">runs</a>
+        <a href="/approvals" class="hover:text-white">approvals</a>
+        <a href="/submit" class="hover:text-white">submit</a>
+      </nav>
+      <div class="ml-auto text-sm text-slate-400">
+        {% if user and user.email %}{{ user.email }}{% endif %}
+      </div>
+    </div>
+  </header>
+  <main class="max-w-6xl mx-auto px-6 py-8">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

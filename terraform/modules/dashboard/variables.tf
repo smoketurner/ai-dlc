@@ -1,0 +1,184 @@
+variable "project" {
+  description = "Project name."
+  type        = string
+  default     = "ai-dlc"
+}
+
+variable "env" {
+  description = "Environment name."
+  type        = string
+}
+
+variable "image_tag" {
+  description = "ECR image tag for the dashboard. Empty string skips ECS service provisioning (use on first apply, before CI has pushed)."
+  type        = string
+  default     = ""
+}
+
+variable "ecr_repository_url" {
+  description = "ECR repository URL for the dashboard image."
+  type        = string
+}
+
+variable "vpc_id" {
+  description = "VPC ID."
+  type        = string
+}
+
+variable "public_subnet_ids" {
+  description = "Public subnet IDs for the ALB."
+  type        = list(string)
+}
+
+variable "private_subnet_ids" {
+  description = "Private subnet IDs for the ECS tasks."
+  type        = list(string)
+}
+
+variable "logs_kms_key_arn" {
+  description = "KMS key ARN for CloudWatch log groups."
+  type        = string
+}
+
+variable "alb_log_bucket" {
+  description = "S3 bucket for ALB access logs (existing artifacts bucket reuses fine in dev)."
+  type        = string
+}
+
+variable "alb_acm_certificate_arn" {
+  description = "ACM cert ARN for the HTTPS listener. Optional — when null, the listener is HTTP-only."
+  type        = string
+  default     = null
+}
+
+variable "bus_name" {
+  description = "EventBridge bus name."
+  type        = string
+}
+
+variable "bus_arn" {
+  description = "EventBridge bus ARN."
+  type        = string
+}
+
+variable "runs_table_arn" {
+  description = "DynamoDB runs-table ARN."
+  type        = string
+}
+
+variable "runs_table" {
+  description = "DynamoDB runs-table name."
+  type        = string
+}
+
+variable "approvals_table_arn" {
+  description = "DynamoDB approvals-table ARN."
+  type        = string
+}
+
+variable "approvals_table" {
+  description = "DynamoDB approvals-table name."
+  type        = string
+}
+
+variable "idempotency_table_arn" {
+  description = "DynamoDB idempotency-keys-table ARN."
+  type        = string
+}
+
+variable "idempotency_table" {
+  description = "DynamoDB idempotency-keys-table name."
+  type        = string
+}
+
+variable "artifacts_bucket" {
+  description = "Artifacts S3 bucket name (read-only access for ADR/spec presigned URLs)."
+  type        = string
+}
+
+variable "artifacts_bucket_arn" {
+  description = "Artifacts S3 bucket ARN."
+  type        = string
+}
+
+variable "hitl_handler_function_name" {
+  description = "Name of the hitl_handler Lambda the dashboard invokes for DECIDE."
+  type        = string
+}
+
+variable "hitl_handler_function_arn" {
+  description = "ARN of the hitl_handler Lambda."
+  type        = string
+}
+
+variable "github_webhook_secret_id" {
+  description = "Secrets Manager secret id holding the GitHub webhook signing secret."
+  type        = string
+}
+
+variable "github_webhook_secret_arn" {
+  description = "Secrets Manager secret ARN."
+  type        = string
+}
+
+variable "cognito_user_pool_arn" {
+  description = "Cognito user pool ARN — used by the ALB authenticate-cognito action."
+  type        = string
+}
+
+variable "cognito_user_pool_id" {
+  description = "Cognito user pool ID."
+  type        = string
+}
+
+variable "cognito_user_pool_client_id" {
+  description = "Cognito user pool app client ID."
+  type        = string
+}
+
+variable "cognito_user_pool_domain" {
+  description = "Cognito user pool hosted-UI domain (without protocol)."
+  type        = string
+}
+
+variable "task_cpu" {
+  description = "Fargate task CPU units."
+  type        = number
+  default     = 512
+}
+
+variable "task_memory_mb" {
+  description = "Fargate task memory."
+  type        = number
+  default     = 1024
+}
+
+variable "desired_count" {
+  description = "Initial desired ECS task count."
+  type        = number
+  default     = 1
+}
+
+variable "min_capacity" {
+  description = "Autoscaling min."
+  type        = number
+  default     = 1
+}
+
+variable "max_capacity" {
+  description = "Autoscaling max."
+  type        = number
+  default     = 4
+}
+
+variable "log_retention_days" {
+  description = "CloudWatch Logs retention for the dashboard."
+  type        = number
+  default     = 30
+}
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

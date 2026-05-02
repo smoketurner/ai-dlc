@@ -136,17 +136,22 @@ The Implementer reads an approved spec, picks one unchecked task from `tasks.md`
 - [ ] Skills (`ai-dlc-conventions`, `memory-md-writer`) — deferred. Phase 6 ships without Claude Skills; system prompt + hooks cover guard-rails. Promote when an actual gap appears.
 - [ ] Full pipeline smoke (deferred — needs live AWS + GitHub OAuth): `POST /v1/runs` → spec PR → approve → task-1 PR → approve → ... → `RUN.COMPLETED`.
 
-## Phase 7 — Dashboard ⬜
+## Phase 7 — Dashboard 🟡
 
-- [ ] `services/dashboard/pyproject.toml` (FastAPI, Jinja2, sse-starlette, httpx)
-- [ ] `services/dashboard/Dockerfile`
-- [ ] `services/dashboard/src/dashboard/{app.py, auth.py, deps.py, repos.py, models.py}`
-- [ ] `services/dashboard/src/dashboard/routes/{pages.py, runs.py, stream.py, webhooks.py}`
-- [ ] Templates: `base.html`, `runs.html`, `run_detail.html`, `approvals.html`, `submit.html`
-- [ ] `terraform/modules/{ecr_dashboard, ecs_dashboard, alb_dashboard}/`
-- [ ] `dashboard-build.yml` workflow
-- [ ] GitHub PR webhook integration via ALB listener rule (HMAC-verified)
-- [ ] Smoke test: submit run from UI → live SSE updates → approve via PR comment → state changes within ~2 s
+Per the logical-groupings preference, the three planned modules (`ecr_dashboard`, `ecs_dashboard`, `alb_dashboard`) collapsed into a single `terraform/modules/dashboard/` module that owns the ECS cluster + service + ALB + listener rules. The dashboard ECR repo lives in the existing `registry` module alongside the agent repos.
+
+- [x] `services/dashboard/pyproject.toml` — FastAPI 0.136, Jinja2, sse-starlette, httpx, pyjwt[crypto] (ALB OIDC verification), uvicorn[standard].
+- [x] `services/dashboard/Dockerfile` — python:3.14-slim ARM64, multi-stage uv build, runs uvicorn on :8080.
+- [x] `services/dashboard/src/dashboard/{app, auth, deps, repos, models}.py` — boto3 clients cached at process scope; ALB-injected `x-amzn-oidc-data` decoded via the per-region public key endpoint; `AIDLC_AUTH=disabled` short-circuits auth in dev.
+- [x] `services/dashboard/src/dashboard/routes/{pages, runs, stream, webhooks}.py` — server-rendered HTML pages, JSON `POST /v1/runs` (idempotency-keyed → events:PutEvents), SSE `GET /v1/runs/{id}/stream` polling DDB every 1 s, HMAC-verified `POST /webhooks/github` → `hitl_handler` Lambda invoke.
+- [x] Jinja2 templates: `base.html` (Tailwind + Alpine.js via CDN), `runs.html`, `run_detail.html` (Alpine `EventSource` subscriber), `approvals.html` (deep-links to GitHub PRs), `submit.html`.
+- [x] `terraform/modules/dashboard/` — single module: ECS Fargate cluster (Container Insights on, ARM64), task definition (digest-pinned image, 0.5 vCPU / 1 GB), service in private subnets + autoscaling 1-4 / CPU 60 %, ALB in public subnets with HTTPS listener (Cognito OIDC `authenticate-cognito` action) and a separate `/webhooks/github` listener rule that bypasses auth. Service is gated on `image_tag != ""`.
+- [x] `dashboard-build.yml` workflow — lint+type+test → buildx ARM64 → ECR push by SHA + `latest`. zizmor-clean.
+- [x] GitHub PR webhook integration via ALB listener rule (HMAC-verified by the dashboard FastAPI route, then forwarded to `hitl_handler.DECIDE`).
+- [x] API Gateway `POST /webhooks/github` route removed from the `pipeline` module — the dashboard ALB owns it now (replace, don't deprecate).
+- [ ] Smoke test (deferred — needs live AWS): submit run from UI → live SSE updates → approve via PR comment → state changes within ~2 s.
+
+13 unit tests on the webhook handler cover HMAC verify, review-event parsing, comment-magic-string parsing, JSON round-tripping.
 
 ## Phase 8 — Eval set + observability hardening ⬜
 

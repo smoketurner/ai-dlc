@@ -1,0 +1,1 @@
+"""Dashboard FastAPI routes."""

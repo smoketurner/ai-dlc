@@ -142,7 +142,7 @@ output "agent_runtime_arns" {
 # pipeline ---------------------------------------------------------------------
 
 output "api_endpoint" {
-  description = "ai-dlc HTTP API endpoint (POST /v1/runs, /v1/runs/{id}/decide, /webhooks/github)."
+  description = "ai-dlc HTTP API endpoint (POST /v1/runs, /v1/runs/{id}/decide). The GitHub webhook lands on the dashboard ALB instead."
   value       = module.pipeline.api_endpoint
 }
 
@@ -154,6 +154,28 @@ output "state_machine_arn" {
 output "platform_lambda_arns" {
   description = "Map of platform Lambda name → ARN."
   value       = module.pipeline.lambda_arns
+}
+
+# dashboard --------------------------------------------------------------------
+
+output "dashboard_alb_dns" {
+  description = "Dashboard ALB DNS name."
+  value       = module.dashboard.alb_dns_name
+}
+
+output "dashboard_ecs_cluster" {
+  description = "Dashboard ECS cluster name."
+  value       = module.dashboard.ecs_cluster_name
+}
+
+output "dashboard_ecs_service" {
+  description = "Dashboard ECS service name (empty until image_tag is set)."
+  value       = module.dashboard.ecs_service_name
+}
+
+output "github_webhook_secret_id" {
+  description = "Secrets Manager id holding the GitHub webhook HMAC secret."
+  value       = aws_secretsmanager_secret.github_webhook.name
 }
 
 # ci_cd ------------------------------------------------------------------------

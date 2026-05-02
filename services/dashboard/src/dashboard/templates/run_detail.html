@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ run_id }} · ai-dlc{% endblock %}
+{% block content %}
+<div x-data="runDetail($el.dataset.runId)" x-init="connect()" data-run-id="{{ run_id }}" class="space-y-4">
+  <div class="flex items-baseline justify-between">
+    <div>
+      <h1 class="text-xl font-semibold">Run {{ run_id }}</h1>
+      <p class="text-sm text-slate-500">{{ summary.project_slug }}</p>
+    </div>
+    <span class="px-2 py-0.5 rounded text-xs bg-slate-200" x-text="lastType || '{{ summary.status }}'"></span>
+  </div>
+  <ul class="bg-white shadow-sm rounded divide-y">
+    {% for ev in events %}
+    <li class="px-4 py-3 text-sm flex items-baseline gap-3">
+      <span class="text-slate-400 font-mono text-xs">{{ ev.timestamp }}</span>
+      <span class="font-semibold">{{ ev.type }}</span>
+      <span class="text-slate-600 truncate" title="{{ ev.payload }}">{{ ev.payload | tojson }}</span>
+    </li>
+    {% endfor %}
+    <template x-for="ev in liveEvents" :key="ev.event_id">
+      <li class="px-4 py-3 text-sm flex items-baseline gap-3 bg-emerald-50">
+        <span class="text-slate-400 font-mono text-xs" x-text="ev.timestamp"></span>
+        <span class="font-semibold" x-text="ev.type"></span>
+        <span class="text-slate-600 truncate" x-text="JSON.stringify(ev.payload)"></span>
+      </li>
+    </template>
+  </ul>
+</div>
+<script>
+function runDetail(runId) {
+  return {
+    liveEvents: [],
+    lastType: '',
+    connect() {
+      const es = new EventSource(`/v1/runs/${runId}/stream`);
+      es.onmessage = (m) => {
+        try {
+          const ev = JSON.parse(m.data);
+          this.liveEvents.push(ev);
+          this.lastType = ev.type;
+        } catch (_) {}
+      };
+      es.addEventListener('close', () => es.close());
+    },
+  };
+}
+</script>
+{% endblock %}

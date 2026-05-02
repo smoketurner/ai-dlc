@@ -82,3 +82,15 @@ variable "implementer_image_tag" {
   type        = string
   default     = ""
 }
+
+variable "dashboard_image_tag" {
+  description = "ECR image tag for the dashboard. Empty string keeps the ECS service unprovisioned."
+  type        = string
+  default     = ""
+}
+
+variable "dashboard_acm_certificate_arn" {
+  description = "ACM certificate ARN for the dashboard ALB HTTPS listener. Null = HTTP-only (dev only)."
+  type        = string
+  default     = null
+}

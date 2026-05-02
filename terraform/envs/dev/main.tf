@@ -16,6 +16,7 @@
 #   observability → crypto (logs)
 #   agents       → crypto, state, auth
 #   pipeline     → crypto, state, messaging, auth, agents
+#   dashboard    → crypto, network, registry, state, messaging, auth, pipeline
 ################################################################################
 
 module "crypto" {
@@ -114,6 +115,18 @@ module "agents" {
   github_oauth = var.github_oauth
 }
 
+resource "aws_secretsmanager_secret" "github_webhook" {
+  name                    = "${var.project}-${var.env}/github-webhook-secret"
+  description             = "HMAC signing secret for the GitHub webhook receiver."
+  kms_key_id              = module.crypto.key_arns["secrets"]
+  recovery_window_in_days = 7
+
+  tags = {
+    Name      = "${var.project}-${var.env}-github-webhook-secret"
+    Component = "dashboard"
+  }
+}
+
 module "pipeline" {
   source = "../../modules/pipeline"
 
@@ -140,4 +153,44 @@ module "pipeline" {
   cognito_user_pool_arn = module.auth.user_pool_arn
   cognito_audience      = [module.auth.client_id]
   cognito_issuer_url    = module.auth.issuer_url
+}
+
+module "dashboard" {
+  source = "../../modules/dashboard"
+
+  env                = var.env
+  image_tag          = var.dashboard_image_tag
+  ecr_repository_url = module.registry.repository_urls["dashboard"]
+
+  vpc_id             = module.network.vpc_id
+  public_subnet_ids  = module.network.public_subnet_ids
+  private_subnet_ids = module.network.private_subnet_ids
+
+  logs_kms_key_arn        = module.crypto.key_arns["logs"]
+  alb_log_bucket          = module.state.artifacts_bucket
+  alb_acm_certificate_arn = var.dashboard_acm_certificate_arn
+
+  bus_name = module.messaging.bus_name
+  bus_arn  = module.messaging.bus_arn
+
+  runs_table            = module.state.runs_table
+  runs_table_arn        = module.state.runs_table_arn
+  approvals_table       = module.state.approvals_table
+  approvals_table_arn   = module.state.approvals_table_arn
+  idempotency_table     = module.state.idempotency_table
+  idempotency_table_arn = module.state.idempotency_table_arn
+
+  artifacts_bucket     = module.state.artifacts_bucket
+  artifacts_bucket_arn = module.state.artifacts_bucket_arn
+
+  hitl_handler_function_name = "${var.project}-${var.env}-hitl-handler"
+  hitl_handler_function_arn  = module.pipeline.lambda_arns["hitl_handler"]
+
+  github_webhook_secret_id  = aws_secretsmanager_secret.github_webhook.name
+  github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn
+
+  cognito_user_pool_arn       = module.auth.user_pool_arn
+  cognito_user_pool_id        = module.auth.user_pool_id
+  cognito_user_pool_client_id = module.auth.client_id
+  cognito_user_pool_domain    = module.auth.domain
 }
