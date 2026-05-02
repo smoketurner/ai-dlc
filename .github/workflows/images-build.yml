@@ -10,13 +10,6 @@ on:
       - "uv.lock"
       - ".github/workflows/images-build.yml"
   workflow_dispatch:
-    inputs:
-      agent:
-        description: Build a single agent only.
-        required: false
-        type: choice
-        options: [all, architect, implementer]
-        default: all
 
 permissions:
   contents: read
@@ -32,10 +25,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    if: |
-      github.event_name == 'push'
-      || github.event.inputs.agent == 'all'
-      || github.event.inputs.agent == matrix.agent
     strategy:
       fail-fast: false
       matrix:
