@@ -30,3 +30,9 @@ variable "memory_md_noncurrent_expiration_days" {
   type        = number
   default     = 90
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

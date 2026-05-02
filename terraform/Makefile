@@ -33,8 +33,10 @@ bootstrap-init:                  ## One-time: terraform init the bootstrap (stat
 bootstrap-apply:                 ## One-time: create the S3 tfstate bucket + DDB lock table.
 	$(TF) -chdir=bootstrap apply
 
-init:                            ## terraform init for the current ENV.
-	$(TF) -chdir=$(ENV_DIR) init
+init:                            ## terraform init for the current ENV (reads bootstrap outputs for the S3 backend).
+	@bucket=$$($(TF) -chdir=bootstrap output -raw tfstate_bucket); \
+	$(TF) -chdir=$(ENV_DIR) init \
+	  -backend-config="bucket=$$bucket"
 
 plan:                            ## terraform plan for the current ENV.
 	$(TF) -chdir=$(ENV_DIR) plan -out=tfplan

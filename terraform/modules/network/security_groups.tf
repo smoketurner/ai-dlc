@@ -5,7 +5,7 @@
 resource "aws_security_group" "agent_runtime" {
   name        = "${local.name}-agent-runtime"
   description = "AgentCore Runtime ENIs (when VPC mode is enabled)."
-  vpc_id      = aws_vpc.this.id
+  vpc_id      = module.vpc.vpc_id
 
   egress {
     description = "Egress to AWS service endpoints."
@@ -14,12 +14,17 @@ resource "aws_security_group" "agent_runtime" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.name}-agent-runtime"
+    Component = "network"
+  })
 }
 
 resource "aws_security_group" "lambda" {
   name        = "${local.name}-lambda"
   description = "Lambda functions in private subnets."
-  vpc_id      = aws_vpc.this.id
+  vpc_id      = module.vpc.vpc_id
 
   egress {
     description = "Egress to AWS service endpoints."
@@ -28,12 +33,17 @@ resource "aws_security_group" "lambda" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.name}-lambda"
+    Component = "network"
+  })
 }
 
 resource "aws_security_group" "vpc_endpoints" {
   name        = "${local.name}-vpce"
   description = "VPC interface endpoints."
-  vpc_id      = aws_vpc.this.id
+  vpc_id      = module.vpc.vpc_id
 
   ingress {
     description = "TLS from inside the VPC."
@@ -42,4 +52,9 @@ resource "aws_security_group" "vpc_endpoints" {
     protocol    = "tcp"
     cidr_blocks = [var.vpc_cidr]
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.name}-vpce"
+    Component = "network"
+  })
 }

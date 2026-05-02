@@ -30,9 +30,15 @@ resource "aws_dynamodb_table" "runs" {
   }
 
   global_secondary_index {
-    name            = "gsi1"
-    hash_key        = "gsi1pk"
-    range_key       = "gsi1sk"
+    name = "gsi1"
+    key_schema {
+      attribute_name = "gsi1pk"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "gsi1sk"
+      key_type       = "RANGE"
+    }
     projection_type = "ALL"
   }
 
@@ -47,6 +53,11 @@ resource "aws_dynamodb_table" "runs" {
     enabled     = true
     kms_key_arn = var.ddb_kms_key_arn
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.table_prefix}-runs"
+    Component = "state"
+  })
 }
 
 resource "aws_dynamodb_table" "idempotency_keys" {
@@ -72,6 +83,11 @@ resource "aws_dynamodb_table" "idempotency_keys" {
     enabled     = true
     kms_key_arn = var.ddb_kms_key_arn
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.table_prefix}-idempotency-keys"
+    Component = "state"
+  })
 }
 
 resource "aws_dynamodb_table" "approvals" {
@@ -98,9 +114,15 @@ resource "aws_dynamodb_table" "approvals" {
   }
 
   global_secondary_index {
-    name            = "gsi1"
-    hash_key        = "gsi1pk"
-    range_key       = "gsi1sk"
+    name = "gsi1"
+    key_schema {
+      attribute_name = "gsi1pk"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "gsi1sk"
+      key_type       = "RANGE"
+    }
     projection_type = "ALL"
   }
 
@@ -120,4 +142,9 @@ resource "aws_dynamodb_table" "approvals" {
     enabled     = true
     kms_key_arn = var.ddb_kms_key_arn
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.table_prefix}-approvals"
+    Component = "state"
+  })
 }

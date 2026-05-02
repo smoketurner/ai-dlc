@@ -23,22 +23,4 @@ data "aws_iam_policy_document" "tfstate_bucket" {
     }
   }
 
-  statement {
-    sid     = "DenyUnencryptedPuts"
-    effect  = "Deny"
-    actions = ["s3:PutObject"]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    resources = ["${aws_s3_bucket.tfstate.arn}/*"]
-
-    condition {
-      test     = "StringNotEquals"
-      variable = "s3:x-amz-server-side-encryption"
-      values   = ["aws:kms"]
-    }
-  }
 }

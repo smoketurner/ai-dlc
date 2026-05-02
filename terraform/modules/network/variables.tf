@@ -32,3 +32,9 @@ variable "high_availability" {
   type        = bool
   default     = false
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

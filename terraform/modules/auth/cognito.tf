@@ -35,6 +35,11 @@ resource "aws_cognito_user_pool" "this" {
 
   auto_verified_attributes = ["email"]
   deletion_protection      = "ACTIVE"
+
+  tags = merge(var.tags, {
+    Name      = local.pool_name
+    Component = "auth"
+  })
 }
 
 resource "aws_cognito_user_pool_domain" "this" {

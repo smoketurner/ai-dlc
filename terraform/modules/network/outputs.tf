@@ -1,13 +1,13 @@
 output "vpc_id" {
-  value = aws_vpc.this.id
+  value = module.vpc.vpc_id
 }
 
 output "public_subnet_ids" {
-  value = aws_subnet.public[*].id
+  value = module.vpc.public_subnets
 }
 
 output "private_subnet_ids" {
-  value = aws_subnet.private[*].id
+  value = module.vpc.private_subnets
 }
 
 output "agent_runtime_security_group_id" {
@@ -19,5 +19,5 @@ output "lambda_security_group_id" {
 }
 
 output "vpc_cidr" {
-  value = aws_vpc.this.cidr_block
+  value = module.vpc.vpc_cidr_block
 }

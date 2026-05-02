@@ -8,6 +8,11 @@ resource "aws_iam_role" "terraform" {
   name               = "${var.project}-github-actions-terraform"
   assume_role_policy = data.aws_iam_policy_document.terraform_assume.json
   description        = "Assumed by GitHub Actions for terraform plan/apply."
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}-github-actions-terraform"
+    Component = "ci_cd"
+  })
 }
 
 resource "aws_iam_role_policy" "terraform_inline" {
@@ -28,6 +33,11 @@ resource "aws_iam_role" "image_publisher" {
   name               = "${var.project}-github-actions-image-publisher"
   assume_role_policy = data.aws_iam_policy_document.image_publisher_assume.json
   description        = "Assumed by GitHub Actions to push container images to ECR."
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}-github-actions-image-publisher"
+    Component = "ci_cd"
+  })
 }
 
 resource "aws_iam_role_policy" "image_publisher" {

@@ -25,3 +25,9 @@ variable "image_publisher_branches" {
   type        = list(string)
   default     = ["main"]
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

@@ -26,3 +26,9 @@ variable "logout_urls" {
   type        = list(string)
   default     = []
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

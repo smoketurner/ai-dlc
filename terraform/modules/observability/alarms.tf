@@ -20,4 +20,9 @@ resource "aws_cloudwatch_metric_alarm" "daily_token_spend" {
     Currency    = "USD"
     ServiceName = "AmazonBedrock"
   }
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-daily-token-spend"
+    Component = "observability"
+  })
 }

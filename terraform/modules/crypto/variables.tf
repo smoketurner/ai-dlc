@@ -14,3 +14,9 @@ variable "deletion_window_in_days" {
   type        = number
   default     = 30
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

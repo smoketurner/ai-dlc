@@ -1,6 +1,6 @@
 # Bootstrap
 
-One-time Terraform module that creates the **S3 bucket + DynamoDB lock table** used by every environment's state. Run it manually with a **local** backend, then migrate the bootstrap's own state into the bucket it just provisioned.
+One-time Terraform module that creates the **S3 bucket** used by every environment's state. State is encrypted at rest with SSE-S3 (AES256). Locking is handled by S3 native lockfile (`use_lockfile = true`) — no DynamoDB lock table is required. Run it manually with a **local** backend, then migrate the bootstrap's own state into the bucket it just provisioned.
 
 ## First-run
 

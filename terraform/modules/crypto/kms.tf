@@ -9,6 +9,11 @@ resource "aws_kms_key" "this" {
   description             = "${var.project} ${var.env} ${each.key}"
   deletion_window_in_days = var.deletion_window_in_days
   enable_key_rotation     = true
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}-${var.env}-${each.key}"
+    Component = "crypto"
+  })
 }
 
 resource "aws_kms_alias" "this" {

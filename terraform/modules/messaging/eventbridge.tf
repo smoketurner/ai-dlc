@@ -7,8 +7,13 @@
 ################################################################################
 
 resource "aws_cloudwatch_event_bus" "this" {
-  name              = local.bus_name
+  name               = local.bus_name
   kms_key_identifier = var.kms_key_arn
+
+  tags = merge(var.tags, {
+    Name      = local.bus_name
+    Component = "messaging"
+  })
 }
 
 resource "aws_cloudwatch_event_archive" "this" {
@@ -21,6 +26,11 @@ resource "aws_cloudwatch_event_archive" "this" {
 resource "aws_schemas_registry" "this" {
   name        = "${var.project}.events"
   description = "Versioned event schemas for the ${var.project} platform."
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}.events"
+    Component = "messaging"
+  })
 }
 
 resource "aws_schemas_schema" "this" {
@@ -31,4 +41,9 @@ resource "aws_schemas_schema" "this" {
   type          = "JSONSchemaDraft4"
   description   = "Schema for ${each.key} (v1)."
   content       = file("${local.schema_dir}/${replace(each.key, ".", "_")}.json")
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}.events@${each.key}"
+    Component = "messaging"
+  })
 }

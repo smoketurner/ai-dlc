@@ -8,6 +8,11 @@
 
 resource "aws_s3_bucket" "artifacts" {
   bucket = local.artifacts_name
+
+  tags = merge(var.tags, {
+    Name      = local.artifacts_name
+    Component = "state"
+  })
 }
 
 resource "aws_s3_bucket_ownership_controls" "artifacts" {
@@ -76,6 +81,11 @@ resource "aws_s3_bucket_policy" "artifacts" {
 
 resource "aws_s3_bucket" "memory_md" {
   bucket = local.memory_md_name
+
+  tags = merge(var.tags, {
+    Name      = local.memory_md_name
+    Component = "state"
+  })
 }
 
 resource "aws_s3_bucket_ownership_controls" "memory_md" {

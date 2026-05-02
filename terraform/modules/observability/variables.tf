@@ -43,3 +43,9 @@ variable "agent_error_rate_threshold" {
   type        = number
   default     = 0.05
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

@@ -27,3 +27,9 @@ variable "tagged_image_retention_count" {
   type        = number
   default     = 100
 }
+
+variable "tags" {
+  description = "Additional tags applied to every taggable resource."
+  type        = map(string)
+  default     = {}
+}

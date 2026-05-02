@@ -19,6 +19,11 @@ resource "aws_ecr_repository" "this" {
   encryption_configuration {
     encryption_type = "AES256"
   }
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}/${each.key}"
+    Component = "registry"
+  })
 }
 
 resource "aws_ecr_lifecycle_policy" "this" {
