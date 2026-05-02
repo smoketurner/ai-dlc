@@ -6,31 +6,23 @@
 # Each module also stamps a per-resource Name and Component tag of its own.
 #
 # Module wiring follows the dependency graph:
-#   crypto       → no deps
 #   network      → no deps
 #   registry     → no deps
 #   ci_cd        → no deps
 #   auth         → no deps
-#   state        → crypto (s3-artifacts, dynamodb)
-#   messaging    → crypto (secrets)
-#   observability → crypto (logs)
-#   agents       → crypto, state, auth
-#   pipeline     → crypto, state, messaging, auth, agents
-#   dashboard    → crypto, network, registry, state, messaging, auth, pipeline
-#   improvement  → crypto, state, messaging
+#   state        → no deps
+#   messaging    → no deps
+#   observability → no deps
+#   agents       → state, auth
+#   pipeline     → state, messaging, auth, agents
+#   dashboard    → network, registry, state, messaging, auth, pipeline
+#   improvement  → state, messaging
 ################################################################################
-
-module "crypto" {
-  source = "../../modules/crypto"
-
-  env = var.env
-}
 
 module "network" {
   source = "../../modules/network"
 
-  env               = var.env
-  high_availability = false
+  env = var.env
 }
 
 module "registry" {
@@ -58,23 +50,19 @@ module "auth" {
 module "state" {
   source = "../../modules/state"
 
-  env             = var.env
-  s3_kms_key_arn  = module.crypto.key_arns["s3-artifacts"]
-  ddb_kms_key_arn = module.crypto.key_arns["dynamodb"]
+  env = var.env
 }
 
 module "messaging" {
   source = "../../modules/messaging"
 
-  env         = var.env
-  kms_key_arn = module.crypto.key_arns["secrets"]
+  env = var.env
 }
 
 module "observability" {
   source = "../../modules/observability"
 
   env                         = var.env
-  kms_key_arn                 = module.crypto.key_arns["logs"]
   alert_emails                = var.alert_emails
   daily_token_spend_alarm_usd = var.daily_token_spend_alarm_usd
 }
@@ -82,11 +70,7 @@ module "observability" {
 module "agents" {
   source = "../../modules/agents"
 
-  env                    = var.env
-  memory_kms_key_arn     = module.crypto.key_arns["memory"]
-  tokenvault_kms_key_arn = module.crypto.key_arns["tokenvault"]
-  logs_kms_key_arn       = module.crypto.key_arns["logs"]
-  s3_kms_key_arn         = module.crypto.key_arns["s3-artifacts"]
+  env = var.env
 
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
@@ -119,7 +103,6 @@ module "agents" {
 resource "aws_secretsmanager_secret" "github_webhook" {
   name                    = "${var.project}-${var.env}/github-webhook-secret"
   description             = "HMAC signing secret for the GitHub webhook receiver."
-  kms_key_id              = module.crypto.key_arns["secrets"]
   recovery_window_in_days = 7
 
   tags = {
@@ -131,8 +114,7 @@ resource "aws_secretsmanager_secret" "github_webhook" {
 module "pipeline" {
   source = "../../modules/pipeline"
 
-  env              = var.env
-  logs_kms_key_arn = module.crypto.key_arns["logs"]
+  env = var.env
 
   bus_name = module.messaging.bus_name
   bus_arn  = module.messaging.bus_arn
@@ -167,7 +149,6 @@ module "dashboard" {
   public_subnet_ids  = module.network.public_subnet_ids
   private_subnet_ids = module.network.private_subnet_ids
 
-  logs_kms_key_arn        = module.crypto.key_arns["logs"]
   alb_log_bucket          = module.state.artifacts_bucket
   alb_acm_certificate_arn = var.dashboard_acm_certificate_arn
 
@@ -199,9 +180,7 @@ module "dashboard" {
 module "improvement" {
   source = "../../modules/improvement"
 
-  env              = var.env
-  logs_kms_key_arn = module.crypto.key_arns["logs"]
-  s3_kms_key_arn   = module.crypto.key_arns["s3-artifacts"]
+  env = var.env
 
   bus_name = module.messaging.bus_name
   bus_arn  = module.messaging.bus_arn

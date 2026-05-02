@@ -34,11 +34,9 @@ module "tool_lambda" {
   environment_variables = {
     AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket
     AIDLC_MEMORY_MD_BUCKET = var.memory_md_bucket
-    AIDLC_S3_KMS_KEY_ARN   = var.s3_kms_key_arn
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = each.key == "artifact_tool"
   policy_statements = each.key == "artifact_tool" ? {
@@ -56,11 +54,6 @@ module "tool_lambda" {
         var.memory_md_bucket_arn,
         "${var.memory_md_bucket_arn}/*",
       ]
-    }
-    kms_use = {
-      effect    = "Allow"
-      actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:Decrypt"]
-      resources = [var.s3_kms_key_arn]
     }
   } : {}
 

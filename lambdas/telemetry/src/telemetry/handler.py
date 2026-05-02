@@ -85,11 +85,6 @@ def model_id() -> str:
     return os.environ.get("AIDLC_TELEMETRY_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def kms_key_arn() -> str:
-    """KMS key for SSE-KMS on S3 puts."""
-    return os.environ["AIDLC_S3_KMS_KEY_ARN"]
-
-
 @logger.inject_lambda_context(log_event=False)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Categorize one rejection event."""
@@ -220,8 +215,6 @@ def persist_record(*, run_id: str, gate_ref: str, record: dict[str, Any]) -> Non
         Key=key,
         Body=json.dumps(record).encode("utf-8"),
         ContentType="application/json; charset=utf-8",
-        ServerSideEncryption="aws:kms",
-        SSEKMSKeyId=kms_key_arn(),
     )
 
 

@@ -44,7 +44,7 @@ data "aws_iam_policy_document" "scheduler_inline" {
 resource "aws_iam_role" "scheduler" {
   name               = "${local.prefix}-eval-scheduler"
   assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
-  description        = "EventBridge → eval-runner state machine."
+  description        = "EventBridge -> eval-runner state machine."
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-eval-scheduler"
@@ -67,44 +67,27 @@ resource "aws_cloudwatch_event_target" "eval_runner" {
   input = jsonencode({})
 }
 
-# CloudWatch metric math + alarm: trailing 7-day average vs trailing 30-day
-# baseline. Fires when 7-day < 30-day - threshold for two consecutive days.
+# Drift alarm: fires when 5 of the trailing 7 daily pass rates fall below
+# (1.0 - eval_drift_threshold). CloudWatch metric math can't compare two
+# rolling windows of different lengths in a single alarm — all metric{}
+# blocks must share a period. A proper "vs 30-day baseline" rule would
+# require the eval runner to emit pre-aggregated metrics (e.g.,
+# PassRateWeekly + PassRateBaseline) for the alarm to subtract.
 
 resource "aws_cloudwatch_metric_alarm" "eval_drift" {
   alarm_name          = "${local.prefix}-eval-drift"
-  alarm_description   = "Eval-suite trailing-week pass rate dropped vs the 30-day baseline."
+  alarm_description   = "Eval-suite pass rate is below the floor on most of the last 7 days."
   comparison_operator = "LessThanThreshold"
-  evaluation_periods  = 2
-  threshold           = -1 * var.eval_drift_threshold
+  evaluation_periods  = 7
+  datapoints_to_alarm = 5
+  threshold           = 1.0 - var.eval_drift_threshold
   treat_missing_data  = "notBreaching"
   alarm_actions       = [var.alerts_topic_arn]
 
-  metric_query {
-    id          = "delta"
-    expression  = "weekly - baseline"
-    label       = "weekly minus 30-day baseline"
-    return_data = true
-  }
-
-  metric_query {
-    id = "weekly"
-    metric {
-      namespace   = "AIDLC/Evals"
-      metric_name = "PassRate"
-      period      = 86400 * 7
-      stat        = "Average"
-    }
-  }
-
-  metric_query {
-    id = "baseline"
-    metric {
-      namespace   = "AIDLC/Evals"
-      metric_name = "PassRate"
-      period      = 86400 * 30
-      stat        = "Average"
-    }
-  }
+  namespace   = "AIDLC/Evals"
+  metric_name = "PassRate"
+  period      = 86400
+  statistic   = "Average"
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-eval-drift"

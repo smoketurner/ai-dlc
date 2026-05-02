@@ -31,7 +31,6 @@ resource "aws_bedrockagentcore_memory" "this" {
   name                      = local.memory_id
   description               = "Cross-session memory for ${var.project} ${var.env} agents."
   event_expiry_duration     = var.memory_event_expiry_days
-  encryption_key_arn        = var.memory_kms_key_arn
   memory_execution_role_arn = aws_iam_role.memory_execution.arn
 
   tags = merge(var.tags, {
@@ -41,7 +40,7 @@ resource "aws_bedrockagentcore_memory" "this" {
 }
 
 resource "aws_bedrockagentcore_memory_strategy" "semantic_project" {
-  name        = "semantic-project"
+  name        = "semantic_project"
   memory_id   = aws_bedrockagentcore_memory.this.id
   type        = "SEMANTIC"
   description = "Project-scoped semantic facts."
@@ -49,7 +48,7 @@ resource "aws_bedrockagentcore_memory_strategy" "semantic_project" {
 }
 
 resource "aws_bedrockagentcore_memory_strategy" "user_preferences" {
-  name        = "user-preferences"
+  name        = "user_preferences"
   memory_id   = aws_bedrockagentcore_memory.this.id
   type        = "USER_PREFERENCE"
   description = "Per-user preferences carried across sessions."
@@ -57,7 +56,7 @@ resource "aws_bedrockagentcore_memory_strategy" "user_preferences" {
 }
 
 resource "aws_bedrockagentcore_memory_strategy" "summarization_session" {
-  name        = "summarization-session"
+  name        = "summarization_session"
   memory_id   = aws_bedrockagentcore_memory.this.id
   type        = "SUMMARIZATION"
   description = "Per-session conversation summaries."

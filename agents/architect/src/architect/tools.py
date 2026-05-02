@@ -44,11 +44,6 @@ def memory_md_bucket() -> str:
     return os.environ["AIDLC_MEMORY_MD_BUCKET"]
 
 
-def kms_key_arn() -> str:
-    """Customer-managed KMS key used for SSE-KMS on S3 puts."""
-    return os.environ["AIDLC_S3_KMS_KEY_ARN"]
-
-
 def read_memory_md(project_slug: str) -> str:
     """Read the canonical MEMORY.md for a project.
 
@@ -87,8 +82,6 @@ def write_spec_doc(spec_slug: str, doc: str, content: str) -> str:
         Key=key,
         Body=content.encode("utf-8"),
         ContentType="text/markdown; charset=utf-8",
-        ServerSideEncryption="aws:kms",
-        SSEKMSKeyId=kms_key_arn(),
     )
     return f"s3://{bucket}/{key}"
 

@@ -44,7 +44,6 @@ def put_text(
             Key=key,
             Body=body.encode("utf-8"),
             ContentType=content_type,
-            ServerSideEncryption="aws:kms",
         )
     except (BotoCoreError, ClientError) as exc:
         raise S3ArtifactError("put_text failed", bucket=bucket, key=key) from exc

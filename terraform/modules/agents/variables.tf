@@ -53,26 +53,6 @@ variable "ecr_repository_urls" {
   type        = map(string)
 }
 
-variable "memory_kms_key_arn" {
-  description = "KMS key ARN that encrypts the AgentCore Memory data."
-  type        = string
-}
-
-variable "tokenvault_kms_key_arn" {
-  description = "KMS key ARN used as the customer master key for the AgentCore token vault."
-  type        = string
-}
-
-variable "logs_kms_key_arn" {
-  description = "KMS key ARN for CloudWatch log groups owned by this module (Lambda logs)."
-  type        = string
-}
-
-variable "s3_kms_key_arn" {
-  description = "KMS key ARN used by the artifact_tool Lambda to encrypt S3 puts."
-  type        = string
-}
-
 variable "artifacts_bucket" {
   description = "S3 bucket name for run artifacts (read/write by artifact_tool)."
   type        = string

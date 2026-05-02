@@ -22,7 +22,12 @@ TF     ?= terraform
 TFLINT ?= tflint
 ZIZMOR ?= uvx zizmor
 
-.PHONY: help bootstrap-init bootstrap-apply init plan apply destroy fmt fmt-check validate tflint zizmor
+.PHONY: help bootstrap-init bootstrap-apply init plan apply destroy fmt fmt-check validate tflint zizmor pull-build-image
+
+# terraform-aws-modules/lambda v8 tries to build the docker_image locally
+# when it isn't present, instead of pulling it. Pulling once up-front
+# satisfies its `docker images` lookup and avoids the build path entirely.
+LAMBDA_BUILD_IMAGE := public.ecr.aws/sam/build-python3.13:latest-arm64
 
 help:                            ## Show this help.
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -38,10 +43,13 @@ init:                            ## terraform init for the current ENV (reads bo
 	$(TF) -chdir=$(ENV_DIR) init \
 	  -backend-config="bucket=$$bucket"
 
-plan:                            ## terraform plan for the current ENV.
+pull-build-image:                ## Pull the SAM Lambda build image used by the lambda module.
+	docker pull $(LAMBDA_BUILD_IMAGE)
+
+plan: pull-build-image           ## terraform plan for the current ENV.
 	$(TF) -chdir=$(ENV_DIR) plan -out=tfplan
 
-apply:                           ## terraform apply the most recent plan.
+apply: pull-build-image          ## terraform apply the most recent plan.
 	$(TF) -chdir=$(ENV_DIR) apply tfplan
 
 destroy:                         ## terraform destroy the current ENV (DANGEROUS).

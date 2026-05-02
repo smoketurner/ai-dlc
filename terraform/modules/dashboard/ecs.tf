@@ -65,7 +65,6 @@ resource "aws_iam_role_policy_attachment" "execution_managed" {
 resource "aws_cloudwatch_log_group" "task" {
   name              = local.log_group_name
   retention_in_days = var.log_retention_days
-  kms_key_id        = var.logs_kms_key_arn
 
   tags = merge(var.tags, {
     Name      = local.log_group_name
@@ -146,12 +145,20 @@ resource "aws_ecs_service" "this" {
   cluster         = aws_ecs_cluster.this.id
   task_definition = aws_ecs_task_definition.this[0].arn
   desired_count   = var.desired_count
-  launch_type     = "FARGATE"
 
+  capacity_provider_strategy {
+    capacity_provider = "FARGATE_SPOT"
+    weight            = 100
+    base              = 0
+  }
+
+  # Public subnets + public IP because there's no NAT — the task uses its
+  # own ENI for outbound AWS API calls. Inbound is still gated by the
+  # tasks SG, which only allows traffic from the ALB SG.
   network_configuration {
-    subnets          = var.private_subnet_ids
+    subnets          = var.public_subnet_ids
     security_groups  = [aws_security_group.tasks.id]
-    assign_public_ip = false
+    assign_public_ip = true
   }
 
   load_balancer {
@@ -200,5 +207,40 @@ resource "aws_appautoscaling_policy" "cpu" {
     }
     scale_in_cooldown  = 120
     scale_out_cooldown = 60
+  }
+}
+
+# Scheduled scale-to-0 between 23:00–07:00 America/New_York (DST handled
+# automatically by the timezone field). Two actions: down at 23:00, up at 07:00.
+
+resource "aws_appautoscaling_scheduled_action" "scale_down_overnight" {
+  count = local.has_image ? 1 : 0
+
+  name               = "${local.service_name}-scale-down-overnight"
+  service_namespace  = aws_appautoscaling_target.this[0].service_namespace
+  resource_id        = aws_appautoscaling_target.this[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.this[0].scalable_dimension
+  schedule           = "cron(0 23 * * ? *)"
+  timezone           = "America/New_York"
+
+  scalable_target_action {
+    min_capacity = 0
+    max_capacity = 0
+  }
+}
+
+resource "aws_appautoscaling_scheduled_action" "scale_up_morning" {
+  count = local.has_image ? 1 : 0
+
+  name               = "${local.service_name}-scale-up-morning"
+  service_namespace  = aws_appautoscaling_target.this[0].service_namespace
+  resource_id        = aws_appautoscaling_target.this[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.this[0].scalable_dimension
+  schedule           = "cron(0 7 * * ? *)"
+  timezone           = "America/New_York"
+
+  scalable_target_action {
+    min_capacity = var.min_capacity
+    max_capacity = var.max_capacity
   }
 }

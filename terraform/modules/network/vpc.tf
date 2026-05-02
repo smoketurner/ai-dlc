@@ -1,5 +1,10 @@
 ################################################################################
-# VPC + subnets + IGW + NAT + routing — delegated to terraform-aws-modules/vpc.
+# VPC + subnets + IGW + routing — delegated to terraform-aws-modules/vpc.
+#
+# No NAT gateway: the only VPC-resident workload (the dashboard Fargate task)
+# runs in a public subnet with a public IP for AWS API egress. Inbound is
+# still gated by the ALB security group. Private subnets remain for future
+# workloads but currently have no internet egress route.
 ################################################################################
 
 module "vpc" {
@@ -13,9 +18,7 @@ module "vpc" {
   public_subnets  = var.public_subnets
   private_subnets = var.private_subnets
 
-  enable_nat_gateway     = true
-  single_nat_gateway     = !var.high_availability
-  one_nat_gateway_per_az = var.high_availability
+  enable_nat_gateway = false
 
   enable_dns_hostnames    = true
   enable_dns_support      = true

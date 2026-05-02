@@ -13,6 +13,13 @@ resource "aws_cognito_user_pool" "this" {
   name              = local.pool_name
   mfa_configuration = var.mfa_configuration
 
+  # Cognito requires at least one MFA factor to be enabled whenever
+  # mfa_configuration is OPTIONAL or ON. TOTP is the right pick for an
+  # operator-only pool — no SMS/email costs.
+  software_token_mfa_configuration {
+    enabled = var.mfa_configuration != "OFF"
+  }
+
   password_policy {
     minimum_length                   = 12
     require_lowercase                = true

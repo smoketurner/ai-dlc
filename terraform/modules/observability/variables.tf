@@ -9,11 +9,6 @@ variable "env" {
   type        = string
 }
 
-variable "kms_key_arn" {
-  description = "KMS key ARN for log group encryption."
-  type        = string
-}
-
 variable "alert_emails" {
   description = "Email addresses to subscribe to the alert SNS topic."
   type        = list(string)

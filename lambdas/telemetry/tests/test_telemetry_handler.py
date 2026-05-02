@@ -17,7 +17,6 @@ from telemetry.handler import bedrock, build_record, ddb, handler, s3
 
 ARTIFACTS = "test-artifacts"
 RUNS = "test-runs"
-KMS_ARN = "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000"
 
 
 def ctx() -> LambdaContext:
@@ -48,7 +47,6 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Set env vars + create the runs table + artifacts bucket under moto."""
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", ARTIFACTS)
     monkeypatch.setenv("AIDLC_RUNS_TABLE", RUNS)
-    monkeypatch.setenv("AIDLC_S3_KMS_KEY_ARN", KMS_ARN)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     s3.cache_clear()
     ddb.cache_clear()

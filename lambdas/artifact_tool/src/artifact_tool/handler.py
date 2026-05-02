@@ -46,11 +46,6 @@ def memory_md_bucket() -> str:
     return os.environ["AIDLC_MEMORY_MD_BUCKET"]
 
 
-def kms_key_arn() -> str:
-    """Return the S3 KMS key ARN from the env."""
-    return os.environ["AIDLC_S3_KMS_KEY_ARN"]
-
-
 class BaseOp(BaseModel):
     """Common configuration for every input model."""
 
@@ -97,14 +92,12 @@ class WriteMemoryMdInput(BaseOp):
 
 
 def put_text(bucket: str, key: str, content: str) -> None:
-    """KMS-encrypted UTF-8 PUT to ``bucket``/``key``."""
+    """UTF-8 PUT to ``bucket``/``key`` (bucket default SSE applies)."""
     s3().put_object(
         Bucket=bucket,
         Key=key,
         Body=content.encode("utf-8"),
         ContentType="text/markdown; charset=utf-8",
-        ServerSideEncryption="aws:kms",
-        SSEKMSKeyId=kms_key_arn(),
     )
 
 

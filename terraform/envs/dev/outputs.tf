@@ -3,13 +3,6 @@
 # via `terraform output -json`.
 ################################################################################
 
-# crypto -----------------------------------------------------------------------
-
-output "kms_key_arns" {
-  description = "Map of KMS purpose → key ARN."
-  value       = module.crypto.key_arns
-}
-
 # network ----------------------------------------------------------------------
 
 output "vpc_id" {

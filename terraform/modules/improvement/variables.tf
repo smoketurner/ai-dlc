@@ -15,16 +15,6 @@ variable "lambda_log_retention_days" {
   default     = 30
 }
 
-variable "logs_kms_key_arn" {
-  description = "KMS key ARN for CloudWatch log groups."
-  type        = string
-}
-
-variable "s3_kms_key_arn" {
-  description = "KMS key used by SSE-KMS on the artifacts bucket."
-  type        = string
-}
-
 variable "bus_name" {
   description = "EventBridge bus name (rejection events come from here)."
   type        = string

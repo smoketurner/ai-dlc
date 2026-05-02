@@ -129,11 +129,6 @@ def runs_table() -> str:
     return os.environ["AIDLC_RUNS_TABLE"]
 
 
-def kms_key_arn() -> str:
-    """KMS key for SSE-KMS on result puts."""
-    return os.environ["AIDLC_S3_KMS_KEY_ARN"]
-
-
 def cases_key() -> str:
     """S3 key the case index is uploaded to."""
     return os.environ.get("AIDLC_EVAL_CASES_KEY", "evals/cases.yaml")
@@ -211,8 +206,6 @@ def record_result(req: RecordInput) -> dict[str, Any]:
         Key=key,
         Body=json.dumps(record).encode("utf-8"),
         ContentType="application/json; charset=utf-8",
-        ServerSideEncryption="aws:kms",
-        SSEKMSKeyId=kms_key_arn(),
     )
     cw().put_metric_data(
         Namespace=METRIC_NAMESPACE,

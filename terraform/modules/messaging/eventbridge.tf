@@ -7,8 +7,7 @@
 ################################################################################
 
 resource "aws_cloudwatch_event_bus" "this" {
-  name               = local.bus_name
-  kms_key_identifier = var.kms_key_arn
+  name = local.bus_name
 
   tags = merge(var.tags, {
     Name      = local.bus_name

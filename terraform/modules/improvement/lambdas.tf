@@ -28,7 +28,6 @@ module "telemetry" {
   environment_variables = {
     AIDLC_ARTIFACTS_BUCKET      = var.artifacts_bucket
     AIDLC_RUNS_TABLE            = var.runs_table
-    AIDLC_S3_KMS_KEY_ARN        = var.s3_kms_key_arn
     AIDLC_TELEMETRY_MODEL_ID    = var.telemetry_model_id
     POWERTOOLS_SERVICE_NAME     = "telemetry"
     POWERTOOLS_LOG_LEVEL        = "INFO"
@@ -36,7 +35,6 @@ module "telemetry" {
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = true
   policy_statements = {
@@ -57,11 +55,6 @@ module "telemetry" {
         "arn:aws:bedrock:*::foundation-model/*",
         "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
       ]
-    }
-    kms_use = {
-      effect    = "Allow"
-      actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:Decrypt"]
-      resources = [var.s3_kms_key_arn]
     }
   }
 
@@ -94,14 +87,12 @@ module "few_shot_miner" {
   environment_variables = {
     AIDLC_ARTIFACTS_BUCKET      = var.artifacts_bucket
     AIDLC_RUNS_TABLE            = var.runs_table
-    AIDLC_S3_KMS_KEY_ARN        = var.s3_kms_key_arn
     POWERTOOLS_SERVICE_NAME     = "few_shot_miner"
     POWERTOOLS_LOG_LEVEL        = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = true
   policy_statements = {
@@ -124,11 +115,6 @@ module "few_shot_miner" {
         "dynamodb:ListStreams",
       ]
       resources = [var.runs_stream_arn]
-    }
-    kms_use = {
-      effect    = "Allow"
-      actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
-      resources = [var.s3_kms_key_arn]
     }
   }
 

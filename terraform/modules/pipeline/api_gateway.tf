@@ -43,7 +43,6 @@ resource "aws_apigatewayv2_authorizer" "jwt" {
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/apigateway/${local.prefix}-api"
   retention_in_days = var.lambda_log_retention_days
-  kms_key_id        = var.logs_kms_key_arn
 
   tags = merge(var.tags, {
     Name      = "/aws/apigateway/${local.prefix}-api"

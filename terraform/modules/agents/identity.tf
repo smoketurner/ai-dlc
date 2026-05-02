@@ -1,8 +1,8 @@
 ################################################################################
-# Identity + token vault.
+# Identity.
 #
 #  * One workload identity per agent (name → ARN map exposed via outputs).
-#  * Token vault CMK rotation pinned to our customer-managed key.
+#  * Token vault uses the AWS service-managed key (default).
 #  * Optional GitHub OAuth2 credential provider — gated by var.github_oauth.
 #
 # Workload identity ARNs feed into per-agent runtime roles (Phase 4) and are
@@ -14,13 +14,6 @@ resource "aws_bedrockagentcore_workload_identity" "agent" {
 
   name                                = "${local.prefix}-${each.key}"
   allowed_resource_oauth2_return_urls = each.value.allowed_resource_oauth2_return_urls
-}
-
-resource "aws_bedrockagentcore_token_vault_cmk" "this" {
-  kms_configuration {
-    key_type    = "CustomerManagedKey"
-    kms_key_arn = var.tokenvault_kms_key_arn
-  }
 }
 
 resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {

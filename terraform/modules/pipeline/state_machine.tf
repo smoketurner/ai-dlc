@@ -27,7 +27,6 @@ resource "aws_iam_role_policy" "states_inline" {
 resource "aws_cloudwatch_log_group" "states" {
   name              = "/aws/states/${local.prefix}-sdlc"
   retention_in_days = var.lambda_log_retention_days
-  kms_key_id        = var.logs_kms_key_arn
 
   tags = merge(var.tags, {
     Name      = "/aws/states/${local.prefix}-sdlc"

@@ -14,7 +14,6 @@ from moto import mock_aws
 
 ARTIFACTS = "test-artifacts"
 MEMORY_MD = "test-memory-md"
-KMS_ARN = "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000"
 
 
 def ctx() -> LambdaContext:
@@ -35,7 +34,6 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Set env vars + spin up a moto-mocked S3 with the two buckets."""
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", ARTIFACTS)
     monkeypatch.setenv("AIDLC_MEMORY_MD_BUCKET", MEMORY_MD)
-    monkeypatch.setenv("AIDLC_S3_KMS_KEY_ARN", KMS_ARN)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     s3.cache_clear()
     with mock_aws():

@@ -1,7 +1,7 @@
 ################################################################################
 # DynamoDB tables: runs, idempotency_keys, approvals.
 #
-# All tables: PAY_PER_REQUEST, KMS-SSE with the customer-managed key, PITR on.
+# All tables: PAY_PER_REQUEST, AWS-owned key SSE (default), PITR on.
 # Streams enabled on `runs` and `approvals` so the projector Lambda can emit
 # AgentCore Memory CreateEvents and update the dashboard read model.
 ################################################################################
@@ -49,11 +49,6 @@ resource "aws_dynamodb_table" "runs" {
     enabled = true
   }
 
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = var.ddb_kms_key_arn
-  }
-
   tags = merge(var.tags, {
     Name      = "${local.table_prefix}-runs"
     Component = "state"
@@ -77,11 +72,6 @@ resource "aws_dynamodb_table" "idempotency_keys" {
 
   point_in_time_recovery {
     enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = var.ddb_kms_key_arn
   }
 
   tags = merge(var.tags, {
@@ -136,11 +126,6 @@ resource "aws_dynamodb_table" "approvals" {
 
   point_in_time_recovery {
     enabled = true
-  }
-
-  server_side_encryption {
-    enabled     = true
-    kms_key_arn = var.ddb_kms_key_arn
   }
 
   tags = merge(var.tags, {

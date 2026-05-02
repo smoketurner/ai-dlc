@@ -27,12 +27,6 @@ variable "private_subnets" {
   default     = ["10.40.32.0/20", "10.40.48.0/20"]
 }
 
-variable "high_availability" {
-  description = "Provision a NAT gateway per AZ when true; one shared NAT when false."
-  type        = bool
-  default     = false
-}
-
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

@@ -83,12 +83,6 @@ data "aws_iam_policy_document" "runtime_inline" {
   }
 
   statement {
-    sid       = "S3KmsUse"
-    actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:Decrypt"]
-    resources = [var.s3_kms_key_arn]
-  }
-
-  statement {
     sid = "AgentCoreMemory"
     actions = [
       "bedrock-agentcore:CreateEvent",
@@ -174,7 +168,6 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     AIDLC_ENV               = var.env
     AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
     AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
-    AIDLC_S3_KMS_KEY_ARN    = var.s3_kms_key_arn
     AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
     AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
     AIDLC_BEDROCK_MODEL_ID  = each.value.bedrock_model_id

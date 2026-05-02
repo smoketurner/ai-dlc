@@ -8,10 +8,8 @@
 ################################################################################
 
 resource "aws_sqs_queue" "hitl_approvals_dlq" {
-  name                              = "${local.prefix}-hitl-approvals-dlq"
-  kms_master_key_id                 = var.kms_key_arn
-  kms_data_key_reuse_period_seconds = 300
-  message_retention_seconds         = 1209600 # 14 days
+  name                      = "${local.prefix}-hitl-approvals-dlq"
+  message_retention_seconds = 1209600 # 14 days
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-hitl-approvals-dlq"
@@ -20,11 +18,9 @@ resource "aws_sqs_queue" "hitl_approvals_dlq" {
 }
 
 resource "aws_sqs_queue" "hitl_approvals" {
-  name                              = "${local.prefix}-hitl-approvals"
-  visibility_timeout_seconds        = var.hitl_visibility_seconds
-  message_retention_seconds         = 1209600
-  kms_master_key_id                 = var.kms_key_arn
-  kms_data_key_reuse_period_seconds = 300
+  name                       = "${local.prefix}-hitl-approvals"
+  visibility_timeout_seconds = var.hitl_visibility_seconds
+  message_retention_seconds  = 1209600
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.hitl_approvals_dlq.arn
@@ -38,10 +34,8 @@ resource "aws_sqs_queue" "hitl_approvals" {
 }
 
 resource "aws_sqs_queue" "eventbridge_dlq" {
-  name                              = "${local.prefix}-eb-dlq"
-  kms_master_key_id                 = var.kms_key_arn
-  kms_data_key_reuse_period_seconds = 300
-  message_retention_seconds         = 1209600
+  name                      = "${local.prefix}-eb-dlq"
+  message_retention_seconds = 1209600
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-eb-dlq"

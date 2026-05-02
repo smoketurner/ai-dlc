@@ -9,11 +9,6 @@ variable "env" {
   type        = string
 }
 
-variable "kms_key_arn" {
-  description = "KMS key ARN for SSE on the bus, archive, and queues."
-  type        = string
-}
-
 variable "archive_retention_days" {
   description = "Days to retain events in the EventBridge archive."
   type        = number

@@ -36,7 +36,6 @@ module "entry_adapter" {
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = true
   policy_statements = {
@@ -86,7 +85,6 @@ module "hitl_handler" {
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = true
   policy_statements = {
@@ -137,7 +135,6 @@ module "event_projector" {
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = true
   policy_statements = {

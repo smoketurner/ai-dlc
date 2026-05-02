@@ -27,7 +27,6 @@ module "eval_runner" {
   environment_variables = {
     AIDLC_ARTIFACTS_BUCKET      = var.artifacts_bucket
     AIDLC_RUNS_TABLE            = var.runs_table
-    AIDLC_S3_KMS_KEY_ARN        = var.s3_kms_key_arn
     AIDLC_EVAL_CASES_KEY        = "evals/cases.yaml"
     POWERTOOLS_SERVICE_NAME     = "eval_runner"
     POWERTOOLS_LOG_LEVEL        = "INFO"
@@ -35,7 +34,6 @@ module "eval_runner" {
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-  cloudwatch_logs_kms_key_id        = var.logs_kms_key_arn
 
   attach_policy_statements = true
   policy_statements = {
@@ -53,11 +51,6 @@ module "eval_runner" {
       effect    = "Allow"
       actions   = ["cloudwatch:PutMetricData"]
       resources = ["*"]
-    }
-    kms_use = {
-      effect    = "Allow"
-      actions   = ["kms:Encrypt", "kms:GenerateDataKey", "kms:Decrypt"]
-      resources = [var.s3_kms_key_arn]
     }
   }
 

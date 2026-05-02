@@ -30,7 +30,7 @@ variable "eval_max_concurrency" {
 }
 
 variable "eval_drift_threshold" {
-  description = "If trailing-week pass rate < (trailing-30-day baseline - this), the drift alarm fires. Expressed as a fraction (0.15 = 15 percentage points)."
+  description = "Tolerable drop from a perfect (1.0) pass rate. The drift alarm fires when 5 of the last 7 days have PassRate < (1.0 - this). Fraction (0.15 = alarm below 0.85)."
   type        = number
   default     = 0.15
 }
@@ -124,7 +124,6 @@ resource "aws_iam_role_policy" "eval_states_inline" {
 resource "aws_cloudwatch_log_group" "eval_states" {
   name              = "/aws/states/${local.prefix}-eval-runner"
   retention_in_days = var.lambda_log_retention_days
-  kms_key_id        = var.logs_kms_key_arn
 
   tags = merge(var.tags, {
     Name      = "/aws/states/${local.prefix}-eval-runner"

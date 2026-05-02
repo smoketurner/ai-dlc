@@ -35,11 +35,6 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
-variable "logs_kms_key_arn" {
-  description = "KMS key ARN for CloudWatch log groups."
-  type        = string
-}
-
 variable "alb_log_bucket" {
   description = "S3 bucket for ALB access logs (existing artifacts bucket reuses fine in dev)."
   type        = string

@@ -61,11 +61,6 @@ def runs_table() -> str:
     return os.environ["AIDLC_RUNS_TABLE"]
 
 
-def kms_key_arn() -> str:
-    """KMS key for SSE-KMS on S3 puts."""
-    return os.environ["AIDLC_S3_KMS_KEY_ARN"]
-
-
 @logger.inject_lambda_context(log_event=False)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Process one DynamoDB Streams batch."""
@@ -226,6 +221,4 @@ def write_example(kind: str, *, run_id: str, ix: int, record: dict[str, Any]) ->
         Key=key,
         Body=json.dumps(record).encode("utf-8"),
         ContentType="application/json; charset=utf-8",
-        ServerSideEncryption="aws:kms",
-        SSEKMSKeyId=kms_key_arn(),
     )

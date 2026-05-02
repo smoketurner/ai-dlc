@@ -22,25 +22,6 @@ data "aws_iam_policy_document" "bucket_baseline_artifacts" {
       values   = ["false"]
     }
   }
-
-  statement {
-    sid     = "DenyUnencryptedPuts"
-    effect  = "Deny"
-    actions = ["s3:PutObject"]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    resources = ["${aws_s3_bucket.artifacts.arn}/*"]
-
-    condition {
-      test     = "StringNotEquals"
-      variable = "s3:x-amz-server-side-encryption"
-      values   = ["aws:kms"]
-    }
-  }
 }
 
 data "aws_iam_policy_document" "bucket_baseline_memory_md" {
@@ -63,25 +44,6 @@ data "aws_iam_policy_document" "bucket_baseline_memory_md" {
       test     = "Bool"
       variable = "aws:SecureTransport"
       values   = ["false"]
-    }
-  }
-
-  statement {
-    sid     = "DenyUnencryptedPuts"
-    effect  = "Deny"
-    actions = ["s3:PutObject"]
-
-    principals {
-      type        = "*"
-      identifiers = ["*"]
-    }
-
-    resources = ["${aws_s3_bucket.memory_md.arn}/*"]
-
-    condition {
-      test     = "StringNotEquals"
-      variable = "s3:x-amz-server-side-encryption"
-      values   = ["aws:kms"]
     }
   }
 }
