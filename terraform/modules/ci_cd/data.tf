@@ -127,3 +127,50 @@ data "aws_iam_policy_document" "image_publisher_inline" {
     ]
   }
 }
+
+data "aws_iam_policy_document" "evals_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = concat([local.pr_subject], local.branch_subjects_evals)
+    }
+  }
+}
+
+data "aws_iam_policy_document" "evals_inline" {
+  statement {
+    sid       = "SyncEvalCases"
+    actions   = ["s3:PutObject", "s3:GetObject"]
+    resources = ["arn:aws:s3:::${var.project}-*-artifacts-${data.aws_caller_identity.current.account_id}-*/evals/*"]
+  }
+
+  statement {
+    sid       = "StartEvalRun"
+    actions   = ["states:StartExecution"]
+    resources = ["arn:aws:states:*:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project}-*-eval-runner"]
+  }
+
+  statement {
+    sid = "WatchEvalRun"
+    actions = [
+      "states:DescribeExecution",
+      "states:GetExecutionHistory",
+      "states:StopExecution",
+    ]
+    resources = ["arn:aws:states:*:${data.aws_caller_identity.current.account_id}:execution:${var.project}-*-eval-runner:*"]
+  }
+}

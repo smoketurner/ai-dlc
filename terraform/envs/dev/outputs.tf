@@ -204,3 +204,8 @@ output "github_actions_image_publisher_role_arn" {
   description = "Role assumed by GitHub Actions to push images to ECR."
   value       = module.ci_cd.image_publisher_role_arn
 }
+
+output "github_actions_evals_role_arn" {
+  description = "Role assumed by the evals workflow to sync cases.yaml + start the eval state machine."
+  value       = module.ci_cd.evals_role_arn
+}

@@ -78,8 +78,11 @@ resource "aws_cognito_user_pool_client" "this" {
     ["openid", "email", "profile"],
     [for s in local.scope_names : "${aws_cognito_resource_server.this.identifier}/${s}"],
   )
-  callback_urls                = var.callback_urls
-  logout_urls                  = var.logout_urls
+  # AWS rejects empty callback_urls when the `code` flow is enabled, so on
+  # first apply we seed a localhost placeholder. Override `callback_urls`
+  # / `logout_urls` once the dashboard ALB DNS is known.
+  callback_urls                = length(var.callback_urls) > 0 ? var.callback_urls : ["https://localhost/oauth2/idpresponse"]
+  logout_urls                  = length(var.logout_urls) > 0 ? var.logout_urls : ["https://localhost/logout"]
   supported_identity_providers = ["COGNITO"]
 
   token_validity_units {

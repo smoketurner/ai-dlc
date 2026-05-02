@@ -18,10 +18,12 @@
     "RunCases": {
       "Type": "Map",
       "MaxConcurrency": ${max_concurrency},
-      "ItemsPath": "$.cases",
-      "ResultPath": "$.results",
-      "Parameters": {
-        "case.$": "$$.Map.Item.Value"
+      "Items": "{% $states.input.cases %}",
+      "ItemSelector": {
+        "case": "{% $states.context.Map.Item.Value %}"
+      },
+      "Output": {
+        "results": "{% $states.result %}"
       },
       "ItemProcessor": {
         "ProcessorConfig": { "Mode": "INLINE" },

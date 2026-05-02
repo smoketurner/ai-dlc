@@ -15,10 +15,20 @@ data "aws_iam_policy_document" "states_assume" {
 
 # Permissions granted to the state machine role.
 data "aws_iam_policy_document" "states_inline" {
-  statement {
-    sid       = "InvokeAgentRuntime"
-    actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
-    resources = compact([local.architect_runtime_arn, local.implementer_runtime_arn])
+  # Only emit the InvokeAgentRuntime statement when at least one agent
+  # runtime ARN is known. Empty resources are rejected by IAM, and AWS
+  # then silently drops the whole inline policy — which surfaces later
+  # as "AccessDeniedException ... Log Destination" on state-machine
+  # creation. Bootstrap path: first apply with no images creates the
+  # state machine without the runtime perm; once images are pushed and
+  # var.agent_runtime_arns is populated, re-apply attaches it.
+  dynamic "statement" {
+    for_each = length(local.runtime_arns) > 0 ? [1] : []
+    content {
+      sid       = "InvokeAgentRuntime"
+      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
+      resources = local.runtime_arns
+    }
   }
 
   statement {
