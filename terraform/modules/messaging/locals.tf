@@ -7,12 +7,12 @@ locals {
   # terraform/shared/schemas/<TYPE>.json (loaded via file()).
   event_types = toset([
     "REQUEST.RECEIVED",
-    "ARCH.READY",
-    "ARCH.APPROVED",
-    "ARCH.REJECTED",
-    "IMPL.READY",
-    "IMPL.APPROVED",
-    "IMPL.REJECTED",
+    "SPEC.READY",
+    "SPEC.APPROVED",
+    "SPEC.REJECTED",
+    "TASK.READY",
+    "TASK.APPROVED",
+    "TASK.REJECTED",
     "RUN.COMPLETED",
     "RUN.FAILED",
   ])

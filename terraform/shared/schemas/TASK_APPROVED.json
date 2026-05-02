@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "ARCH.REJECTED",
-  "description": "A reviewer rejected the ADR.",
+  "title": "TASK.APPROVED",
+  "description": "A reviewer approved the task PR. The next task may start.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["ARCH.REJECTED"] },
+    "type": { "type": "string", "enum": ["TASK.APPROVED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,12 +26,13 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_slug", "adr_s3_key", "reviewer", "reason"],
+      "required": ["project_slug", "spec_slug", "task_id", "pr_url", "reviewer"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "adr_s3_key": { "type": "string", "minLength": 1 },
-        "reviewer": { "type": "string", "minLength": 1 },
-        "reason": { "type": "string", "minLength": 1 }
+        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "pr_url": { "type": "string", "format": "uri" },
+        "reviewer": { "type": "string", "minLength": 1 }
       }
     }
   }

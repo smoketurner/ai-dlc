@@ -8,6 +8,27 @@ Legend: ✅ done · 🟡 in progress · ⬜ todo
 
 ---
 
+## Pipeline shape (spec-driven)
+
+The platform follows a spec-driven SDLC inspired by Kiro's three-document model:
+
+```
+REQUEST.RECEIVED
+  → SPEC.READY     (Architect writes requirements + design + tasks)
+  → SPEC.APPROVED  (gate 1 — reviewer signs off on the whole spec bundle)
+  → TASK.READY     ┐
+  → TASK.APPROVED  │ loop while tasks remain — one PR per task
+  → ...            ┘
+  → RUN.COMPLETED
+```
+
+- **Specs** live at `docs/specs/{slug}/{requirements,design,tasks}.md` (template in [`docs/specs/_template/`](specs/_template/)).
+- **ADRs** at `docs/ADRs/NNNN-slug.md` capture cross-cutting architectural decisions; most specs don't produce one.
+- **Agents**: Architect (Strands, Opus 4.7) and Implementer (Claude Agent SDK, Sonnet 4.6).
+- **Events** (9 types): `REQUEST.RECEIVED`, `SPEC.{READY,APPROVED,REJECTED}`, `TASK.{READY,APPROVED,REJECTED}`, `RUN.{COMPLETED,FAILED}`.
+
+---
+
 ## Phase 0 — Repo scaffolding ✅
 
 - [x] `pyproject.toml` (workspace root, ruff strict, ty strict, pytest config)
@@ -42,46 +63,52 @@ Shared package every other component depends on. Lambdas pull from `common`; the
 - [x] `tests/` — 26 tests pass (errors, ids, events, memory_md, settings); `ruff check`, `ruff format --check`, `ty check` all green
 - [ ] tests for `s3`, `agentcore_memory`, `memory`, `gateway`, `git_ops`, `telemetry` (deferred — written alongside their first integration in Phases 3–6, with `moto` for AWS and a real `BedrockAgentCoreClient` stub via `pytest-mock`)
 
-## Phase 2 — Terraform foundation ⬜
+## Phase 2 — Terraform foundation 🟡
 
 Infrastructure that everything else lives on. Single PR, single apply.
 
-- [ ] `terraform/bootstrap/` — S3 tfstate bucket + DDB lock table (one-time)
-- [ ] `terraform/envs/dev/{backend.tf, providers.tf, main.tf, variables.tf, outputs.tf, locals.tf, terraform.tfvars}`
-- [ ] `terraform/modules/network/` — VPC, subnets, SGs, VPC endpoints
-- [ ] `terraform/modules/kms/` — six CMKs with rotation
-- [ ] `terraform/modules/iam/` — baseline roles + Cedar stub (gated off)
-- [ ] `terraform/modules/s3_artifacts/` — artifacts + memory_md buckets
-- [ ] `terraform/modules/dynamodb_state/` — runs / idempotency_keys / approvals
-- [ ] `terraform/modules/ecr_agents/` — architect + implementer ECR repos
-- [ ] `terraform/modules/cognito/` — user pool + app client + scopes
-- [ ] `terraform/modules/eventbridge_bus/` — bus + archive + schema registry + DLQ
-- [ ] `terraform/modules/sqs_plumbing/` — HITL queue + DLQs
-- [ ] `terraform/modules/github_oidc/` — GH Actions assume-role
-- [ ] `terraform/modules/observability/` — log groups, metric filters, alarms baseline, SNS, dashboard
-- [ ] `terraform-plan.yml` + `terraform-apply.yml` workflows
-- [ ] `terraform plan && terraform apply` succeeds end-to-end in dev
+- [x] `terraform/bootstrap/` — S3 tfstate bucket (uses S3 native lockfile; no DDB lock table needed)
+- [x] `terraform/envs/dev/{backend.tf, providers.tf, main.tf, variables.tf, outputs.tf, terraform.tfvars}`
+- [x] `terraform/modules/network/` — VPC, subnets, SGs, VPC endpoints (delegates to terraform-aws-modules/vpc)
+- [x] `terraform/modules/crypto/` — six CMKs with rotation (renamed from `kms/`)
+- [x] `terraform/modules/state/` — artifacts + memory_md buckets and runs / idempotency_keys / approvals tables (combines `s3_artifacts` + `dynamodb_state`)
+- [x] `terraform/modules/registry/` — architect + implementer + dashboard ECR repos (renamed from `ecr_agents/`)
+- [x] `terraform/modules/auth/` — Cognito user pool + app client + scopes (renamed from `cognito/`)
+- [x] `terraform/modules/messaging/` — bus + archive + schema registry + HITL/EB DLQs (combines `eventbridge_bus` + `sqs_plumbing`)
+- [x] `terraform/modules/ci_cd/` — GitHub Actions OIDC provider + terraform / image_publisher roles (renamed from `github_oidc/`)
+- [x] `terraform/modules/observability/` — log groups, alarms baseline, SNS, dashboard
+- [ ] `terraform plan && terraform apply` succeeds end-to-end in dev (run locally — see `terraform/Makefile`)
 
-## Phase 3 — AgentCore identity + memory + gateway ⬜
+**Design notes:**
+- The standalone `iam/` module from the original plan was folded into per-consumer module IAM (each Lambda module owns its execution role; `ci_cd` owns CI roles). No shared baseline module is needed; this avoids cross-module coupling on role names. Cedar / Verified Permissions was decided-against in the parking lot.
+- Terraform `plan` / `apply` runs **locally** via `make -C terraform plan` / `make -C terraform apply` — no GitHub Actions workflow. The `ci_cd` module still publishes the OIDC provider + `image_publisher` role for the image-build workflows in later phases; the `terraform` role it provisions is reserved for any future shift back to CI-driven applies.
 
-- [ ] `terraform/modules/agentcore_identity/` — workload_identity ×2 + oauth2_credential_provider (GitHub) + token_vault_cmk
-- [ ] `terraform/modules/agentcore_memory/` — memory + 3 strategies (semantic_project, semantic_user, summarization_session)
-- [ ] `lambdas/artifact_tool/` — gateway target Lambda (S3 + MEMORY.md ops)
-- [ ] `lambdas/repo_helper/` — gateway target Lambda (git/GitHub ops)
-- [ ] `terraform/modules/agentcore_gateway/` — gateway + 3 targets (GitHub MCP, artifact_tool, repo_helper)
-- [ ] Manual MCP `list_tools` against the gateway returns expected tool catalog
+## Phase 3 — Agent substrate (memory + identity + per-agent gateways) 🟡
+
+Consolidated into a single `agents` Terraform module since identity, memory, gateway, and tool surface are one logical concern. Per AWS guidance, each agent gets its own gateway (separate IAM/JWT scope, smaller blast radius); both agents share the memory store and the tool Lambdas.
+
+- [x] `terraform/modules/agents/` — workload_identity per agent, GitHub oauth2 credential provider (gated), token_vault_cmk on `tokenvault` KMS key, AgentCore Memory + 4 strategies (`SEMANTIC` / `USER_PREFERENCE` / `SUMMARIZATION` / `EPISODIC`), per-agent AgentCore Gateway with Cognito JWT auth, and `(agent × tool)` gateway targets via `for_each`.
+- [x] `lambdas/artifact_tool/` — S3 + MEMORY.md operations (`put_artifact`, `get_artifact`, `list_artifacts`, `read_memory_md`, `write_memory_md`); 6 unit tests pass under moto.
+- [x] `lambdas/repo_helper/` — git / GitHub operations (`open_pr`, `comment_pr`, `create_branch`, `commit_files`, `get_pr`); Phase 3 ships the validated input schemas + stub responses, network calls land in Phase 6.
+- [x] Tool Lambdas wired as gateway targets; per-agent gateway role limits `lambda:InvokeFunction` to the subset the agent's `targets` list permits.
+- [x] `terraform validate` clean for the dev composition (`module.agents` wired, outputs surfaced).
+- [ ] Manual MCP `list_tools` against the live gateway returns expected tool catalog (deferred — requires `terraform apply` against AWS)
+
+**Memory model:** Hybrid. AgentCore Memory holds cross-session learned facts (4 strategies — `SEMANTIC` for project facts, `USER_PREFERENCE` for per-user prefs, `SUMMARIZATION` for session summaries, `EPISODIC` for the rejection-retry loop); the S3 `memory_md` bucket holds canonical per-project `MEMORY.md` and session snapshots. The artifact_tool Lambda reads/writes the S3 side; agents talk to AgentCore Memory directly via the Bedrock SDK. `MEMORY.md` → AgentCore Memory sync runs on every successful session via `CreateEvent`; the reverse path goes through agent-proposed PRs to `docs/MEMORY.md` (humans gate writes).
 
 ## Phase 4 — Architect agent ⬜
 
+The Architect produces a three-document spec bundle (`requirements.md`, `design.md`, `tasks.md`) under `docs/specs/{slug}/` and may propose ADRs in the design when a cross-cutting decision surfaces.
+
 - [ ] `agents/architect/pyproject.toml`
 - [ ] `agents/architect/Dockerfile` (python:3.14-slim, ARM64, multi-stage uv)
-- [ ] `agents/architect/src/architect/{app.py, agent.py, prompts.py, tools.py, adr.py}`
+- [ ] `agents/architect/src/architect/{app.py, agent.py, prompts.py, tools.py, spec.py}` — `spec.py` owns the three-doc Pydantic models + Markdown renderer
 - [ ] `agents/architect/tests/`
 - [ ] `images-build.yml` workflow (docker buildx ARM64 → ECR by SHA; cosign-sign)
 - [ ] `terraform/modules/agentcore_runtime/` parameterized module
 - [ ] `module "agent_architect"` in `envs/dev/main.tf`
 - [ ] Local smoke: `uv run python -m architect.app` against dev memory + gateway
-- [ ] AWS smoke: `aws bedrock-agentcore-runtime invoke-agent-runtime ...` returns ADR S3 key
+- [ ] AWS smoke: `aws bedrock-agentcore-runtime invoke-agent-runtime ...` returns spec_s3_prefix
 
 ## Phase 5 — Lambdas + Step Functions + API Gateway ⬜
 
@@ -90,19 +117,21 @@ Infrastructure that everything else lives on. Single PR, single apply.
 - [ ] `lambdas/event_projector/` — DDB Streams + EventBridge → DDB read model + AgentCore Memory `CreateEvent`
 - [ ] `lambdas-build.yml` workflow (uv build → zip → S3)
 - [ ] `terraform/modules/lambdas/{entry_adapter, hitl_handler, event_projector}/`
-- [ ] `terraform/modules/sdlc_workflow/` — Step Functions Standard with native `aws-sdk:bedrockagentcore:invokeAgentRuntime` ASL
+- [ ] `terraform/modules/sdlc_workflow/` — Step Functions Standard ASL: `Receive → InvokeArchitect → SPEC.READY → WaitForSpecApproval → Map(tasks) { InvokeImplementer → TASK.READY → WaitForTaskApproval } → RUN.COMPLETED`
 - [ ] `terraform/modules/api_gateway/` — HTTP API + JWT authorizer + routes
-- [ ] End-to-end smoke: `POST /v1/runs` → run reaches `WaitForArchApproval` → approve via API → `RUN.COMPLETED` (with stub Implementer)
+- [ ] End-to-end smoke: `POST /v1/runs` → run reaches `WaitForSpecApproval` → approve via API → first TASK gate → approve → `RUN.COMPLETED`
 
 ## Phase 6 — Implementer agent ⬜
 
+The Implementer reads an approved spec, picks the next unchecked task from `tasks.md`, and opens **one PR for that task only**. On approval, the spec's `tasks.md` is updated to check the box; control returns to Step Functions to invoke the Implementer again for the next task. The loop terminates when `tasks.md` has no unchecked items.
+
 - [ ] `agents/implementer/pyproject.toml`
 - [ ] `agents/implementer/Dockerfile`
-- [ ] `agents/implementer/src/implementer/{app.py, client.py, options.py, tools.py, hooks.py, prompts.py}`
+- [ ] `agents/implementer/src/implementer/{app.py, client.py, options.py, tools.py, hooks.py, prompts.py, tasks.py}` — `tasks.py` parses/updates the Markdown checklist
 - [ ] `agents/implementer/src/implementer/skills/{ai-dlc-conventions, memory-md-writer}/`
 - [ ] `module "agent_implementer"` in `envs/dev/main.tf`
-- [ ] Wire `InvokeImplementer` task state into `sdlc_workflow` ASL
-- [ ] Full pipeline: `POST /v1/runs` → ADR PR → approve → code PR → approve → `RUN.COMPLETED`
+- [ ] Wire `Map(tasks)` task state into `sdlc_workflow` ASL
+- [ ] Full pipeline: `POST /v1/runs` → spec PR → approve → task-1 PR → approve → ... → task-N PR → approve → `RUN.COMPLETED`
 
 ## Phase 7 — Dashboard ⬜
 

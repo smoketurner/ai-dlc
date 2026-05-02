@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "IMPL.READY",
-  "description": "The implementer agent opened a code PR and is awaiting approval.",
+  "title": "TASK.REJECTED",
+  "description": "A reviewer rejected the task PR. The implementer may retry with feedback.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["IMPL.READY"] },
+    "type": { "type": "string", "enum": ["TASK.REJECTED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,12 +26,14 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_slug", "pr_url", "diff_summary", "session_id"],
+      "required": ["project_slug", "spec_slug", "task_id", "pr_url", "reviewer", "reason"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
         "pr_url": { "type": "string", "format": "uri" },
-        "diff_summary": { "type": "string", "maxLength": 4096 },
-        "session_id": { "type": "string", "minLength": 1 }
+        "reviewer": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
       }
     }
   }

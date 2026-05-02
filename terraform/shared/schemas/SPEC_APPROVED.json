@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "IMPL.REJECTED",
-  "description": "A reviewer rejected the implementation PR.",
+  "title": "SPEC.APPROVED",
+  "description": "A reviewer approved the spec bundle; task execution may begin.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["IMPL.REJECTED"] },
+    "type": { "type": "string", "enum": ["SPEC.APPROVED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,12 +26,13 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_slug", "pr_url", "reviewer", "reason"],
+      "required": ["project_slug", "spec_slug", "spec_s3_prefix", "reviewer"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "pr_url": { "type": "string", "format": "uri" },
+        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "spec_s3_prefix": { "type": "string", "minLength": 1 },
         "reviewer": { "type": "string", "minLength": 1 },
-        "reason": { "type": "string", "minLength": 1 }
+        "comment": { "type": ["string", "null"] }
       }
     }
   }

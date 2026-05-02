@@ -6,7 +6,7 @@ Six sections, in order. Agents fail-fast on unknown headers.
 
 ## Overview
 
-ai-dlc is the agentic SDLC platform itself. Two agents (Architect on Strands, Implementer on Claude Agent SDK) produce ADRs and code PRs through a Step Functions pipeline gated by GitHub PR reviews.
+ai-dlc is the agentic SDLC platform itself. Two agents (Architect on Strands, Implementer on Claude Agent SDK) drive a spec-driven pipeline gated by GitHub PR reviews: the Architect writes a spec (requirements + design + tasks), reviewers approve it as a bundle, then the Implementer works through `tasks.md` opening one PR per task.
 
 ## Conventions
 
@@ -15,10 +15,25 @@ ai-dlc is the agentic SDLC platform itself. Two agents (Architect on Strands, Im
 - Step Functions uses the native `aws-sdk:bedrockagentcore:invokeAgentRuntime` integration — no `runtime_invoker` Lambda hop.
 - Pin every dependency to an exact version. Pin every GitHub Action to a SHA with a version comment.
 - Replace, don't deprecate: when a new implementation supersedes an old one, remove the old one entirely.
+- **Spec-driven**: every feature ships as a three-document spec under `docs/specs/{slug}/{requirements,design,tasks}.md`. The Architect writes the spec; reviewers approve it as a bundle (one HITL gate). The Implementer works the `tasks.md` checklist, opening **one PR per task**.
+- Markdown everywhere: requirements, design, tasks, ADRs, MEMORY.md.
 
 ## Decisions
 
-ADR bullets land here as the Architect agent commits them. Format: `- [ADR-NNNN](docs/ADRs/NNNN-slug.md): one-line summary`.
+Two kinds of decisions, both linked from here.
+
+**Specs** — one per feature, three documents per spec:
+
+```
+docs/specs/{slug}/
+  requirements.md   — user stories + acceptance criteria
+  design.md         — how it's built; data model, components, sequence
+  tasks.md          — ordered, atomic units (`- [ ] T-001 ...`); each links to a requirement
+```
+
+Format the bullet here as: `- [{slug}](docs/specs/{slug}/): one-line summary`.
+
+**ADRs** — cross-cutting architectural decisions that outlive a single spec. Most specs don't produce an ADR; one is added when the design surfaces a decision worth committing to long-term. Format: `- [ADR-NNNN](docs/ADRs/NNNN-slug.md): one-line summary`.
 
 ## Constraints
 
@@ -28,8 +43,10 @@ ADR bullets land here as the Architect agent commits them. Format: `- [ADR-NNNN]
 
 ## Glossary
 
-- **ADR** — Architectural Decision Record. Written by the Architect, committed under `docs/ADRs/`.
-- **HITL** — Human-in-the-loop. Mandatory PR-review gates between SDLC stages.
+- **Spec** — A three-document feature bundle (`requirements.md`, `design.md`, `tasks.md`) under `docs/specs/{slug}/`. Written by the Architect, approved as a unit, executed task-by-task by the Implementer.
+- **Task** — One checkbox in a spec's `tasks.md`. Atomic, links back to a requirement, gets its own PR and HITL gate.
+- **ADR** — Architectural Decision Record. Cross-cutting decision under `docs/ADRs/`. Surfaces from a spec's design when something is worth committing to long-term.
+- **HITL** — Human-in-the-loop. Mandatory PR-review gates: one for the spec, one per task.
 - **Run** — One execution of the SDLC pipeline. Identified by a UUID7 `run_id`.
 
 ## Notes
