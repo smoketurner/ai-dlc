@@ -13,6 +13,17 @@ resource "aws_cognito_user_pool" "this" {
   name              = local.pool_name
   mfa_configuration = var.mfa_configuration
 
+  # Email IS the username; no separate generated user-id field. Forces a
+  # pool-replace when changed (Cognito doesn't allow this attribute to
+  # mutate in-place), so flip it before users exist.
+  username_attributes = ["email"]
+
+  # Case-insensitive sign-in — `Foo@Example.com` and `foo@example.com`
+  # resolve to the same user. Also a replace-only attribute in Cognito.
+  username_configuration {
+    case_sensitive = false
+  }
+
   # Cognito requires at least one MFA factor to be enabled whenever
   # mfa_configuration is OPTIONAL or ON. TOTP is the right pick for an
   # operator-only pool — no SMS/email costs.
