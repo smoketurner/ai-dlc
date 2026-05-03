@@ -6,14 +6,6 @@ data "aws_iam_policy" "ecs_task_execution" {
   name = "AmazonECSTaskExecutionRolePolicy"
 }
 
-
-data "aws_ecr_image" "dashboard" {
-  count = local.has_image ? 1 : 0
-
-  repository_name = "${var.project}/dashboard"
-  image_tag       = var.image_tag
-}
-
 data "aws_iam_policy_document" "task_assume" {
   statement {
     effect  = "Allow"

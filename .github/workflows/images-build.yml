@@ -63,29 +63,8 @@ jobs:
         env:
           AGENT: ${{ matrix.agent }}
 
-      - name: Skip if image for this commit already exists
-        # ECR is IMMUTABLE — re-running the workflow on an unchanged commit
-        # would otherwise fail on the existing tag. terraform-apply still
-        # discovers the latest pushed image via ECR query, so a no-op build
-        # is safe.
-        id: gate
-        if: steps.check.outputs.build == 'true'
-        env:
-          AGENT: ${{ matrix.agent }}
-          SHA: ${{ github.sha }}
-        run: |
-          if aws ecr describe-images \
-               --repository-name "ai-dlc/${AGENT}" \
-               --image-ids "imageTag=${SHA}" \
-               --output text >/dev/null 2>&1; then
-            echo "build=false" >>"$GITHUB_OUTPUT"
-            echo "::notice::ai-dlc/${AGENT}:${SHA} already in ECR — nothing to do"
-          else
-            echo "build=true" >>"$GITHUB_OUTPUT"
-          fi
-
       - name: Build and push
-        if: steps.check.outputs.build == 'true' && steps.gate.outputs.build == 'true'
+        if: steps.check.outputs.build == 'true'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -93,6 +72,53 @@ jobs:
           platforms: linux/arm64
           provenance: false
           push: true
-          tags: ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          tags: |
+            ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REPOSITORY }}:latest
           cache-from: type=gha,scope=${{ matrix.agent }}-arm64
           cache-to: type=gha,mode=max,scope=${{ matrix.agent }}-arm64
+
+      - name: Roll AgentCore Runtime to the new image
+        # AgentCore Runtime API names follow the terraform pattern
+        # `ai_dlc_<env>_<agent>` (underscores). Fetch the current runtime
+        # config, swap only the container URI for the new digest, and send
+        # the whole shape back via update-agent-runtime so other fields
+        # (role, network, env, etc.) remain unchanged.
+        if: steps.check.outputs.build == 'true'
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: |
+          set -euo pipefail
+          runtime_name="ai_dlc_dev_${AGENT}"
+          runtime_id=$(aws bedrock-agentcore-control list-agent-runtimes \
+            --query "agentRuntimes[?agentRuntimeName=='${runtime_name}'].agentRuntimeId" \
+            --output text)
+          if [ -z "${runtime_id}" ] || [ "${runtime_id}" = "None" ]; then
+            echo "::warning::AgentCore runtime ${runtime_name} not found — skip rollout (apply terraform first)"
+            exit 0
+          fi
+          digest=$(aws ecr describe-images \
+            --repository-name "ai-dlc/${AGENT}" \
+            --image-ids imageTag=latest \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)
+          new_uri="${ECR_REPOSITORY}@${digest}"
+          aws bedrock-agentcore-control get-agent-runtime \
+            --agent-runtime-id "${runtime_id}" \
+            > current.json
+          jq --arg uri "${new_uri}" '
+            {
+              agentRuntimeId,
+              agentRuntimeArtifact: {
+                containerConfiguration: { containerUri: $uri }
+              },
+              roleArn,
+              networkConfiguration,
+              protocolConfiguration,
+              authorizerConfiguration,
+              environmentVariables,
+              description
+            }
+          ' current.json > update.json
+          aws bedrock-agentcore-control update-agent-runtime --cli-input-json file://update.json
+          echo "::notice::Rolled ${runtime_name} to ${new_uri}"

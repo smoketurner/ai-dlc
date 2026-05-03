@@ -10,7 +10,6 @@ locals {
   task_family    = "${local.prefix}-dashboard"
   log_group_name = "/aws/ecs/${local.service_name}"
   alb_log_prefix = "alb/${local.prefix}-dashboard"
-  has_image      = var.image_tag != ""
   use_https      = var.dashboard_fqdn != null && var.route53_zone_id != null
   webhook_path   = "/webhooks/github"
 }

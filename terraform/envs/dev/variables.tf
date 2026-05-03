@@ -77,24 +77,6 @@ variable "github_oauth" {
   sensitive = true
 }
 
-variable "architect_image_tag" {
-  description = "ECR image tag (the git commit SHA) for the architect agent. CI passes the most-recently-pushed SHA via TF_VAR_architect_image_tag; the empty default gates off runtime creation when no image exists yet (first deploy)."
-  type        = string
-  default     = ""
-}
-
-variable "implementer_image_tag" {
-  description = "ECR image tag (git commit SHA) for the implementer agent. See architect_image_tag."
-  type        = string
-  default     = ""
-}
-
-variable "dashboard_image_tag" {
-  description = "ECR image tag (git commit SHA) for the dashboard. See architect_image_tag."
-  type        = string
-  default     = ""
-}
-
 variable "aws_profile" {
   description = "AWS shared-credentials profile name. Defaults to the local SSO profile; CI sets this to \"\" so the provider falls through to env-var credentials supplied by OIDC."
   type        = string

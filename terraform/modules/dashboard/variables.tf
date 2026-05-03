@@ -9,12 +9,6 @@ variable "env" {
   type        = string
 }
 
-variable "image_tag" {
-  description = "ECR image tag for the dashboard. Empty string skips ECS service provisioning (use on first apply, before CI has pushed)."
-  type        = string
-  default     = ""
-}
-
 variable "ecr_repository_url" {
   description = "ECR repository URL for the dashboard image."
   type        = string

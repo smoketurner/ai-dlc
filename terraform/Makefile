@@ -22,27 +22,12 @@ TF     ?= terraform
 TFLINT ?= tflint
 ZIZMOR ?= uvx zizmor
 
-.PHONY: help bootstrap-init bootstrap-apply init plan apply destroy fmt fmt-check validate tflint zizmor pull-build-image image-tags
+.PHONY: help bootstrap-init bootstrap-apply init plan apply destroy fmt fmt-check validate tflint zizmor pull-build-image
 
 # terraform-aws-modules/lambda v8 tries to build the docker_image locally
 # when it isn't present, instead of pulling it. Pulling once up-front
 # satisfies its `docker images` lookup and avoids the build path entirely.
 LAMBDA_BUILD_IMAGE := public.ecr.aws/sam/build-python3.13:latest-arm64
-
-# Mirror what .github/workflows/terraform-apply.yml does: query ECR for the
-# most recently pushed image tag per repo and export TF_VAR_*_image_tag so
-# `terraform plan` and `terraform apply` provision the runtime + ECS service
-# pinned to those digests. Empty tag (no image yet) gates the resource off.
-define image_tags_export
-	for repo in architect implementer dashboard; do \
-	  tag=$$(aws ecr describe-images \
-	    --repository-name "ai-dlc/$$repo" \
-	    --query 'reverse(sort_by(imageDetails,&imagePushedAt))[0].imageTags[0]' \
-	    --output text 2>/dev/null || echo ""); \
-	  [ "$$tag" = "None" ] && tag=""; \
-	  printf 'export TF_VAR_%s_image_tag=%s\n' "$$repo" "$$tag"; \
-	done
-endef
 
 help:                            ## Show this help.
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -61,15 +46,10 @@ init:                            ## terraform init for the current ENV (reads bo
 pull-build-image:                ## Pull the SAM Lambda build image used by the lambda module.
 	docker pull $(LAMBDA_BUILD_IMAGE)
 
-image-tags:                      ## Print TF_VAR_* exports for the most-recently-pushed ECR image per repo.
-	@$(image_tags_export)
-
 plan: pull-build-image           ## terraform plan for the current ENV.
-	@eval "$$($(image_tags_export))"; \
 	$(TF) -chdir=$(ENV_DIR) plan -out=tfplan
 
 apply: pull-build-image          ## terraform apply the most recent plan.
-	@eval "$$($(image_tags_export))"; \
 	$(TF) -chdir=$(ENV_DIR) apply tfplan
 
 destroy:                         ## terraform destroy the current ENV (DANGEROUS).

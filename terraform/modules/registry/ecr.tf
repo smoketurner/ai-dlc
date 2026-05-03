@@ -1,19 +1,23 @@
 ################################################################################
 # ECR repositories for agent + dashboard container images.
 #
-# IMMUTABLE tags + scan-on-push. Each commit produces a single uniquely-
-# tagged (:<git-sha>) image; terraform-apply queries ECR for the most-
-# recently-pushed tag per repo and pins by digest via data.aws_ecr_image.
-# Lifecycle expires untagged images after a week and keeps the most recent
-# N tagged images per repo. AgentCore Runtime is granted Pull on the agent
-# repos via repository policy.
+# Tags are immutable EXCEPT for "latest", which build workflows overwrite on
+# every push to main. SHA-tagged images stay immutable, so any commit can be
+# resurrected by digest. Lifecycle expires untagged images after a week and
+# keeps the most recent N tagged images per repo. AgentCore Runtime is
+# granted Pull on the agent repos via repository policy.
 ################################################################################
 
 resource "aws_ecr_repository" "this" {
   for_each = var.repositories
 
   name                 = "${var.project}/${each.key}"
-  image_tag_mutability = "IMMUTABLE"
+  image_tag_mutability = "IMMUTABLE_WITH_EXCLUSION"
+
+  image_tag_mutability_exclusion_filter {
+    filter      = "latest"
+    filter_type = "WILDCARD"
+  }
 
   image_scanning_configuration {
     scan_on_push = true

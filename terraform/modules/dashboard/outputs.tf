@@ -14,8 +14,8 @@ output "ecs_cluster_name" {
 }
 
 output "ecs_service_name" {
-  description = "ECS service name (only populated when image_tag is set)."
-  value       = local.has_image ? aws_ecs_service.this[0].name : ""
+  description = "ECS service name."
+  value       = aws_ecs_service.this.name
 }
 
 output "task_role_arn" {

@@ -1,9 +1,13 @@
 ################################################################################
 # ECS Fargate cluster + task definition + service + autoscaling.
 #
-# Service is gated on `image_tag != ""` — first apply (no image yet) just
-# creates the cluster + task IAM. Once CI pushes an image and the operator
-# sets image_tag, the next apply provisions the task definition + service.
+# Image deploys are handled out-of-band by the dashboard-build workflow:
+# after pushing a new image to ECR, the workflow runs
+#   aws ecs update-service --force-new-deployment
+# which makes ECS pull the current `:latest` and roll the service. Terraform
+# just owns the long-lived task definition + service; image SHAs never live
+# in state. First-time bootstrap requires the build workflow to publish an
+# image before terraform apply, otherwise the task fails to start.
 ################################################################################
 
 resource "aws_ecs_cluster" "this" {
@@ -73,8 +77,6 @@ resource "aws_cloudwatch_log_group" "task" {
 }
 
 resource "aws_ecs_task_definition" "this" {
-  count = local.has_image ? 1 : 0
-
   family                   = local.task_family
   cpu                      = tostring(var.task_cpu)
   memory                   = tostring(var.task_memory_mb)
@@ -91,7 +93,7 @@ resource "aws_ecs_task_definition" "this" {
   container_definitions = jsonencode([
     {
       name      = "dashboard"
-      image     = "${var.ecr_repository_url}@${data.aws_ecr_image.dashboard[0].image_digest}"
+      image     = "${var.ecr_repository_url}:latest"
       essential = true
 
       portMappings = [
@@ -139,12 +141,17 @@ resource "aws_ecs_task_definition" "this" {
 }
 
 resource "aws_ecs_service" "this" {
-  count = local.has_image ? 1 : 0
-
   name            = local.service_name
   cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.this[0].arn
+  task_definition = aws_ecs_task_definition.this.arn
   desired_count   = var.desired_count
+
+  # The dashboard-build workflow scales via update-service and the
+  # autoscaling scheduled actions adjust desired_count out-of-band; let
+  # those changes stand without terraform fighting on the next apply.
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
 
   capacity_provider_strategy {
     capacity_provider = "FARGATE_SPOT"
@@ -182,23 +189,19 @@ resource "aws_ecs_service" "this" {
 }
 
 resource "aws_appautoscaling_target" "this" {
-  count = local.has_image ? 1 : 0
-
   service_namespace  = "ecs"
-  resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.this[0].name}"
+  resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.this.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   min_capacity       = var.min_capacity
   max_capacity       = var.max_capacity
 }
 
 resource "aws_appautoscaling_policy" "cpu" {
-  count = local.has_image ? 1 : 0
-
   name               = "${local.service_name}-cpu60"
   policy_type        = "TargetTrackingScaling"
-  service_namespace  = aws_appautoscaling_target.this[0].service_namespace
-  resource_id        = aws_appautoscaling_target.this[0].resource_id
-  scalable_dimension = aws_appautoscaling_target.this[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.this.service_namespace
+  resource_id        = aws_appautoscaling_target.this.resource_id
+  scalable_dimension = aws_appautoscaling_target.this.scalable_dimension
 
   target_tracking_scaling_policy_configuration {
     target_value = 60.0
@@ -214,12 +217,10 @@ resource "aws_appautoscaling_policy" "cpu" {
 # automatically by the timezone field). Two actions: down at 23:00, up at 07:00.
 
 resource "aws_appautoscaling_scheduled_action" "scale_down_overnight" {
-  count = local.has_image ? 1 : 0
-
   name               = "${local.service_name}-scale-down-overnight"
-  service_namespace  = aws_appautoscaling_target.this[0].service_namespace
-  resource_id        = aws_appautoscaling_target.this[0].resource_id
-  scalable_dimension = aws_appautoscaling_target.this[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.this.service_namespace
+  resource_id        = aws_appautoscaling_target.this.resource_id
+  scalable_dimension = aws_appautoscaling_target.this.scalable_dimension
   schedule           = "cron(0 23 * * ? *)"
   timezone           = "America/New_York"
 
@@ -230,12 +231,10 @@ resource "aws_appautoscaling_scheduled_action" "scale_down_overnight" {
 }
 
 resource "aws_appautoscaling_scheduled_action" "scale_up_morning" {
-  count = local.has_image ? 1 : 0
-
   name               = "${local.service_name}-scale-up-morning"
-  service_namespace  = aws_appautoscaling_target.this[0].service_namespace
-  resource_id        = aws_appautoscaling_target.this[0].resource_id
-  scalable_dimension = aws_appautoscaling_target.this[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.this.service_namespace
+  resource_id        = aws_appautoscaling_target.this.resource_id
+  scalable_dimension = aws_appautoscaling_target.this.scalable_dimension
   schedule           = "cron(0 7 * * ? *)"
   timezone           = "America/New_York"
 

@@ -12,18 +12,16 @@ variable "env" {
 variable "agents" {
   description = <<-EOT
     Map of agent name → per-agent configuration. Each agent gets its own
-    workload identity, AgentCore Gateway, and (when `image_tag` is set) an
-    AgentCore Runtime backed by an ECR image. The `targets` field is a
-    subset of the registered tool Lambdas; valid values are `artifact_tool`
-    and `repo_helper`. Set `image_tag = ""` on first apply (before CI has
-    pushed an image) to skip provisioning the runtime; flip to `"latest"`
-    or a commit SHA once the image is in ECR.
+    workload identity, AgentCore Gateway, and AgentCore Runtime backed by an
+    ECR image (always pulled by `:latest`). The `targets` field is a subset
+    of the registered tool Lambdas; valid values are `artifact_tool` and
+    `repo_helper`. Image deploys happen via the images-build workflow's
+    update-agent-runtime call — terraform doesn't track image SHAs.
   EOT
   type = map(object({
     description                         = string
     targets                             = set(string)
     allowed_resource_oauth2_return_urls = optional(list(string), [])
-    image_tag                           = optional(string, "")
     bedrock_model_id                    = optional(string, "")
   }))
   default = {

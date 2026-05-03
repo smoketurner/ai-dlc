@@ -58,7 +58,7 @@ output "github_oauth_provider_arn" {
 }
 
 output "runtime_arns" {
-  description = "Map of agent name → AgentCore Runtime ARN (only for agents with a published image_tag)."
+  description = "Map of agent name → AgentCore Runtime ARN."
   value = {
     for k, v in aws_bedrockagentcore_agent_runtime.agent : k => v.agent_runtime_arn
   }

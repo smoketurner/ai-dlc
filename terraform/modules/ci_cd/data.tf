@@ -131,6 +131,27 @@ data "aws_iam_policy_document" "image_publisher_inline" {
       "arn:${local.aws_partition}:ecr:*:${local.aws_account_id}:repository/${var.project}/*",
     ]
   }
+
+  # Post-push deploys: dashboard-build calls ecs:UpdateService to roll the
+  # ECS service onto the new :latest digest; images-build looks up the
+  # AgentCore Runtime ID by name and calls update-agent-runtime.
+  statement {
+    sid     = "EcsRollDashboard"
+    actions = ["ecs:UpdateService", "ecs:DescribeServices"]
+    resources = [
+      "arn:${local.aws_partition}:ecs:*:${local.aws_account_id}:service/${var.project}-*-dashboard/${var.project}-*-dashboard",
+    ]
+  }
+
+  statement {
+    sid = "AgentCoreRollRuntime"
+    actions = [
+      "bedrock-agentcore-control:ListAgentRuntimes",
+      "bedrock-agentcore-control:GetAgentRuntime",
+      "bedrock-agentcore-control:UpdateAgentRuntime",
+    ]
+    resources = ["*"]
+  }
 }
 
 data "aws_iam_policy_document" "evals_assume" {
