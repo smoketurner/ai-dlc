@@ -78,21 +78,21 @@ variable "github_oauth" {
 }
 
 variable "architect_image_tag" {
-  description = "ECR image tag for the architect agent. Defaults to `latest` — Terraform's data.aws_ecr_image resolves it to the current digest at plan time. Set to \"\" once during initial bootstrap (before any image is pushed) to skip runtime provisioning."
+  description = "ECR image tag (the git commit SHA) for the architect agent. CI passes the most-recently-pushed SHA via TF_VAR_architect_image_tag; the empty default gates off runtime creation when no image exists yet (first deploy)."
   type        = string
-  default     = "latest"
+  default     = ""
 }
 
 variable "implementer_image_tag" {
-  description = "ECR image tag for the implementer agent. See architect_image_tag for the digest-resolve pattern."
+  description = "ECR image tag (git commit SHA) for the implementer agent. See architect_image_tag."
   type        = string
-  default     = "latest"
+  default     = ""
 }
 
 variable "dashboard_image_tag" {
-  description = "ECR image tag for the dashboard. See architect_image_tag for the digest-resolve pattern."
+  description = "ECR image tag (git commit SHA) for the dashboard. See architect_image_tag."
   type        = string
-  default     = "latest"
+  default     = ""
 }
 
 variable "aws_profile" {

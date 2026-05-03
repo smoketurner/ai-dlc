@@ -78,7 +78,27 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
 
+      - name: Skip if image for this commit already exists
+        # ECR is IMMUTABLE — re-running the workflow on an unchanged commit
+        # would otherwise fail on the existing tag. terraform-apply still
+        # discovers the latest pushed image via ECR query, so a no-op build
+        # is safe.
+        id: gate
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          if aws ecr describe-images \
+               --repository-name "ai-dlc/dashboard" \
+               --image-ids "imageTag=${SHA}" \
+               --output text >/dev/null 2>&1; then
+            echo "build=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::ai-dlc/dashboard:${SHA} already in ECR — nothing to do"
+          else
+            echo "build=true" >>"$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
+        if: steps.gate.outputs.build == 'true'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -86,8 +106,6 @@ jobs:
           platforms: linux/arm64
           provenance: false
           push: true
-          tags: |
-            ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-            ${{ env.ECR_REPOSITORY }}:latest
+          tags: ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           cache-from: type=gha,scope=dashboard-arm64
           cache-to: type=gha,mode=max,scope=dashboard-arm64

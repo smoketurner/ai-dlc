@@ -5,9 +5,11 @@ name: terraform-apply
 #   * terraform code changes land on main
 #   * a maintainer manually dispatches it
 #
-# Image tags default to "latest" (see terraform/envs/dev/variables.tf).
-# Each apply re-resolves the tag to a digest via data.aws_ecr_image, so the
-# deploy is digest-pinned even though the tag is mutable.
+# Each commit produces a single :<sha>-tagged immutable image. We query
+# ECR for the most-recently-pushed tag per repo and pass it as
+# TF_VAR_*_image_tag; data.aws_ecr_image then resolves the tag to a digest
+# at plan time, so the deploy is digest-pinned. When a repo has no images
+# yet, the empty tag gates off runtime/service creation in the modules.
 
 # `workflow_run` is normally risky because the triggered workflow runs with
 # full repo perms even when the upstream was triggered by a fork PR. The two
@@ -97,13 +99,42 @@ jobs:
         run: docker pull public.ecr.aws/sam/build-python3.13:latest-arm64
         working-directory: .
 
+      - name: Resolve latest pushed image tags
+        # Each commit produces a single :<sha>-tagged immutable image. We
+        # discover the most-recently-pushed tag per repo and pass it to
+        # terraform via TF_VAR_*. Empty when the repo has no images yet
+        # (first deploy) — module gates runtime/service creation off.
+        id: tags
+        run: |
+          set -euo pipefail
+          for repo in architect implementer dashboard; do
+            tag=$(aws ecr describe-images \
+              --repository-name "ai-dlc/${repo}" \
+              --query 'reverse(sort_by(imageDetails,&imagePushedAt))[0].imageTags[0]' \
+              --output text 2>/dev/null || echo "")
+            if [ "${tag}" = "None" ]; then
+              tag=""
+            fi
+            echo "${repo}_tag=${tag}" >>"$GITHUB_OUTPUT"
+            echo "${repo}: ${tag:-<none>}"
+          done
+        working-directory: .
+
       - name: Terraform init
         # The backend.tf hardcodes profile=aidlc-admin for local dev. Override
         # to empty here so the S3 backend uses the OIDC-assumed env-var creds.
         run: terraform init -backend-config="profile="
 
       - name: Terraform plan
+        env:
+          TF_VAR_architect_image_tag: ${{ steps.tags.outputs.architect_tag }}
+          TF_VAR_implementer_image_tag: ${{ steps.tags.outputs.implementer_tag }}
+          TF_VAR_dashboard_image_tag: ${{ steps.tags.outputs.dashboard_tag }}
         run: terraform plan -out=tfplan -no-color
 
       - name: Terraform apply
+        env:
+          TF_VAR_architect_image_tag: ${{ steps.tags.outputs.architect_tag }}
+          TF_VAR_implementer_image_tag: ${{ steps.tags.outputs.implementer_tag }}
+          TF_VAR_dashboard_image_tag: ${{ steps.tags.outputs.dashboard_tag }}
         run: terraform apply -auto-approve -no-color tfplan
