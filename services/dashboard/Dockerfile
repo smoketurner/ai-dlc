@@ -2,9 +2,33 @@
 # Dashboard — FastAPI + Jinja2 + Alpine.js. Runs uvicorn on :8080.
 
 ARG PYTHON_VERSION=3.14
+ARG TAILWIND_VERSION=v4.2.4
 
-# Trixie variant ships uv 0.11.x (matches pyproject required-version >=0.11);
-# the bookworm variant lags at uv 0.9.x.
+# Build stage 1 — generate Tailwind CSS using the standalone v4 CLI (single
+# static binary, no Node runtime). The Play CDN is unreliable when paired
+# with Alpine.js (race conditions on DOM scan), so we build CSS at image
+# build time and serve it as a static asset.
+FROM --platform=linux/arm64 debian:trixie-slim AS assets
+ARG TAILWIND_VERSION
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /usr/local/bin/tailwindcss \
+        "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-arm64" \
+    && chmod +x /usr/local/bin/tailwindcss
+
+WORKDIR /app
+COPY services/dashboard/src/dashboard/templates/ services/dashboard/src/dashboard/templates/
+COPY services/dashboard/src/dashboard/static/tailwind.input.css services/dashboard/src/dashboard/static/tailwind.input.css
+
+RUN tailwindcss \
+        -i services/dashboard/src/dashboard/static/tailwind.input.css \
+        -o services/dashboard/src/dashboard/static/tailwind.css \
+        --minify
+
+# Build stage 2 — Python deps via uv. Trixie variant ships uv 0.11.x (matches
+# pyproject required-version >=0.11); the bookworm variant lags at uv 0.9.x.
 FROM --platform=linux/arm64 ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-trixie-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
@@ -42,6 +66,11 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder --chown=web:web /app /app
+# Only the generated CSS comes from the assets stage; alpine.min.js is
+# committed source and arrives in the builder layer above.
+COPY --from=assets --chown=web:web \
+     /app/services/dashboard/src/dashboard/static/tailwind.css \
+     /app/services/dashboard/src/dashboard/static/tailwind.css
 
 USER web
 EXPOSE 8080

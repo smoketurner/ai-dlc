@@ -1,3 +1,7 @@
+# Tailwind CSS — generated at container build time, never committed.
+# (alpine.min.js is committed alongside the source — pinned + reproducible.)
+services/dashboard/src/dashboard/static/tailwind.css
+
 # Python / uv
 __pycache__/
 *.py[cod]
