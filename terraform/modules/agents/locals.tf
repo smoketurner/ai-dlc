@@ -1,4 +1,8 @@
 locals {
+  aws_partition  = data.aws_partition.current.partition
+  aws_account_id = data.aws_caller_identity.current.account_id
+  aws_region     = data.aws_region.current.region
+
   prefix = "${var.project}-${var.env}"
   # AgentCore Memory names must match ^[a-zA-Z][a-zA-Z0-9_]{0,47}$ — no hyphens.
   memory_id  = replace("${var.project}_${var.env}_memory", "-", "_")

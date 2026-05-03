@@ -24,7 +24,7 @@ resource "aws_iam_role" "memory_execution" {
 
 resource "aws_iam_role_policy_attachment" "memory_execution_inference" {
   role       = aws_iam_role.memory_execution.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonBedrockAgentCoreMemoryBedrockModelInferenceExecutionRolePolicy"
+  policy_arn = data.aws_iam_policy.memory_inference.arn
 }
 
 resource "aws_bedrockagentcore_memory" "this" {

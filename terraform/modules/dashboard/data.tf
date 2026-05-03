@@ -1,5 +1,11 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
+data "aws_partition" "current" {}
+
+data "aws_iam_policy" "ecs_task_execution" {
+  name = "AmazonECSTaskExecutionRolePolicy"
+}
+
 
 data "aws_ecr_image" "dashboard" {
   count = local.has_image ? 1 : 0
@@ -19,7 +25,7 @@ data "aws_iam_policy_document" "task_assume" {
     condition {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
+      values   = [local.aws_account_id]
     }
   }
 }

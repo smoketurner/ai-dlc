@@ -52,8 +52,8 @@ module "telemetry" {
       effect  = "Allow"
       actions = ["bedrock:InvokeModel"]
       resources = [
-        "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+        "arn:${local.aws_partition}:bedrock:*::foundation-model/*",
+        "arn:${local.aws_partition}:bedrock:*:${local.aws_account_id}:inference-profile/*",
       ]
     }
   }

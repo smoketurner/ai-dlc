@@ -1,4 +1,7 @@
 locals {
+  aws_partition  = data.aws_partition.current.partition
+  aws_account_id = data.aws_caller_identity.current.account_id
+
   repo                  = "${var.github_owner}/${var.github_repo}"
   pr_subject            = "repo:${local.repo}:pull_request"
   branch_subjects_tf    = [for b in var.terraform_role_branches : "repo:${local.repo}:ref:refs/heads/${b}"]

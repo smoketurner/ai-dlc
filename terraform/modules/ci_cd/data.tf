@@ -1,4 +1,9 @@
 data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+
+data "aws_iam_policy" "administrator_access" {
+  name = "AdministratorAccess"
+}
 
 data "aws_iam_policy_document" "terraform_assume" {
   statement {
@@ -123,7 +128,7 @@ data "aws_iam_policy_document" "image_publisher_inline" {
     ]
 
     resources = [
-      "arn:aws:ecr:*:${data.aws_caller_identity.current.account_id}:repository/${var.project}/*",
+      "arn:${local.aws_partition}:ecr:*:${local.aws_account_id}:repository/${var.project}/*",
     ]
   }
 }
@@ -155,13 +160,13 @@ data "aws_iam_policy_document" "evals_inline" {
   statement {
     sid       = "SyncEvalCases"
     actions   = ["s3:PutObject", "s3:GetObject"]
-    resources = ["arn:aws:s3:::${var.project}-*-artifacts-${data.aws_caller_identity.current.account_id}-*/evals/*"]
+    resources = ["arn:${local.aws_partition}:s3:::${var.project}-*-artifacts-${local.aws_account_id}-*/evals/*"]
   }
 
   statement {
     sid       = "StartEvalRun"
     actions   = ["states:StartExecution"]
-    resources = ["arn:aws:states:*:${data.aws_caller_identity.current.account_id}:stateMachine:${var.project}-*-eval-runner"]
+    resources = ["arn:${local.aws_partition}:states:*:${local.aws_account_id}:stateMachine:${var.project}-*-eval-runner"]
   }
 
   statement {
@@ -171,6 +176,6 @@ data "aws_iam_policy_document" "evals_inline" {
       "states:GetExecutionHistory",
       "states:StopExecution",
     ]
-    resources = ["arn:aws:states:*:${data.aws_caller_identity.current.account_id}:execution:${var.project}-*-eval-runner:*"]
+    resources = ["arn:${local.aws_partition}:states:*:${local.aws_account_id}:execution:${var.project}-*-eval-runner:*"]
   }
 }

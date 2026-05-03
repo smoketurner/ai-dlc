@@ -59,7 +59,7 @@ resource "aws_iam_role" "execution" {
 
 resource "aws_iam_role_policy_attachment" "execution_managed" {
   role       = aws_iam_role.execution.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+  policy_arn = data.aws_iam_policy.ecs_task_execution.arn
 }
 
 resource "aws_cloudwatch_log_group" "task" {
@@ -100,7 +100,7 @@ resource "aws_ecs_task_definition" "this" {
 
       environment = [
         { name = "AIDLC_ENV", value = var.env },
-        { name = "AWS_REGION", value = data.aws_region.current.region },
+        { name = "AWS_REGION", value = local.aws_region },
         { name = "AIDLC_BUS_NAME", value = var.bus_name },
         { name = "AIDLC_RUNS_TABLE", value = var.runs_table },
         { name = "AIDLC_APPROVALS_TABLE", value = var.approvals_table },
@@ -108,7 +108,7 @@ resource "aws_ecs_task_definition" "this" {
         { name = "AIDLC_ARTIFACTS_BUCKET", value = var.artifacts_bucket },
         { name = "AIDLC_HITL_HANDLER_FUNCTION", value = var.hitl_handler_function_name },
         { name = "AIDLC_GITHUB_WEBHOOK_SECRET_ID", value = var.github_webhook_secret_id },
-        { name = "AIDLC_COGNITO_REGION", value = data.aws_region.current.region },
+        { name = "AIDLC_COGNITO_REGION", value = local.aws_region },
         { name = "AIDLC_COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
         { name = "AIDLC_COGNITO_CLIENT_ID", value = var.cognito_user_pool_client_id },
       ]
@@ -117,7 +117,7 @@ resource "aws_ecs_task_definition" "this" {
         logDriver = "awslogs"
         options = {
           awslogs-group         = aws_cloudwatch_log_group.task.name
-          awslogs-region        = data.aws_region.current.region
+          awslogs-region        = local.aws_region
           awslogs-stream-prefix = "dashboard"
         }
       }

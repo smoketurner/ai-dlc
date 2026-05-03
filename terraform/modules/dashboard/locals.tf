@@ -1,4 +1,8 @@
 locals {
+  aws_partition  = data.aws_partition.current.partition
+  aws_account_id = data.aws_caller_identity.current.account_id
+  aws_region     = data.aws_region.current.region
+
   prefix         = "${var.project}-${var.env}"
   cluster_name   = "${local.prefix}-dashboard"
   service_name   = "${local.prefix}-dashboard"

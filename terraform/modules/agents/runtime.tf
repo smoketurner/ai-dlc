@@ -23,7 +23,7 @@ data "aws_iam_policy_document" "runtime_assume" {
     condition {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
+      values   = [local.aws_account_id]
     }
   }
 }
@@ -52,7 +52,7 @@ data "aws_iam_policy_document" "runtime_inline" {
       "ecr:GetDownloadUrlForLayer",
     ]
     resources = [
-      "arn:aws:ecr:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:repository/${var.project}/${each.key}",
+      "arn:${local.aws_partition}:ecr:${local.aws_region}:${local.aws_account_id}:repository/${var.project}/${each.key}",
     ]
   }
 
@@ -60,8 +60,8 @@ data "aws_iam_policy_document" "runtime_inline" {
     sid     = "BedrockInvokeModel"
     actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
     resources = [
-      "arn:aws:bedrock:*::foundation-model/*",
-      "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+      "arn:${local.aws_partition}:bedrock:*::foundation-model/*",
+      "arn:${local.aws_partition}:bedrock:*:${local.aws_account_id}:inference-profile/*",
     ]
   }
 
@@ -111,7 +111,7 @@ data "aws_iam_policy_document" "runtime_inline" {
       "logs:PutLogEvents",
       "logs:DescribeLogStreams",
     ]
-    resources = ["arn:aws:logs:*:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/runtimes/*"]
+    resources = ["arn:${local.aws_partition}:logs:*:${local.aws_account_id}:log-group:/aws/bedrock-agentcore/runtimes/*"]
   }
 }
 

@@ -20,9 +20,9 @@ output "domain" {
 }
 
 output "issuer_url" {
-  value = "https://cognito-idp.${data.aws_region.current.region}.amazonaws.com/${aws_cognito_user_pool.this.id}"
+  value = "https://cognito-idp.${local.aws_region}.amazonaws.com/${aws_cognito_user_pool.this.id}"
 }
 
 output "discovery_url" {
-  value = "https://cognito-idp.${data.aws_region.current.region}.amazonaws.com/${aws_cognito_user_pool.this.id}/.well-known/openid-configuration"
+  value = "https://cognito-idp.${local.aws_region}.amazonaws.com/${aws_cognito_user_pool.this.id}/.well-known/openid-configuration"
 }

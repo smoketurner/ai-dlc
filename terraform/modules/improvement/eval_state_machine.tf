@@ -85,7 +85,7 @@ data "aws_iam_policy_document" "eval_states_inline" {
       "events:PutRule",
       "events:DescribeRule",
     ]
-    resources = ["arn:aws:events:*:${data.aws_caller_identity.current.account_id}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"]
+    resources = ["arn:${local.aws_partition}:events:*:${local.aws_account_id}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"]
   }
 
   statement {

@@ -2,6 +2,12 @@ data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
 
+data "aws_partition" "current" {}
+
+data "aws_iam_policy" "memory_inference" {
+  name = "AmazonBedrockAgentCoreMemoryBedrockModelInferenceExecutionRolePolicy"
+}
+
 # Trust policy for the AgentCore Memory service execution role.
 data "aws_iam_policy_document" "memory_assume" {
   statement {
@@ -26,7 +32,7 @@ data "aws_iam_policy_document" "gateway_assume" {
     condition {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
+      values   = [local.aws_account_id]
     }
   }
 }

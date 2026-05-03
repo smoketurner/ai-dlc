@@ -18,7 +18,7 @@ data "aws_iam_policy_document" "agentcore_pull" {
     condition {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
+      values   = [local.aws_account_id]
     }
   }
 }

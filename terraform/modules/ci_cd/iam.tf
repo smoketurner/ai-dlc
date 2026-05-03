@@ -22,12 +22,15 @@ resource "aws_iam_role_policy" "terraform_inline" {
   policy = data.aws_iam_policy_document.terraform_inline.json
 }
 
-# Power-user write access for apply. Many AWS resources don't support
-# tag-on-create conditions; consumers should narrow this further (or replace
-# entirely) once the org's CI/CD posture stabilises.
-resource "aws_iam_role_policy_attachment" "terraform_power" {
+# Administrator access for terraform apply. The trust policy already restricts
+# WHO can assume this role (only PR + main on this repo via OIDC), so the
+# blast radius is bounded by the GitHub side. PowerUserAccess was tried first
+# but excludes IAM, which terraform needs for module.agents/dashboard role
+# creation. Narrow to a custom inline policy if/when the org's CI/CD posture
+# requires least-privilege at this layer.
+resource "aws_iam_role_policy_attachment" "terraform_admin" {
   role       = aws_iam_role.terraform.id
-  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+  policy_arn = data.aws_iam_policy.administrator_access.arn
 }
 
 resource "aws_iam_role" "image_publisher" {
