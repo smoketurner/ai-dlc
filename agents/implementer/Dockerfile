@@ -7,7 +7,7 @@
 
 ARG PYTHON_VERSION=3.14
 ARG NODE_MAJOR=22
-ARG CLAUDE_CODE_VERSION=2.0.39
+ARG CLAUDE_CODE_VERSION=2.1.126
 
 # Trixie variant ships uv 0.11.x (matches pyproject required-version >=0.11);
 # the bookworm variant lags at uv 0.9.x.
