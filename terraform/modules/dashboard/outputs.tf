@@ -27,3 +27,8 @@ output "alb_security_group_id" {
   description = "Security group fronting the ALB."
   value       = aws_security_group.alb.id
 }
+
+output "url" {
+  description = "Public URL for the dashboard. https://<fqdn> when use_https, otherwise http://<alb-dns>."
+  value       = local.use_https ? "https://${var.dashboard_fqdn}" : "http://${aws_lb.this.dns_name}"
+}

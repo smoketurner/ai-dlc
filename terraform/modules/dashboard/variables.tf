@@ -40,8 +40,14 @@ variable "alb_log_bucket" {
   type        = string
 }
 
-variable "alb_acm_certificate_arn" {
-  description = "ACM cert ARN for the HTTPS listener. Optional — when null, the listener is HTTP-only."
+variable "dashboard_fqdn" {
+  description = "Public FQDN for the dashboard (e.g., dashboard-dev.aidlc.smoketurner.com). When set together with route53_zone_id, the module manages the ACM cert + DNS A-alias automatically. When null, the ALB stays HTTP-only with no friendly hostname."
+  type        = string
+  default     = null
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 hosted zone ID for `dashboard_fqdn`. Required when dashboard_fqdn is set."
   type        = string
   default     = null
 }

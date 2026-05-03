@@ -19,6 +19,19 @@
 #   improvement  → state, messaging
 ################################################################################
 
+data "aws_route53_zone" "bootstrap" {
+  name         = var.dns_zone_name
+  private_zone = false
+}
+
+locals {
+  dashboard_fqdn = "dashboard-${var.env}.${var.dns_zone_name}"
+  dashboard_url  = "https://${local.dashboard_fqdn}"
+
+  dashboard_callback_urls = coalesce(var.dashboard_callback_urls, ["${local.dashboard_url}/oauth2/idpresponse"])
+  dashboard_logout_urls   = coalesce(var.dashboard_logout_urls, ["${local.dashboard_url}/logout"])
+}
+
 module "network" {
   source = "../../modules/network"
 
@@ -39,12 +52,9 @@ module "ci_cd" {
 module "auth" {
   source = "../../modules/auth"
 
-  env = var.env
-  # Callback / logout URLs are the dashboard ALB URLs once Phase 7 lands.
-  # Until then, leave empty — the user pool stands up without an app client
-  # callback configured for production traffic; smoke tests use the hosted UI.
-  callback_urls = var.dashboard_callback_urls
-  logout_urls   = var.dashboard_logout_urls
+  env           = var.env
+  callback_urls = local.dashboard_callback_urls
+  logout_urls   = local.dashboard_logout_urls
 }
 
 module "state" {
@@ -149,8 +159,9 @@ module "dashboard" {
   public_subnet_ids  = module.network.public_subnet_ids
   private_subnet_ids = module.network.private_subnet_ids
 
-  alb_log_bucket          = module.state.artifacts_bucket
-  alb_acm_certificate_arn = var.dashboard_acm_certificate_arn
+  alb_log_bucket  = module.state.artifacts_bucket
+  dashboard_fqdn  = local.dashboard_fqdn
+  route53_zone_id = data.aws_route53_zone.bootstrap.zone_id
 
   bus_name = module.messaging.bus_name
   bus_arn  = module.messaging.bus_arn

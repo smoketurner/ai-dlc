@@ -152,8 +152,13 @@ output "platform_lambda_arns" {
 # dashboard --------------------------------------------------------------------
 
 output "dashboard_alb_dns" {
-  description = "Dashboard ALB DNS name."
+  description = "Dashboard ALB DNS name (raw AWS hostname; users hit dashboard_url instead)."
   value       = module.dashboard.alb_dns_name
+}
+
+output "dashboard_url" {
+  description = "Public dashboard URL (HTTPS via the Route 53 + ACM-managed FQDN)."
+  value       = module.dashboard.url
 }
 
 output "dashboard_ecs_cluster" {

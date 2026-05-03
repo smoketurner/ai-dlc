@@ -45,15 +45,21 @@ variable "daily_token_spend_alarm_usd" {
 }
 
 variable "dashboard_callback_urls" {
-  description = "OIDC callback URLs for the Cognito app client. Populated once the dashboard ALB exists in Phase 7."
+  description = "OIDC callback URLs for the Cognito app client. Defaults to the dashboard's terraform-managed FQDN; override only if you need additional callbacks (e.g., a second hostname)."
   type        = list(string)
-  default     = []
+  default     = null
 }
 
 variable "dashboard_logout_urls" {
-  description = "OIDC logout URLs for the Cognito app client. Populated once the dashboard ALB exists in Phase 7."
+  description = "OIDC logout URLs for the Cognito app client. Defaults to the dashboard's terraform-managed FQDN root; override to add additional logout destinations."
   type        = list(string)
-  default     = []
+  default     = null
+}
+
+variable "dns_zone_name" {
+  description = "Public Route 53 hosted zone the dashboard FQDN is created under. The zone itself is provisioned in terraform/bootstrap and shared across envs."
+  type        = string
+  default     = "aidlc.smoketurner.com"
 }
 
 variable "github_oauth" {
@@ -95,8 +101,3 @@ variable "aws_profile" {
   default     = "aidlc-admin"
 }
 
-variable "dashboard_acm_certificate_arn" {
-  description = "ACM certificate ARN for the dashboard ALB HTTPS listener. Null = HTTP-only (dev only)."
-  type        = string
-  default     = null
-}
