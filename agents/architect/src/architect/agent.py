@@ -17,7 +17,7 @@ from architect.spec import SpecBundle
 from architect.tools import read_memory_md_tool, write_spec_doc_tool
 from common.routing import load_system_prompt, pick_variant
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7"
+DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 
 
 def model_id() -> str:

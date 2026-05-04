@@ -111,12 +111,12 @@ module "agents" {
     architect = {
       description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
       targets          = ["artifact_tool"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-7"
+      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     critic = {
       description      = "Critic agent — adversarially reviews the spec (advisory)."
       targets          = ["artifact_tool"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-7"
+      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
@@ -136,7 +136,7 @@ module "agents" {
     proposer = {
       description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
       targets          = ["repo_helper"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-7"
+      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
   }
 
