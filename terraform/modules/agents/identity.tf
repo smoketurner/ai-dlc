@@ -58,7 +58,12 @@ resource "aws_bedrockagentcore_workload_identity" "repo_helper" {
 resource "aws_bedrockagentcore_workload_identity" "dashboard" {
   count = var.github_app_secret_name == null ? 0 : 1
 
-  name = "${local.prefix}-dashboard"
+  name                                = "${local.prefix}-dashboard"
+  allowed_resource_oauth2_return_urls = var.dashboard_oauth_return_url == "" ? [] : [var.dashboard_oauth_return_url]
+
+  lifecycle {
+    ignore_changes = [allowed_resource_oauth2_return_urls]
+  }
 }
 
 resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {

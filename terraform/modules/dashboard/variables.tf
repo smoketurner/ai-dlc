@@ -184,6 +184,12 @@ variable "github_oauth_provider_name" {
   default     = ""
 }
 
+variable "dashboard_oauth_return_url" {
+  description = "Absolute URL of /auth/github/callback. Passed to AgentCore as resourceOauth2ReturnUrl on GetResourceOauth2Token; must match the value in the dashboard workload identity's allowed_resource_oauth2_return_urls list."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

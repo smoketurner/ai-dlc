@@ -132,6 +132,20 @@ variable "lambda_log_retention_days" {
   default     = 30
 }
 
+variable "dashboard_oauth_return_url" {
+  description = <<-EOT
+    Absolute URL of the dashboard's ``/auth/github/callback`` route.
+    AgentCore Identity redirects users here after they finish authorizing
+    the GitHub App. Must be in the dashboard workload identity's
+    ``allowed_resource_oauth2_return_urls`` (this module sets it for you)
+    AND passed by the dashboard as ``resourceOauth2ReturnUrl`` to
+    ``GetResourceOauth2Token`` (this module exports it for plumbing).
+    Empty string disables the OBO flow.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "github_app_secret_name" {
   description = <<-EOT
     Name of an AWS Secrets Manager secret holding the GitHub App credentials,

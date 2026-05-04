@@ -71,6 +71,15 @@ module "tool_lambda" {
         actions   = ["secretsmanager:GetSecretValue"]
         resources = [data.aws_secretsmanager_secret.github_app[0].arn]
       }
+      # AgentCore Identity uses Forward-Access Session to read its own
+      # internal credential-vault secret on behalf of the caller, so the
+      # repo_helper role must hold GetSecretValue on the service-managed
+      # ``bedrock-agentcore-identity!default/*`` secret pattern.
+      read_agentcore_identity_secret = {
+        effect    = "Allow"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = ["arn:aws:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
+      }
       agentcore_user_obo = {
         effect = "Allow"
         actions = [

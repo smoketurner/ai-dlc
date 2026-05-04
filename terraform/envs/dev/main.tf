@@ -142,7 +142,8 @@ module "agents" {
 
   agent_image_tags = local.agent_image_tags
 
-  github_app_secret_name = var.github_app_secret_name
+  github_app_secret_name     = var.github_app_secret_name
+  dashboard_oauth_return_url = "${local.dashboard_url}/auth/github/callback"
 }
 
 resource "aws_secretsmanager_secret" "github_webhook" {
@@ -223,6 +224,7 @@ module "dashboard" {
 
   dashboard_workload_name    = module.agents.dashboard_workload_name
   github_oauth_provider_name = module.agents.github_oauth_provider_name
+  dashboard_oauth_return_url = module.agents.dashboard_oauth_return_url
 }
 
 module "improvement" {

@@ -67,6 +67,7 @@ async def start_github_auth(request: Request, user: CurrentUser) -> Response:
         oauth2Flow="USER_FEDERATION",
         workloadIdentityToken=workload_token,
         scopes=[],
+        resourceOauth2ReturnUrl=cfg.dashboard_oauth_return_url,
     )
 
     if resource_response.get("accessToken"):

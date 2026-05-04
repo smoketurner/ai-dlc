@@ -84,6 +84,11 @@ output "dashboard_workload_name" {
   )
 }
 
+output "dashboard_oauth_return_url" {
+  description = "Dashboard /auth/github/callback URL — passed back to the dashboard so it can supply the same value to ``GetResourceOauth2Token``."
+  value       = var.dashboard_oauth_return_url
+}
+
 output "runtime_arns" {
   description = "Map of agent name → AgentCore Runtime ARN."
   value = {

@@ -84,6 +84,20 @@ data "aws_iam_policy_document" "task_inline" {
       resources = ["*"]
     }
   }
+
+  # AgentCore Identity reads its own internal Secrets Manager secret to
+  # retrieve cached OAuth tokens. The call is made via Forward-Access
+  # Session, so the caller (dashboard task role) must hold the permission
+  # — AgentCore's own service role isn't enough. The secret name is
+  # service-managed and follows the pattern below.
+  dynamic "statement" {
+    for_each = var.dashboard_workload_name == "" ? [] : [1]
+    content {
+      sid       = "ReadAgentCoreIdentitySecret"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = ["arn:aws:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
+    }
+  }
 }
 
 data "aws_iam_policy_document" "execution_assume" {

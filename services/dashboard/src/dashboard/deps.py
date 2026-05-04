@@ -36,6 +36,7 @@ class Settings(BaseModel):
     auth_disabled: bool
     dashboard_workload_name: str
     github_oauth_provider_name: str
+    dashboard_oauth_return_url: str
 
 
 @cache
@@ -57,6 +58,7 @@ def settings() -> Settings:
         auth_disabled=os.environ.get("AIDLC_AUTH", "enabled").lower() == "disabled",
         dashboard_workload_name=os.environ.get("AIDLC_DASHBOARD_WORKLOAD_NAME", ""),
         github_oauth_provider_name=os.environ.get("AIDLC_GITHUB_OAUTH_PROVIDER_NAME", ""),
+        dashboard_oauth_return_url=os.environ.get("AIDLC_DASHBOARD_OAUTH_RETURN_URL", ""),
     )
 
 

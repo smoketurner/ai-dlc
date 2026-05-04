@@ -115,6 +115,7 @@ resource "aws_ecs_task_definition" "this" {
         { name = "AIDLC_COGNITO_CLIENT_ID", value = var.cognito_user_pool_client_id },
         { name = "AIDLC_DASHBOARD_WORKLOAD_NAME", value = var.dashboard_workload_name },
         { name = "AIDLC_GITHUB_OAUTH_PROVIDER_NAME", value = var.github_oauth_provider_name },
+        { name = "AIDLC_DASHBOARD_OAUTH_RETURN_URL", value = var.dashboard_oauth_return_url },
       ]
 
       logConfiguration = {
