@@ -30,6 +30,21 @@ locals {
 
   dashboard_callback_urls = coalesce(var.dashboard_callback_urls, ["${local.dashboard_url}/oauth2/idpresponse"])
   dashboard_logout_urls   = coalesce(var.dashboard_logout_urls, ["${local.dashboard_url}/logout"])
+
+  # Agents whose ECR image has been pushed at least once. AgentCore Runtimes
+  # are only created for these — agents missing an image get IAM / gateway /
+  # identity but no runtime, so `terraform apply` works before the first
+  # `images-build` run. Held in a local so the improvement module can read
+  # ``contains(keys(...), "proposer")`` at plan time (the runtime ARN itself
+  # may be unknown when first being created, which would break ``count``).
+  agent_image_tags = {
+    architect   = "latest"
+    critic      = "latest"
+    implementer = "latest"
+    proposer    = "latest"
+    reviewer    = "latest"
+    tester      = "latest"
+  }
 }
 
 module "network" {
@@ -125,27 +140,9 @@ module "agents" {
     }
   }
 
-  # Agents whose ECR image has been pushed at least once. AgentCore Runtimes
-  # are only created for these — agents missing an image get IAM / gateway /
-  # identity but no runtime, so `terraform apply` works before the first
-  # `images-build` run. Add an entry after pushing the image, then re-apply
-  # to provision the runtime. Subsequent image pushes flow through the
-  # workflow's update-agent-runtime call (lifecycle.ignore_changes).
-  agent_image_tags = {
-    architect   = "latest"
-    implementer = "latest"
-    # critic, reviewer, tester, proposer omitted — images haven't been
-    # pushed yet (the Phase 10 / Phase 9c images-build runs are failing).
-    # Add each entry once the images-build workflow has published its image.
-  }
+  agent_image_tags = local.agent_image_tags
 
-  github_app = var.github_app == null ? null : {
-    app_id        = var.github_app.app_id
-    private_key   = file("${path.module}/${var.github_app.private_key_pem_file}")
-    client_id     = var.github_app.client_id
-    client_secret = var.github_app.client_secret
-    version       = var.github_app.version
-  }
+  github_app_secret_name = var.github_app_secret_name
 }
 
 resource "aws_secretsmanager_secret" "github_webhook" {
@@ -247,6 +244,7 @@ module "improvement" {
   alerts_topic_arn       = module.observability.alerts_topic_arn
 
   proposer_runtime_arn  = lookup(module.agents.runtime_arns, "proposer", "")
+  proposer_enabled      = contains(keys(local.agent_image_tags), "proposer")
   proposer_target_repo  = "${var.github_owner}/${var.github_repo}"
   proposer_project_slug = var.project
 }

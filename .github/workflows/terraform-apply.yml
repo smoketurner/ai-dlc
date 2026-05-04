@@ -36,6 +36,12 @@ jobs:
       # Force the provider + backend to use OIDC env-var credentials, not the
       # local dev SSO profile that's the default.
       TF_VAR_aws_profile: ""
+      # Name of the operator-managed Secrets Manager secret holding the
+      # GitHub App credentials (created out-of-band; never managed by
+      # terraform). Set as a repo variable so CI applies don't destroy
+      # the credential provider / workload identities. Empty when the
+      # GitHub integration is intentionally not provisioned.
+      TF_VAR_github_app_secret_name: ${{ vars.AIDLC_GITHUB_APP_SECRET_NAME }}
     defaults:
       run:
         working-directory: terraform/envs/dev

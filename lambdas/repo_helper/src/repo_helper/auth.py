@@ -66,11 +66,14 @@ JWT_REFRESH_MARGIN = 30  # rotate this many seconds before TTL
 class AppCredentials(BaseModel):
     """Decoded App credentials read from Secrets Manager.
 
-    ``private_key_base64`` is the PEM private key, base64-encoded as
-    stored. Use :meth:`private_key_pem` to get the decoded PEM bytes.
+    The source-of-truth secret carries a wider schema (``client_id``,
+    ``client_secret``, ``version`` for the AgentCore Identity OAuth
+    provider), but the Lambda only needs ``app_id`` + the PEM key.
+    ``extra="ignore"`` lets us tolerate the extra fields without
+    coupling the Lambda to the OAuth-flow concerns.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+    model_config = ConfigDict(frozen=True, extra="ignore", strict=True)
 
     app_id: int = Field(ge=1)
     private_key_base64: SecretStr

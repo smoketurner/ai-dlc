@@ -129,7 +129,7 @@ data "aws_iam_policy_document" "runtime_inline" {
   # itself enforces scope via the workload identity + credential
   # provider configuration.
   dynamic "statement" {
-    for_each = contains(each.value.targets, "repo_helper") && var.github_app != null ? [1] : []
+    for_each = contains(each.value.targets, "repo_helper") && var.github_app_secret_name != null ? [1] : []
     content {
       sid = "AgentCoreUserObo"
       actions = [
@@ -213,7 +213,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     contains(var.agents[each.key].targets, "repo_helper") ? {
       AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
     } : {},
-    contains(var.agents[each.key].targets, "repo_helper") && var.github_app != null ? {
+    contains(var.agents[each.key].targets, "repo_helper") && var.github_app_secret_name != null ? {
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.agent[each.key].name
     } : {},

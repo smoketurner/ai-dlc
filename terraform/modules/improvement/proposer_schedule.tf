@@ -14,9 +14,21 @@
 ################################################################################
 
 variable "proposer_runtime_arn" {
-  description = "AgentCore Runtime ARN of the Proposer agent. Empty string skips schedule."
+  description = "AgentCore Runtime ARN of the Proposer agent. May be unknown at plan time when the runtime is being created."
   type        = string
   default     = ""
+}
+
+variable "proposer_enabled" {
+  description = <<-EOT
+    Whether the Proposer schedule + trigger Lambda are provisioned. Driven
+    by ``contains(keys(var.agent_image_tags), "proposer")`` at the env level
+    so the value is known at plan time (the runtime ARN itself may be
+    unknown when the runtime is first being created, which would otherwise
+    break ``count`` evaluation).
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "proposer_target_repo" {
@@ -37,7 +49,7 @@ variable "proposer_lookback_days" {
 
 # IAM role assumed by EventBridge Scheduler when invoking the proposer runtime.
 resource "aws_iam_role" "scheduler_proposer" {
-  count = var.proposer_runtime_arn == "" ? 0 : 1
+  count = var.proposer_enabled ? 1 : 0
 
   name = "${local.prefix}-scheduler-proposer"
   assume_role_policy = jsonencode({
@@ -51,7 +63,7 @@ resource "aws_iam_role" "scheduler_proposer" {
 }
 
 resource "aws_iam_role_policy" "scheduler_proposer_invoke" {
-  count = var.proposer_runtime_arn == "" ? 0 : 1
+  count = var.proposer_enabled ? 1 : 0
 
   role = aws_iam_role.scheduler_proposer[0].id
   policy = jsonencode({
@@ -65,7 +77,7 @@ resource "aws_iam_role_policy" "scheduler_proposer_invoke" {
 }
 
 resource "aws_scheduler_schedule" "proposer_weekly" {
-  count = var.proposer_runtime_arn == "" ? 0 : 1
+  count = var.proposer_enabled ? 1 : 0
 
   name        = "${local.prefix}-proposer-weekly"
   group_name  = "default"
@@ -106,7 +118,7 @@ resource "aws_scheduler_schedule" "proposer_weekly" {
 # agents module) because the trigger is a 9c concern, not a fleet concern.
 
 module "proposer_trigger" {
-  count = var.proposer_runtime_arn == "" ? 0 : 1
+  count = var.proposer_enabled ? 1 : 0
 
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -150,7 +162,7 @@ module "proposer_trigger" {
 }
 
 resource "aws_sns_topic_subscription" "proposer_trigger" {
-  count = var.proposer_runtime_arn == "" ? 0 : 1
+  count = var.proposer_enabled ? 1 : 0
 
   topic_arn = var.alerts_topic_arn
   protocol  = "lambda"
@@ -158,7 +170,7 @@ resource "aws_sns_topic_subscription" "proposer_trigger" {
 }
 
 resource "aws_lambda_permission" "sns_invoke_proposer_trigger" {
-  count = var.proposer_runtime_arn == "" ? 0 : 1
+  count = var.proposer_enabled ? 1 : 0
 
   statement_id  = "AllowSNSInvokeProposerTrigger"
   action        = "lambda:InvokeFunction"

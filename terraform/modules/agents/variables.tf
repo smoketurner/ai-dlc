@@ -132,32 +132,37 @@ variable "lambda_log_retention_days" {
   default     = 30
 }
 
-variable "github_app" {
+variable "github_app_secret_name" {
   description = <<-EOT
-    GitHub App credentials used by the platform's two GitHub auth paths:
+    Name of an AWS Secrets Manager secret holding the GitHub App credentials,
+    in JSON shape:
 
-      * ``client_id`` + ``client_secret`` configure the AgentCore Identity
-        ``GithubOauth2`` credential provider for the user-on-behalf-of
-        flow (``USER_FEDERATION``). The user authorizes the App once via
-        the dashboard's "Connect GitHub" link; AgentCore caches the
-        resulting OAuth token in the Token Vault. Written via write-only
-        ``_wo`` arguments — they never land in Terraform state.
-      * ``app_id`` + ``private_key`` (PEM-encoded RSA) are stored in a
-        platform-owned Secrets Manager secret and used by the repo_helper
-        Lambda to mint installation tokens for bot operations / fallback.
+        {
+          "app_id":             3598242,
+          "private_key_base64": "<base64 of the App's PEM private key>",
+          "client_id":          "Iv23li...",
+          "client_secret":      "...",
+          "version":            1
+        }
 
-    Set to ``null`` to skip the integration entirely (no GitHub access).
-    Bump ``version`` to rotate the AgentCore-side credentials.
+    The secret is **operator-managed** (created out-of-band, e.g. via the
+    AWS console or one-shot ``aws secretsmanager create-secret`` call) so
+    that ``terraform apply`` runs in environments without access to the
+    raw values (CI/CD) won't destroy the integration. Terraform reads the
+    secret via a data source and uses:
+
+      * ``client_id`` + ``client_secret`` + ``version`` to configure the
+        AgentCore Identity ``GithubOauth2`` credential provider for the
+        user-on-behalf-of flow (``USER_FEDERATION``). Bump ``version``
+        inside the secret value to rotate the AgentCore-side credentials.
+      * ``app_id`` + ``private_key_base64`` are read directly by the
+        repo_helper Lambda via the same secret ARN — no second copy.
+
+    Set to ``null`` to skip the GitHub integration entirely.
   EOT
-  type = object({
-    app_id        = number
-    private_key   = string
-    client_id     = string
-    client_secret = string
-    version       = number
-  })
+  type      = string
   default   = null
-  sensitive = true
+  nullable  = true
 }
 
 variable "tags" {

@@ -5,14 +5,31 @@
 #  * One workload identity for the repo_helper Lambda — used when the Lambda
 #    calls AgentCore Identity to fetch user-OBO GitHub tokens.
 #  * Token vault uses the AWS service-managed key (default).
-#  * GitHub App auth — the ``GithubOauth2`` credential provider handles the
-#    user-on-behalf-of (USER_FEDERATION) flow; the App's private key for
-#    installation-token minting goes into a separate Secrets Manager secret
-#    that the repo_helper Lambda reads at runtime.
+#  * GitHub App auth — the ``GithubOauth2`` credential provider reads the
+#    App's ``client_id`` + ``client_secret`` from an operator-managed
+#    Secrets Manager secret. The same secret carries ``app_id`` +
+#    ``private_key_base64`` which the repo_helper Lambda reads directly
+#    when minting installation tokens.
 #
 # Workload identity ARNs feed into per-agent runtime roles (Phase 4) and are
 # how AgentCore scopes OAuth2 token issuance to the calling workload.
 ################################################################################
+
+data "aws_secretsmanager_secret" "github_app" {
+  count = var.github_app_secret_name == null ? 0 : 1
+
+  name = var.github_app_secret_name
+}
+
+data "aws_secretsmanager_secret_version" "github_app" {
+  count = var.github_app_secret_name == null ? 0 : 1
+
+  secret_id = data.aws_secretsmanager_secret.github_app[0].id
+}
+
+locals {
+  github_app = var.github_app_secret_name == null ? null : jsondecode(data.aws_secretsmanager_secret_version.github_app[0].secret_string)
+}
 
 resource "aws_bedrockagentcore_workload_identity" "agent" {
   for_each = var.agents
@@ -30,7 +47,7 @@ resource "aws_bedrockagentcore_workload_identity" "agent" {
 }
 
 resource "aws_bedrockagentcore_workload_identity" "repo_helper" {
-  count = var.github_app == null ? 0 : 1
+  count = var.github_app_secret_name == null ? 0 : 1
 
   name = "${local.prefix}-repo-helper"
 }
@@ -39,57 +56,27 @@ resource "aws_bedrockagentcore_workload_identity" "repo_helper" {
 # Cognito-authenticated user into AgentCore's USER_FEDERATION on the
 # GithubOauth2 credential provider.
 resource "aws_bedrockagentcore_workload_identity" "dashboard" {
-  count = var.github_app == null ? 0 : 1
+  count = var.github_app_secret_name == null ? 0 : 1
 
   name = "${local.prefix}-dashboard"
 }
 
 resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {
-  count = var.github_app == null ? 0 : 1
+  count = var.github_app_secret_name == null ? 0 : 1
 
   name                       = "${local.prefix}-github"
   credential_provider_vendor = "GithubOauth2"
 
   oauth2_provider_config {
     github_oauth2_provider_config {
-      client_id_wo                  = var.github_app.client_id
-      client_secret_wo              = var.github_app.client_secret
-      client_credentials_wo_version = var.github_app.version
+      client_id_wo                  = local.github_app.client_id
+      client_secret_wo              = local.github_app.client_secret
+      client_credentials_wo_version = local.github_app.version
     }
   }
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-github"
     Component = "agents"
-  })
-}
-
-# Secret holding the GitHub App's private key + numeric app_id, used by the
-# repo_helper Lambda when it mints installation-scoped access tokens (the
-# bot-attribution fallback path). User-OBO tokens flow through AgentCore
-# Identity above; this secret is only for the install path.
-resource "aws_secretsmanager_secret" "github_app" {
-  count = var.github_app == null ? 0 : 1
-
-  name                    = "${local.prefix}/github-app"
-  description             = "GitHub App app_id + private_key for installation-token minting."
-  recovery_window_in_days = 7
-
-  tags = merge(var.tags, {
-    Name      = "${local.prefix}-github-app"
-    Component = "agents"
-  })
-}
-
-resource "aws_secretsmanager_secret_version" "github_app" {
-  count = var.github_app == null ? 0 : 1
-
-  secret_id = aws_secretsmanager_secret.github_app[0].id
-  # ``private_key`` is base64-encoded so the stored value stays opaque +
-  # single-line (no JSON-escaped newlines, no multi-line console rendering).
-  # The repo_helper Lambda decodes it back to PEM bytes at use time.
-  secret_string = jsonencode({
-    app_id             = var.github_app.app_id
-    private_key_base64 = base64encode(var.github_app.private_key)
   })
 }

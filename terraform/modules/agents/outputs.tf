@@ -67,16 +67,16 @@ output "github_oauth_provider_name" {
 }
 
 output "github_app_secret_arn" {
-  description = "Secrets Manager ARN of the GitHub App credentials (app_id + private_key) for installation-token minting."
+  description = "Secrets Manager ARN of the operator-managed GitHub App credentials secret."
   value = (
-    length(aws_secretsmanager_secret.github_app) > 0
-    ? aws_secretsmanager_secret.github_app[0].arn
+    length(data.aws_secretsmanager_secret.github_app) > 0
+    ? data.aws_secretsmanager_secret.github_app[0].arn
     : null
   )
 }
 
 output "dashboard_workload_name" {
-  description = "AgentCore workload identity name for the dashboard's /auth/github flow. Empty when github_app isn't configured."
+  description = "AgentCore workload identity name for the dashboard's /auth/github flow. Empty when github_app_secret_name isn't configured."
   value = (
     length(aws_bedrockagentcore_workload_identity.dashboard) > 0
     ? aws_bedrockagentcore_workload_identity.dashboard[0].name

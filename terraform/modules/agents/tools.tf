@@ -36,8 +36,8 @@ module "tool_lambda" {
       AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket
       AIDLC_MEMORY_MD_BUCKET = var.memory_md_bucket
     },
-    var.github_app == null ? {} : {
-      AIDLC_GITHUB_APP_SECRET_ARN      = aws_secretsmanager_secret.github_app[0].arn
+    var.github_app_secret_name == null ? {} : {
+      AIDLC_GITHUB_APP_SECRET_ARN      = data.aws_secretsmanager_secret.github_app[0].arn
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.repo_helper[0].name
     },
@@ -48,7 +48,7 @@ module "tool_lambda" {
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
-  attach_policy_statements = each.key == "artifact_tool" || (each.key == "repo_helper" && var.github_app != null)
+  attach_policy_statements = each.key == "artifact_tool" || (each.key == "repo_helper" && var.github_app_secret_name != null)
   policy_statements = each.key == "artifact_tool" ? {
     s3_artifacts = {
       effect = "Allow"
@@ -65,11 +65,11 @@ module "tool_lambda" {
         "${var.memory_md_bucket_arn}/*",
       ]
     }
-    } : (each.key == "repo_helper" && var.github_app != null ? {
+    } : (each.key == "repo_helper" && var.github_app_secret_name != null ? {
       read_app_secret = {
         effect    = "Allow"
         actions   = ["secretsmanager:GetSecretValue"]
-        resources = [aws_secretsmanager_secret.github_app[0].arn]
+        resources = [data.aws_secretsmanager_secret.github_app[0].arn]
       }
       agentcore_user_obo = {
         effect = "Allow"
