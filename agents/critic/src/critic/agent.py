@@ -17,7 +17,7 @@ from common.routing import load_system_prompt, pick_variant
 from critic.critique import Critique
 from critic.tools import read_memory_md_tool, read_spec_doc_tool
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7"
 
 
 def model_id() -> str:

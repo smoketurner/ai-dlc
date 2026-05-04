@@ -15,7 +15,7 @@ from common.routing import load_system_prompt, pick_variant
 from reviewer.review import Review
 from reviewer.tools import read_memory_md_tool, read_spec_doc_tool
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 
 
 def model_id() -> str:

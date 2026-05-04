@@ -111,22 +111,22 @@ module "agents" {
     architect = {
       description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
       targets          = ["artifact_tool"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+      bedrock_model_id = "us.anthropic.claude-opus-4-7"
     }
     critic = {
       description      = "Critic agent — adversarially reviews the spec (advisory)."
       targets          = ["artifact_tool"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+      bedrock_model_id = "us.anthropic.claude-opus-4-7"
     }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
       targets          = ["artifact_tool", "repo_helper"]
-      bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     reviewer = {
       description      = "Reviewer agent — code-reviews each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
-      bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     tester = {
       description      = "Tester agent — flags test gaps in each task PR (advisory)."
@@ -136,7 +136,7 @@ module "agents" {
     proposer = {
       description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
       targets          = ["repo_helper"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+      bedrock_model_id = "us.anthropic.claude-opus-4-7"
     }
   }
 

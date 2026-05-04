@@ -9,7 +9,7 @@ from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 from common.routing import load_system_prompt, pick_variant
 from implementer.hooks import deny_dangerous_bash, deny_sensitive_writes
 
-DEFAULT_MODEL_ID = "claude-sonnet-4-6-20260301"
+DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 DEFAULT_BUDGET_USD = 5.0
 DEFAULT_MAX_TURNS = 50
 

@@ -23,7 +23,7 @@ from proposer.tools import (
     read_rejection_summary_tool,
 )
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7"
 
 
 def model_id() -> str:
