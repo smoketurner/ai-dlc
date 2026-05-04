@@ -22,6 +22,7 @@ logger = structlog.get_logger()
 async def submit_run(req: SubmitRunRequest, user: CurrentUser) -> SubmitRunResponse:
     """Submit a new run and emit ``REQUEST.RECEIVED``."""
     cfg = settings()
+    project_slug = slug_from_repo(req.target_repo)
     idempotency_key = req.idempotency_key or f"{user.sub}:{int(time.time() * 1000)}"
     run_id = new_run_id()
     if not reserve_idempotency(idempotency_key, str(run_id), cfg.idempotency_table):
@@ -38,7 +39,7 @@ async def submit_run(req: SubmitRunRequest, user: CurrentUser) -> SubmitRunRespo
         correlation_id=correlation_id,
         actor_id=req.requestor or user.sub,
         payload=RequestReceived(
-            project_slug=req.project_slug,
+            project_slug=project_slug,
             intent=req.intent,
             requestor=req.requestor or user.sub,
             requestor_sub=user.sub,
@@ -49,14 +50,19 @@ async def submit_run(req: SubmitRunRequest, user: CurrentUser) -> SubmitRunRespo
     logger.info(
         "run accepted",
         run_id=str(run_id),
-        project_slug=req.project_slug,
+        project_slug=project_slug,
         actor=user.sub,
     )
     return SubmitRunResponse(
         run_id=str(run_id),
         correlation_id=str(correlation_id),
-        project_slug=req.project_slug,
+        project_slug=project_slug,
     )
+
+
+def slug_from_repo(target_repo: str) -> str:
+    """``owner/name`` -> ``owner-name`` (lowercased). One slug per repo, stable across runs."""
+    return target_repo.lower().replace("/", "-")
 
 
 def reserve_idempotency(key: str, run_id: str, table: str) -> bool:

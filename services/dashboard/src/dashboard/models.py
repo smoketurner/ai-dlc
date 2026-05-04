@@ -47,9 +47,8 @@ class PendingApproval(_Frozen):
 
 
 class SubmitRunRequest(_Frozen):
-    """POST /v1/runs body."""
+    """POST /v1/runs body. ``project_slug`` is derived from ``target_repo``."""
 
-    project_slug: str
     intent: str
     requestor: str
     target_repo: str
