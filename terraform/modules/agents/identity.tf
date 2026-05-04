@@ -2,11 +2,16 @@
 # Identity.
 #
 #  * One workload identity per agent (name → ARN map exposed via outputs).
+#  * One workload identity for the repo_helper Lambda — used when the Lambda
+#    calls AgentCore Identity to fetch user-OBO GitHub tokens.
 #  * Token vault uses the AWS service-managed key (default).
-#  * Optional GitHub OAuth2 credential provider — gated by var.github_oauth.
+#  * GitHub App auth — the ``GithubOauth2`` credential provider handles the
+#    user-on-behalf-of (USER_FEDERATION) flow; the App's private key for
+#    installation-token minting goes into a separate Secrets Manager secret
+#    that the repo_helper Lambda reads at runtime.
 #
 # Workload identity ARNs feed into per-agent runtime roles (Phase 4) and are
-# how the gateway scopes OAuth2 token issuance to the calling agent.
+# how AgentCore scopes OAuth2 token issuance to the calling workload.
 ################################################################################
 
 resource "aws_bedrockagentcore_workload_identity" "agent" {
@@ -16,22 +21,55 @@ resource "aws_bedrockagentcore_workload_identity" "agent" {
   allowed_resource_oauth2_return_urls = each.value.allowed_resource_oauth2_return_urls
 }
 
+resource "aws_bedrockagentcore_workload_identity" "repo_helper" {
+  count = var.github_app == null ? 0 : 1
+
+  name = "${local.prefix}-repo-helper"
+}
+
 resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {
-  count = var.github_oauth == null ? 0 : 1
+  count = var.github_app == null ? 0 : 1
 
   name                       = "${local.prefix}-github"
   credential_provider_vendor = "GithubOauth2"
 
   oauth2_provider_config {
     github_oauth2_provider_config {
-      client_id_wo                  = var.github_oauth.client_id
-      client_secret_wo              = var.github_oauth.client_secret
-      client_credentials_wo_version = var.github_oauth.version
+      client_id_wo                  = var.github_app.client_id
+      client_secret_wo              = var.github_app.client_secret
+      client_credentials_wo_version = var.github_app.version
     }
   }
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-github"
     Component = "agents"
+  })
+}
+
+# Secret holding the GitHub App's private key + numeric app_id, used by the
+# repo_helper Lambda when it mints installation-scoped access tokens (the
+# bot-attribution fallback path). User-OBO tokens flow through AgentCore
+# Identity above; this secret is only for the install path.
+resource "aws_secretsmanager_secret" "github_app" {
+  count = var.github_app == null ? 0 : 1
+
+  name                    = "${local.prefix}/github-app"
+  description             = "GitHub App app_id + private_key for installation-token minting."
+  recovery_window_in_days = 7
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-github-app"
+    Component = "agents"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "github_app" {
+  count = var.github_app == null ? 0 : 1
+
+  secret_id = aws_secretsmanager_secret.github_app[0].id
+  secret_string = jsonencode({
+    app_id      = var.github_app.app_id
+    private_key = var.github_app.private_key
   })
 }

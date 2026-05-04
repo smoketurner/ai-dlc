@@ -49,10 +49,28 @@ output "tool_lambda_arns" {
 }
 
 output "github_oauth_provider_arn" {
-  description = "GitHub OAuth2 credential provider ARN, if provisioned."
+  description = "AgentCore Identity GithubOauth2 credential provider ARN — handles user-OBO auth."
   value = (
     length(aws_bedrockagentcore_oauth2_credential_provider.github) > 0
     ? aws_bedrockagentcore_oauth2_credential_provider.github[0].credential_provider_arn
+    : null
+  )
+}
+
+output "github_oauth_provider_name" {
+  description = "AgentCore Identity GithubOauth2 credential provider name — used by the dashboard's authorize URL and the repo_helper Lambda."
+  value = (
+    length(aws_bedrockagentcore_oauth2_credential_provider.github) > 0
+    ? aws_bedrockagentcore_oauth2_credential_provider.github[0].name
+    : null
+  )
+}
+
+output "github_app_secret_arn" {
+  description = "Secrets Manager ARN of the GitHub App credentials (app_id + private_key) for installation-token minting."
+  value = (
+    length(aws_secretsmanager_secret.github_app) > 0
+    ? aws_secretsmanager_secret.github_app[0].arn
     : null
   )
 }

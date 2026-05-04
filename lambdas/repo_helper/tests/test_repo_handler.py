@@ -1,12 +1,26 @@
-"""Unit tests for the repo_helper Lambda handler (Phase 3 stub responses)."""
+"""Unit tests for the repo_helper Lambda handler.
+
+The GitHub API is mocked via ``httpx.MockTransport``. ``handler.github_client``
+is replaced with a client whose transport routes requests to a callback that
+asserts URL/method/body shape and returns canned JSON. The auth module's
+``installation_token_for_repo`` is monkeypatched so tests never touch
+Secrets Manager or the App-JWT machinery.
+"""
 
 from __future__ import annotations
 
+import base64
+import json
+from collections.abc import Callable
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
+import httpx
+import pytest
+import repo_helper.auth as auth_mod
 import repo_helper.handler as h
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from pydantic import SecretStr
 
 
 def ctx() -> LambdaContext:
@@ -22,23 +36,72 @@ def ctx() -> LambdaContext:
     )
 
 
-def test_open_pr_stub_response() -> None:
+@pytest.fixture(autouse=True)
+def stub_token_for_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Skip the App-JWT / AgentCore Identity / installation-token dance in unit tests.
+
+    Returns ``ghs_fake_user`` when a requestor JWT is supplied;
+    ``ghs_fake_install`` otherwise, so tests can assert which auth path
+    was taken via the Authorization header.
+    """
+
+    def fake_token_for_call(*, repo: str, requestor_jwt: str | None) -> str:
+        del repo
+        return "ghs_fake_user" if requestor_jwt else "ghs_fake_install"
+
+    monkeypatch.setattr(h, "token_for_call", fake_token_for_call)
+    monkeypatch.setattr(auth_mod, "token_for_call", fake_token_for_call)
+
+
+@pytest.fixture
+def patch_client(monkeypatch: pytest.MonkeyPatch) -> Callable[[httpx.MockTransport], None]:
+    """Swap `handler.github_client` for a MockTransport-backed client.
+
+    The mock client picks its Authorization header from ``token_for_call``
+    so tests can assert which auth path was exercised.
+    """
+
+    def _patch(transport: httpx.MockTransport) -> None:
+        def fake_client(*, repo: str, requestor_jwt: SecretStr | None) -> httpx.Client:
+            token = h.token_for_call(
+                repo=repo,
+                requestor_jwt=requestor_jwt.get_secret_value() if requestor_jwt else None,
+            )
+            return httpx.Client(
+                base_url=h.GITHUB_API,
+                transport=transport,
+                headers={
+                    "Accept": h.ACCEPT_HEADER,
+                    "Authorization": f"Bearer {token}",
+                    "User-Agent": h.USER_AGENT,
+                    "X-GitHub-Api-Version": h.API_VERSION,
+                },
+            )
+
+        monkeypatch.setattr(h, "github_client", fake_client)
+
+    return _patch
+
+
+def test_invalid_event() -> None:
+    out = h.handler({}, ctx())
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "invalid_event"
+
+
+def test_unknown_op() -> None:
+    out = h.handler({"input": {"op": "delete_repo"}}, ctx())
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "unknown_op"
+
+
+def test_validation_error_missing_required() -> None:
     out = h.handler(
-        {
-            "input": {
-                "op": "open_pr",
-                "repo": "smoketurner/ai-dlc",
-                "base": "main",
-                "head": "feature/foo",
-                "title": "Add foo",
-                "body": "Body",
-            },
-        },
+        {"input": {"op": "open_pr", "repo": "smoketurner/ai-dlc", "base": "main"}},
         ctx(),
     )
-    assert out["ok"] is True
-    assert out["op"] == "open_pr"
-    assert out["result"]["stub"] is True
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"
 
 
 def test_create_branch_validates_repo_format() -> None:
@@ -67,13 +130,307 @@ def test_commit_files_requires_at_least_one_file() -> None:
     assert out["error"]["kind"] == "validation_error"
 
 
-def test_unknown_op() -> None:
-    out = h.handler({"input": {"op": "delete_repo"}}, ctx())
+def test_token_field_is_rejected_in_input() -> None:
+    """Auth is no longer caller-provided — extra fields like `token` must be rejected."""
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_pr",
+                "repo": "o/r",
+                "base": "main",
+                "head": "x",
+                "title": "t",
+                "body": "b",
+                "token": "ghs_legacy",
+            },
+        },
+        ctx(),
+    )
     assert out["ok"] is False
-    assert out["error"]["kind"] == "unknown_op"
+    assert out["error"]["kind"] == "validation_error"
 
 
-def test_invalid_event() -> None:
-    out = h.handler({}, ctx())
+def test_requestor_jwt_routes_through_user_token(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """When `requestor_jwt` is set, the call goes out with the user-on-behalf-of token."""
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "number": 1,
+                "html_url": "https://github.com/o/r/pull/1",
+                "state": "open",
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_pr",
+                "repo": "o/r",
+                "base": "main",
+                "head": "x",
+                "title": "t",
+                "body": "b",
+                "requestor_jwt": "eyJfakeCognitoIdToken",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert seen[0].headers["authorization"] == "Bearer ghs_fake_user"
+
+
+def test_requestor_jwt_absent_falls_back_to_installation_token(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """When `requestor_jwt` is absent, the call goes out with the installation token."""
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "number": 1,
+                "html_url": "https://github.com/o/r/pull/1",
+                "state": "open",
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_pr",
+                "repo": "o/r",
+                "base": "main",
+                "head": "x",
+                "title": "t",
+                "body": "b",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert seen[0].headers["authorization"] == "Bearer ghs_fake_install"
+
+
+def test_open_pr_calls_github_and_returns_pr_url(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        assert request.method == "POST"
+        assert request.url.path == "/repos/smoketurner/ai-dlc/pulls"
+        body = json.loads(request.content)
+        assert body == {"title": "Add foo", "body": "Body", "head": "feature/foo", "base": "main"}
+        return httpx.Response(
+            201,
+            json={
+                "number": 42,
+                "html_url": "https://github.com/smoketurner/ai-dlc/pull/42",
+                "state": "open",
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_pr",
+                "repo": "smoketurner/ai-dlc",
+                "base": "main",
+                "head": "feature/foo",
+                "title": "Add foo",
+                "body": "Body",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["op"] == "open_pr"
+    assert out["result"] == {
+        "pr_number": 42,
+        "pr_url": "https://github.com/smoketurner/ai-dlc/pull/42",
+        "state": "open",
+    }
+    assert len(seen) == 1
+    assert seen[0].headers["authorization"] == "Bearer ghs_fake_install"
+
+
+def test_comment_pr_posts_issue_comment(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/smoketurner/ai-dlc/issues/42/comments"
+        assert json.loads(request.content) == {"body": "looks good"}
+        return httpx.Response(
+            201,
+            json={
+                "id": 12345,
+                "html_url": "https://github.com/smoketurner/ai-dlc/pull/42#issuecomment-12345",
+                "body": "looks good",
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "comment_pr",
+                "repo": "smoketurner/ai-dlc",
+                "pr_number": 42,
+                "body": "looks good",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["comment_id"] == 12345
+
+
+def test_create_branch_uses_base_sha(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/repos/o/r/git/refs/heads/main":
+            return httpx.Response(200, json={"object": {"sha": "abc123"}})
+        if request.method == "POST" and request.url.path == "/repos/o/r/git/refs":
+            assert json.loads(request.content) == {
+                "ref": "refs/heads/feature/x",
+                "sha": "abc123",
+            }
+            return httpx.Response(
+                201,
+                json={"ref": "refs/heads/feature/x", "object": {"sha": "abc123"}},
+            )
+        msg = f"unexpected request: {request.method} {request.url}"
+        raise AssertionError(msg)
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "create_branch",
+                "repo": "o/r",
+                "branch": "feature/x",
+                "base": "main",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"] == {"branch": "feature/x", "ref": "refs/heads/feature/x", "sha": "abc123"}
+
+
+def test_get_pr_returns_state_and_merged(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/pulls/7"
+        return httpx.Response(
+            200,
+            json={
+                "number": 7,
+                "html_url": "https://github.com/o/r/pull/7",
+                "state": "closed",
+                "merged": True,
+                "title": "T",
+                "head": {"sha": "deadbeef"},
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_pr", "repo": "o/r", "pr_number": 7}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["state"] == "closed"
+    assert out["result"]["merged"] is True
+    assert out["result"]["head_sha"] == "deadbeef"
+
+
+def test_commit_files_walks_git_data_api(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/repos/o/r/git/refs/heads/topic":
+            return httpx.Response(200, json={"object": {"sha": "headcommit"}})
+        if request.method == "GET" and request.url.path == "/repos/o/r/git/commits/headcommit":
+            return httpx.Response(200, json={"tree": {"sha": "basetree"}})
+        if request.method == "POST" and request.url.path == "/repos/o/r/git/blobs":
+            body = json.loads(request.content)
+            assert body["encoding"] == "base64"
+            decoded = base64.b64decode(body["content"]).decode("utf-8")
+            sha = f"blob-{decoded}"
+            return httpx.Response(201, json={"sha": sha})
+        if request.method == "POST" and request.url.path == "/repos/o/r/git/trees":
+            body = json.loads(request.content)
+            assert body["base_tree"] == "basetree"
+            assert {e["path"] for e in body["tree"]} == {"a.txt", "b.txt"}
+            assert all(e["mode"] == "100644" for e in body["tree"])
+            return httpx.Response(201, json={"sha": "newtree"})
+        if request.method == "POST" and request.url.path == "/repos/o/r/git/commits":
+            body = json.loads(request.content)
+            assert body["tree"] == "newtree"
+            assert body["parents"] == ["headcommit"]
+            assert body["message"] == "feat: add"
+            return httpx.Response(201, json={"sha": "newcommit"})
+        if request.method == "PATCH" and request.url.path == "/repos/o/r/git/refs/heads/topic":
+            assert json.loads(request.content) == {"sha": "newcommit", "force": False}
+            return httpx.Response(200, json={"object": {"sha": "newcommit"}})
+        msg = f"unexpected request: {request.method} {request.url}"
+        raise AssertionError(msg)
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "commit_files",
+                "repo": "o/r",
+                "branch": "topic",
+                "message": "feat: add",
+                "files": [
+                    {"path": "a.txt", "content": "AA"},
+                    {"path": "b.txt", "content": "BB"},
+                ],
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"] == {"branch": "topic", "commit_sha": "newcommit", "files_written": 2}
+    # 7 calls: get-ref, get-commit, blob x2, tree, commit, patch-ref.
+    assert len(seen) == 7
+
+
+def test_github_http_error_is_envelope(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_pr", "repo": "o/r", "pr_number": 99}},
+        ctx(),
+    )
     assert out["ok"] is False
-    assert out["error"]["kind"] == "invalid_event"
+    assert out["error"]["kind"] == "github_http_error"
+    detail: dict[str, Any] = out["error"]["detail"]
+    assert detail["status_code"] == 404
+    assert detail["body"] == {"message": "Not Found"}

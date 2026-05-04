@@ -30,10 +30,25 @@ variable "agents" {
       targets          = ["artifact_tool"]
       bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
     }
+    critic = {
+      description      = "Critic agent — adversarially reviews the spec (advisory)."
+      targets          = ["artifact_tool"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+    }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
       targets          = ["artifact_tool", "repo_helper"]
       bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+    }
+    reviewer = {
+      description      = "Reviewer agent — code-reviews each task PR (advisory)."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+    }
+    tester = {
+      description      = "Tester agent — flags test gaps in each task PR (advisory)."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
   }
 
@@ -93,16 +108,26 @@ variable "lambda_log_retention_days" {
   default     = 30
 }
 
-variable "github_oauth" {
+variable "github_app" {
   description = <<-EOT
-    GitHub OAuth app credentials used by the AgentCore OAuth2 credential
-    provider so agents can call repo_helper with a delegated GitHub token.
-    Set to `null` to skip provisioning the credential provider (no GitHub
-    integration in dev). The credentials are written to AgentCore-managed
-    Secrets Manager via the write-only `_wo` arguments — they never land in
-    Terraform state. Bump `version` to rotate.
+    GitHub App credentials used by the platform's two GitHub auth paths:
+
+      * ``client_id`` + ``client_secret`` configure the AgentCore Identity
+        ``GithubOauth2`` credential provider for the user-on-behalf-of
+        flow (``USER_FEDERATION``). The user authorizes the App once via
+        the dashboard's "Connect GitHub" link; AgentCore caches the
+        resulting OAuth token in the Token Vault. Written via write-only
+        ``_wo`` arguments — they never land in Terraform state.
+      * ``app_id`` + ``private_key`` (PEM-encoded RSA) are stored in a
+        platform-owned Secrets Manager secret and used by the repo_helper
+        Lambda to mint installation tokens for bot operations / fallback.
+
+    Set to ``null`` to skip the integration entirely (no GitHub access).
+    Bump ``version`` to rotate the AgentCore-side credentials.
   EOT
   type = object({
+    app_id        = number
+    private_key   = string
     client_id     = string
     client_secret = string
     version       = number

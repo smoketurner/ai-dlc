@@ -57,9 +57,58 @@
         "run_id": "{% $states.input.run_id %}",
         "correlation_id": "{% $states.input.correlation_id %}",
         "project_slug": "{% $states.input.project_slug %}",
+        "intent": "{% $states.input.intent %}",
         "spec": "{% $parse($states.result.Payload) %}"
       },
-      "Next": "PublishSpecReady"
+      "Next": "InvokeCritic"
+    },
+    "InvokeCritic": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+      "Arguments": {
+        "AgentRuntimeArn": "${critic_runtime_arn}",
+        "Qualifier": "DEFAULT",
+        "RuntimeSessionId": "{% $states.input.run_id & '-critic' %}",
+        "ContentType": "application/json",
+        "Accept": "application/json",
+        "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'intent': $states.input.intent, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system' }) %}"
+      },
+      "TimeoutSeconds": 1800,
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "MarkFailed", "Output": "{% $states.errorOutput %}" }
+      ],
+      "Output": {
+        "run_id": "{% $states.input.run_id %}",
+        "correlation_id": "{% $states.input.correlation_id %}",
+        "project_slug": "{% $states.input.project_slug %}",
+        "spec": "{% $states.input.spec %}",
+        "critique": "{% $parse($states.result.Payload) %}"
+      },
+      "Next": "PublishCritiqueReady"
+    },
+    "PublishCritiqueReady": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "ai-dlc.critic",
+            "DetailType": "CRITIQUE.READY",
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'CRITIQUE.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'critic', 'payload': $merge([$states.input.critique, { 'project_slug': $states.input.project_slug }]) }) %}"
+          }
+        ]
+      },
+      "Next": "PublishSpecReady",
+      "Output": "{% $states.input %}"
     },
     "PublishSpecReady": {
       "Type": "Task",
@@ -88,7 +137,8 @@
           "run_id": "{% $states.input.run_id %}",
           "project_slug": "{% $states.input.project_slug %}",
           "gate_ref": "spec",
-          "summary": "{% $states.input.spec.requirements_summary %}"
+          "summary": "{% $states.input.spec.requirements_summary %}",
+          "critique_s3_key": "{% $states.input.critique.critique_s3_key %}"
         }
       },
       "HeartbeatSeconds": 86400,
@@ -136,10 +186,92 @@
               "run_id": "{% $states.input.run_id %}",
               "correlation_id": "{% $states.input.correlation_id %}",
               "project_slug": "{% $states.input.project_slug %}",
+              "spec_slug": "{% $states.input.spec_slug %}",
+              "spec_s3_prefix": "{% $states.input.spec_s3_prefix %}",
               "task_id": "{% $states.input.task_id %}",
               "result": "{% $parse($states.result.Payload) %}"
             },
-            "Next": "PublishTaskReady"
+            "Next": "InvokeReviewer"
+          },
+          "InvokeReviewer": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+            "Arguments": {
+              "AgentRuntimeArn": "${reviewer_runtime_arn}",
+              "Qualifier": "DEFAULT",
+              "RuntimeSessionId": "{% $states.input.run_id & '-' & $states.input.task_id & '-reviewer' %}",
+              "ContentType": "application/json",
+              "Accept": "application/json",
+              "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug, 'spec_s3_prefix': $states.input.spec_s3_prefix, 'task_id': $states.input.task_id, 'pr_url': $states.input.result.pr_url, 'diff_summary': $states.input.result.diff_summary, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system' }) %}"
+            },
+            "TimeoutSeconds": 1800,
+            "Output": {
+              "run_id": "{% $states.input.run_id %}",
+              "correlation_id": "{% $states.input.correlation_id %}",
+              "project_slug": "{% $states.input.project_slug %}",
+              "spec_slug": "{% $states.input.spec_slug %}",
+              "spec_s3_prefix": "{% $states.input.spec_s3_prefix %}",
+              "task_id": "{% $states.input.task_id %}",
+              "result": "{% $states.input.result %}",
+              "review": "{% $parse($states.result.Payload) %}"
+            },
+            "Next": "InvokeTester"
+          },
+          "InvokeTester": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+            "Arguments": {
+              "AgentRuntimeArn": "${tester_runtime_arn}",
+              "Qualifier": "DEFAULT",
+              "RuntimeSessionId": "{% $states.input.run_id & '-' & $states.input.task_id & '-tester' %}",
+              "ContentType": "application/json",
+              "Accept": "application/json",
+              "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug, 'spec_s3_prefix': $states.input.spec_s3_prefix, 'task_id': $states.input.task_id, 'pr_url': $states.input.result.pr_url, 'diff_summary': $states.input.result.diff_summary, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system' }) %}"
+            },
+            "TimeoutSeconds": 1800,
+            "Output": {
+              "run_id": "{% $states.input.run_id %}",
+              "correlation_id": "{% $states.input.correlation_id %}",
+              "project_slug": "{% $states.input.project_slug %}",
+              "spec_slug": "{% $states.input.spec_slug %}",
+              "task_id": "{% $states.input.task_id %}",
+              "result": "{% $states.input.result %}",
+              "review": "{% $states.input.review %}",
+              "test_report": "{% $parse($states.result.Payload) %}"
+            },
+            "Next": "PublishReviewReady"
+          },
+          "PublishReviewReady": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Arguments": {
+              "Entries": [
+                {
+                  "EventBusName": "${bus_name}",
+                  "Source": "ai-dlc.reviewer",
+                  "DetailType": "REVIEW.READY",
+                  "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'REVIEW.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'reviewer', 'payload': $merge([$states.input.review, { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug }]) }) %}"
+                }
+              ]
+            },
+            "Next": "PublishTestReportReady",
+            "Output": "{% $states.input %}"
+          },
+          "PublishTestReportReady": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::events:putEvents",
+            "Arguments": {
+              "Entries": [
+                {
+                  "EventBusName": "${bus_name}",
+                  "Source": "ai-dlc.tester",
+                  "DetailType": "TEST_REPORT.READY",
+                  "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'TEST_REPORT.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'tester', 'payload': $merge([$states.input.test_report, { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug }]) }) %}"
+                }
+              ]
+            },
+            "Next": "PublishTaskReady",
+            "Output": "{% $states.input %}"
           },
           "PublishTaskReady": {
             "Type": "Task",
@@ -169,7 +301,10 @@
                 "project_slug": "{% $states.input.project_slug %}",
                 "gate_ref": "{% 'task:' & $states.input.task_id %}",
                 "pr_url": "{% $states.input.result.pr_url %}",
-                "summary": "{% $states.input.result.diff_summary %}"
+                "summary": "{% $states.input.result.diff_summary %}",
+                "review_verdict": "{% $states.input.review.verdict %}",
+                "review_comment_count": "{% $states.input.review.comment_count %}",
+                "test_gap_count": "{% $states.input.test_report.gap_count %}"
               }
             },
             "HeartbeatSeconds": 86400,

@@ -8,6 +8,7 @@ members = [
     "architect",
     "artifact-tool",
     "common",
+    "critic",
     "dashboard",
     "entry-adapter",
     "eval-runner",
@@ -16,7 +17,9 @@ members = [
     "hitl-handler",
     "implementer",
     "repo-helper",
+    "reviewer",
     "telemetry",
+    "tester",
 ]
 
 [[package]]
@@ -573,6 +576,29 @@ requires-dist = [
     { name = "pydantic-settings", specifier = "==2.14.0" },
     { name = "structlog", specifier = "==25.5.0" },
     { name = "uuid-utils", specifier = "==0.14.1" },
+]
+
+[[package]]
+name = "critic"
+version = "0.0.0"
+source = { editable = "agents/critic" }
+dependencies = [
+    { name = "bedrock-agentcore" },
+    { name = "boto3" },
+    { name = "common" },
+    { name = "pydantic" },
+    { name = "strands-agents" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bedrock-agentcore", specifier = "==1.8.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
+    { name = "strands-agents", specifier = "==1.38.0" },
+    { name = "structlog", specifier = "==25.5.0" },
 ]
 
 [[package]]
@@ -2766,6 +2792,7 @@ dependencies = [
     { name = "botocore" },
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "pyjwt", extra = ["crypto"] },
 ]
 
 [package.metadata]
@@ -2775,6 +2802,7 @@ requires-dist = [
     { name = "botocore", specifier = "==1.43.2" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "pydantic", specifier = "==2.13.3" },
+    { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
 ]
 
 [[package]]
@@ -2804,6 +2832,29 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9f/b4/b7e040379838cc71bf5aabdb26998dfbe5ee73904c92c1c161faf5de8866/responses-0.26.0.tar.gz", hash = "sha256:c7f6923e6343ef3682816ba421c006626777893cb0d5e1434f674b649bac9eb4", size = 81303, upload-time = "2026-02-19T14:38:05.574Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/04/7f73d05b556da048923e31a0cc878f03be7c5425ed1f268082255c75d872/responses-0.26.0-py3-none-any.whl", hash = "sha256:03ec4409088cd5c66b71ecbbbd27fe2c58ddfad801c66203457b3e6a04868c37", size = 35099, upload-time = "2026-02-19T14:38:03.847Z" },
+]
+
+[[package]]
+name = "reviewer"
+version = "0.0.0"
+source = { editable = "agents/reviewer" }
+dependencies = [
+    { name = "bedrock-agentcore" },
+    { name = "boto3" },
+    { name = "common" },
+    { name = "pydantic" },
+    { name = "strands-agents" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bedrock-agentcore", specifier = "==1.8.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
+    { name = "strands-agents", specifier = "==1.38.0" },
+    { name = "structlog", specifier = "==25.5.0" },
 ]
 
 [[package]]
@@ -3029,6 +3080,29 @@ requires-dist = [
     { name = "botocore", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
     { name = "pydantic", specifier = "==2.13.3" },
+]
+
+[[package]]
+name = "tester"
+version = "0.0.0"
+source = { editable = "agents/tester" }
+dependencies = [
+    { name = "bedrock-agentcore" },
+    { name = "boto3" },
+    { name = "common" },
+    { name = "pydantic" },
+    { name = "strands-agents" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bedrock-agentcore", specifier = "==1.8.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
+    { name = "strands-agents", specifier = "==1.38.0" },
+    { name = "structlog", specifier = "==25.5.0" },
 ]
 
 [[package]]

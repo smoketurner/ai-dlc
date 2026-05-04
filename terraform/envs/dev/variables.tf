@@ -62,13 +62,18 @@ variable "dns_zone_name" {
   default     = "aidlc.smoketurner.com"
 }
 
-variable "github_oauth" {
+variable "github_app" {
   description = <<-EOT
-    GitHub OAuth app credentials used by the AgentCore OAuth2 credential
-    provider. Set to `null` to skip provisioning. The credentials are passed
-    via Terraform write-only attributes — they never land in state.
+    GitHub App credentials. ``client_id`` + ``client_secret`` configure the
+    AgentCore Identity ``GithubOauth2`` credential provider for the
+    user-on-behalf-of flow; ``app_id`` + ``private_key`` (PEM) are stored
+    in Secrets Manager and used by the repo_helper Lambda for installation
+    tokens. Set to ``null`` to skip the GitHub integration. Bump
+    ``version`` to rotate AgentCore-side credentials.
   EOT
   type = object({
+    app_id        = number
+    private_key   = string
     client_id     = string
     client_secret = string
     version       = number

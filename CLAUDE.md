@@ -5,8 +5,8 @@ An agentic SDLC platform built on AWS Bedrock AgentCore. The full architectural 
 ## Tech stack
 
 - **Python 3.14** with the Astral toolchain (`uv` workspace, `ruff`, `ty`).
-- **Agents**: Strands Agents (Architect) and Claude Agent SDK (Implementer), both shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
-- **Models**: Architect → Claude Opus 4.7. Implementer → Claude Sonnet 4.6. Memory consolidation → Claude Haiku 4.5.
+- **Agents**: Strands Agents (Architect, Critic, Reviewer, Tester) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
+- **Models**: Architect / Critic → Claude Opus 4.7. Implementer / Reviewer → Claude Sonnet 4.6. Tester + memory consolidation → Claude Haiku 4.5.
 - **Orchestration**: AWS Step Functions (Standard) using the native `aws-sdk:bedrockagentcore:invokeAgentRuntime` integration.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams, SQS DLQs.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
@@ -20,8 +20,11 @@ An agentic SDLC platform built on AWS Bedrock AgentCore. The full architectural 
 | Path | Role |
 |------|------|
 | `packages/common/` | Pydantic event envelopes, hybrid-memory utility, OTEL setup, shared boto3 wrappers. |
-| `agents/architect/` | Strands agent — produces ADRs. |
+| `agents/architect/` | Strands agent — writes the three-doc spec bundle (requirements + design + tasks). |
+| `agents/critic/` | Strands agent — adversarially reviews the spec (advisory). |
 | `agents/implementer/` | Claude Agent SDK agent — opens code PRs. |
+| `agents/reviewer/` | Strands agent — code-reviews each task PR (advisory). |
+| `agents/tester/` | Strands agent — flags test gaps in each task PR (advisory). |
 | `lambdas/entry_adapter/` | API Gateway → EventBridge `REQUEST.RECEIVED`. |
 | `lambdas/hitl_handler/` | Step Functions `.waitForTaskToken` request + GitHub webhook DECIDE. |
 | `lambdas/event_projector/` | DynamoDB Streams + EventBridge → DDB read model + AgentCore Memory `CreateEvent`. |
@@ -62,7 +65,7 @@ uv run pytest -m eval                                 # the 10 SDLC eval cases
 Image build and Terraform apply are GitHub Actions workflows. Production applies require manual approval via GitHub Environments.
 
 ```bash
-gh workflow run images-build.yml --ref main           # architect + implementer → ECR
+gh workflow run images-build.yml --ref main           # architect + critic + implementer + reviewer + tester → ECR
 gh workflow run dashboard-build.yml --ref main         # dashboard container → ECR + ECS update-service
 gh workflow run terraform-apply.yml --ref main         # apply (dev auto, prod gated)
 ```

@@ -98,14 +98,29 @@ module "agents" {
       targets          = ["artifact_tool"]
       bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
     }
+    critic = {
+      description      = "Critic agent — adversarially reviews the spec (advisory)."
+      targets          = ["artifact_tool"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+    }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
       targets          = ["artifact_tool", "repo_helper"]
       bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
     }
+    reviewer = {
+      description      = "Reviewer agent — code-reviews each task PR (advisory)."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6-20260301-v1:0"
+    }
+    tester = {
+      description      = "Tester agent — flags test gaps in each task PR (advisory)."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    }
   }
 
-  github_oauth = var.github_oauth
+  github_app = var.github_app
 }
 
 resource "aws_secretsmanager_secret" "github_webhook" {

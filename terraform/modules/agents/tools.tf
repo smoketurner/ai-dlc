@@ -31,14 +31,24 @@ module "tool_lambda" {
   build_in_docker = true
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
-  environment_variables = {
+  environment_variables = each.key == "repo_helper" ? merge(
+    {
+      AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket
+      AIDLC_MEMORY_MD_BUCKET = var.memory_md_bucket
+    },
+    var.github_app == null ? {} : {
+      AIDLC_GITHUB_APP_SECRET_ARN      = aws_secretsmanager_secret.github_app[0].arn
+      AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
+      AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.repo_helper[0].name
+    },
+    ) : {
     AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket
     AIDLC_MEMORY_MD_BUCKET = var.memory_md_bucket
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
-  attach_policy_statements = each.key == "artifact_tool"
+  attach_policy_statements = each.key == "artifact_tool" || each.key == "repo_helper"
   policy_statements = each.key == "artifact_tool" ? {
     s3_artifacts = {
       effect = "Allow"
@@ -55,7 +65,21 @@ module "tool_lambda" {
         "${var.memory_md_bucket_arn}/*",
       ]
     }
-  } : {}
+    } : (each.key == "repo_helper" && var.github_app != null ? {
+      read_app_secret = {
+        effect    = "Allow"
+        actions   = ["secretsmanager:GetSecretValue"]
+        resources = [aws_secretsmanager_secret.github_app[0].arn]
+      }
+      agentcore_user_obo = {
+        effect = "Allow"
+        actions = [
+          "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+          "bedrock-agentcore:GetResourceOauth2Token",
+        ]
+        resources = ["*"]
+      }
+  } : {})
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-${each.key}"

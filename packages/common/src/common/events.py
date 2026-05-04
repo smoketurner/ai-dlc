@@ -13,11 +13,14 @@ from envelope fields at publish time.
 The platform follows a spec-driven SDLC pipeline:
 
   REQUEST.RECEIVED
-    → SPEC.READY     (Architect writes requirements + design + tasks)
-    → SPEC.APPROVED  (gate 1)
-    → TASK.READY     ┐
-    → TASK.APPROVED  │ loop while tasks remain
-    → ...            ┘
+    → SPEC.READY        (Architect writes requirements + design + tasks)
+    → CRITIQUE.READY    (Critic adversarially reviews the spec — advisory)
+    → SPEC.APPROVED     (gate 1 — human reviewer)
+    → TASK.READY        ┐
+    → REVIEW.READY      │ Reviewer code-reviews the PR — advisory
+    → TEST_REPORT.READY │ Tester flags test gaps — advisory
+    → TASK.APPROVED     │ loop while tasks remain
+    → ...               ┘
     → RUN.COMPLETED
 """
 
@@ -35,12 +38,17 @@ EventType = Literal[
     "SPEC.READY",
     "SPEC.APPROVED",
     "SPEC.REJECTED",
+    "CRITIQUE.READY",
     "TASK.READY",
     "TASK.APPROVED",
     "TASK.REJECTED",
+    "REVIEW.READY",
+    "TEST_REPORT.READY",
     "RUN.COMPLETED",
     "RUN.FAILED",
 ]
+
+ReviewVerdict = Literal["approve", "request_changes", "comment"]
 
 GateKind = Literal["spec", "task", "deploy", "prod_write"]
 
@@ -102,6 +110,25 @@ class SpecRejected(Payload):
     reason: str
 
 
+class CritiqueReady(Payload):
+    """Critic agent produced an adversarial review of the spec — advisory.
+
+    The critique is rendered to ``s3://artifacts/runs/{run_id}/critique.md``;
+    the event payload references it via :attr:`critique_s3_key`. This event
+    does not gate the pipeline — humans still own SPEC.APPROVED.
+    """
+
+    project_slug: str
+    spec_slug: str
+    critique_s3_key: str
+    issue_count: Annotated[int, Field(ge=0)]
+    high_severity_count: Annotated[int, Field(ge=0)] = 0
+    medium_severity_count: Annotated[int, Field(ge=0)] = 0
+    low_severity_count: Annotated[int, Field(ge=0)] = 0
+    summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
 class TaskReady(Payload):
     """The implementer agent opened a PR for one task and is awaiting approval."""
 
@@ -134,6 +161,47 @@ class TaskRejected(Payload):
     reason: str
 
 
+class ReviewReady(Payload):
+    """Reviewer agent code-reviewed a task PR — advisory.
+
+    Comments are posted to the PR via ``repo_helper.comment_pr``; this event
+    surfaces the verdict and counts to the dashboard. Does not gate the
+    pipeline — humans still own TASK.APPROVED.
+    """
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    verdict: ReviewVerdict
+    comment_count: Annotated[int, Field(ge=0)]
+    high_severity_count: Annotated[int, Field(ge=0)] = 0
+    medium_severity_count: Annotated[int, Field(ge=0)] = 0
+    low_severity_count: Annotated[int, Field(ge=0)] = 0
+    summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
+class TestReportReady(Payload):
+    """Tester agent identified test gaps in a task PR — advisory.
+
+    Test gap suggestions are posted to the PR via ``repo_helper.comment_pr``;
+    this event records counts and a summary for the dashboard. Does not gate
+    the pipeline.
+    """
+
+    __test__ = False  # opt out of pytest collection (Test*-prefix collision)
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    gap_count: Annotated[int, Field(ge=0)]
+    suggested_test_count: Annotated[int, Field(ge=0)]
+    summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
 class RunCompleted(Payload):
     """The run reached its terminal success state."""
 
@@ -161,9 +229,12 @@ type AnyPayload = (
     | SpecReady
     | SpecApproved
     | SpecRejected
+    | CritiqueReady
     | TaskReady
     | TaskApproved
     | TaskRejected
+    | ReviewReady
+    | TestReportReady
     | RunCompleted
     | RunFailed
 )
