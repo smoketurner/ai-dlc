@@ -13,6 +13,8 @@ Flow per invocation:
 
 from __future__ import annotations
 
+import os
+
 import structlog
 from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, TextBlock
 
@@ -23,6 +25,7 @@ from implementer.repo_ops import (
     commit_changes,
     create_branch,
     fetch_spec,
+    make_session,
     open_pr,
     push_branch,
     repo_path,
@@ -37,7 +40,17 @@ logger = structlog.get_logger()
 
 async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     """Run one task end-to-end and return the SPEC.READY-style result."""
-    clone_repo()
+    target_repo = resolve_target_repo(payload)
+    session = make_session(target_repo=target_repo, requestor_sub=payload.requestor_sub)
+    logger.info(
+        "implementer session opened",
+        run_id=payload.run_id,
+        target_repo=session.target_repo,
+        author_login=session.author_login,
+        on_behalf_of_user=session.on_behalf_of_user,
+    )
+
+    clone_repo(session)
     fetch_spec(payload.spec_s3_prefix)
 
     tasks_md = (spec_path() / "tasks.md").read_text(encoding="utf-8")
@@ -50,7 +63,7 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     create_branch(branch)
 
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
-    assistant_text = await drive_agent(user_prompt)
+    assistant_text = await drive_agent(user_prompt, run_id=payload.run_id)
 
     update_tasks_md(payload.task_id)
 
@@ -59,6 +72,7 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     push_branch(branch)
 
     pr_url = open_pr(
+        session,
         branch=branch,
         base="main",
         title=f"{payload.task_id}: {task.title}",
@@ -71,6 +85,17 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
         diff_summary=short_diff_summary()[:4096],
         session_id=payload.run_id,
     )
+
+
+def resolve_target_repo(payload: ImplementerInput) -> str:
+    """Pick the repo this run targets — payload first, then env fallback."""
+    if payload.target_repo:
+        return payload.target_repo
+    legacy = os.environ.get("AIDLC_GITHUB_REPO")
+    if legacy:
+        return legacy
+    msg = "no target_repo on input and no AIDLC_GITHUB_REPO env var set"
+    raise RuntimeError(msg)
 
 
 def compose_prompt(
@@ -99,9 +124,9 @@ def compose_prompt(
     return "\n".join(parts)
 
 
-async def drive_agent(user_prompt: str) -> str:
+async def drive_agent(user_prompt: str, *, run_id: str) -> str:
     """Run one ClaudeSDKClient session and return the concatenated assistant text."""
-    options = build_options()
+    options = build_options(run_id)
     text_blocks: list[str] = []
     async with ClaudeSDKClient(options=options) as client:
         await client.query(user_prompt)

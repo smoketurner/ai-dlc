@@ -42,6 +42,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         project_slug=payload.project_slug,
         spec_slug=payload.spec_slug,
         intent=payload.intent,
+        run_id=payload.run_id,
     )
     upload_critique(critique, run_id=payload.run_id)
 

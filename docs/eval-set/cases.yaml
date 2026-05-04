@@ -9,6 +9,9 @@
 # Schema:
 #   slug              — case slug (matches the .md filename and is the spec_slug)
 #   project_slug      — the target project the architect/implementer build inside
+#   tier              — smoke | full. The smoke tier (3 cases) runs on every
+#                       PR that touches prompts / models / MEMORY.md; the full
+#                       tier runs nightly. Default if absent: full.
 #   intent            — the prompt submitted via /v1/runs
 #   pass_criteria:
 #     min_task_count        — fail if the spec produced fewer tasks than this
@@ -27,6 +30,7 @@
 cases:
   - slug: empty-repo-bootstrap
     project_slug: echo
+    tier: full
     intent: |-
       Bootstrap a Python web service called "echo" with a single GET /healthz
       endpoint that returns {"ok": true, "build_sha": "<sha>"}. Use FastAPI,
@@ -45,6 +49,7 @@ cases:
 
   - slug: small-feature-add
     project_slug: echo
+    tier: smoke
     intent: |-
       In the echo service, add a GET /version route that returns
       {"version": "<pyproject-version>", "commit": "<git-sha>"}. Update
@@ -61,6 +66,7 @@ cases:
 
   - slug: cross-cutting-feature
     project_slug: echo
+    tier: full
     intent: |-
       Add structured-log JSON output to every route in the echo service.
       Use structlog, configure it once at startup, propagate a request id
@@ -79,6 +85,7 @@ cases:
 
   - slug: bug-fix
     project_slug: echo
+    tier: smoke
     intent: |-
       The /healthz route returns 500 when the BUILD_SHA env var is missing.
       It should return 200 with build_sha: null. Add a regression test that
@@ -95,6 +102,7 @@ cases:
 
   - slug: refactor
     project_slug: echo
+    tier: full
     intent: |-
       The echo service has accumulated direct os.environ[...] reads in five
       places. Refactor to a single Settings Pydantic model loaded once at
@@ -112,6 +120,7 @@ cases:
 
   - slug: dependency-upgrade
     project_slug: echo
+    tier: full
     intent: |-
       Upgrade FastAPI from 0.110 to the latest stable release. Update
       pyproject.toml, regenerate uv.lock, fix any breaking changes that
@@ -128,6 +137,7 @@ cases:
 
   - slug: memory-md-learning
     project_slug: echo
+    tier: smoke
     intent: |-
       Add a POST /uppercase endpoint to the echo service that takes
       {"text": "..."} and returns {"result": "..."} uppercased.
@@ -143,6 +153,7 @@ cases:
 
   - slug: conflict-resolution
     project_slug: echo
+    tier: full
     intent: |-
       Add a requestor_email field to the run-submission body. Validate it
       as an email address.
@@ -158,6 +169,7 @@ cases:
 
   - slug: hitl-reject-loop
     project_slug: echo
+    tier: full
     intent: |-
       Add a GET /env route to the echo service that returns the names (not
       values) of every AIDLC_* env var present.
@@ -173,6 +185,7 @@ cases:
 
   - slug: long-session-resume
     project_slug: echo
+    tier: full
     intent: |-
       Migrate the echo service from FastAPI's deprecated on_event("startup")
       decorator to the lifespan context-manager pattern. Touch every place

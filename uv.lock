@@ -10,12 +10,14 @@ members = [
     "common",
     "critic",
     "dashboard",
+    "drift-detector",
     "entry-adapter",
     "eval-runner",
     "event-projector",
     "few-shot-miner",
     "hitl-handler",
     "implementer",
+    "proposer",
     "repo-helper",
     "reviewer",
     "telemetry",
@@ -29,7 +31,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
-    { name = "boto3-stubs", extra = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sqs", "stepfunctions"] },
+    { name = "boto3-stubs", extra = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sns", "sqs", "stepfunctions"] },
     { name = "moto", extra = ["all"] },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -43,7 +45,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "boto3-stubs", extras = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sqs", "stepfunctions"], specifier = "==1.43.2" },
+    { name = "boto3-stubs", extras = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sns", "sqs", "stepfunctions"], specifier = "==1.43.2" },
     { name = "moto", extras = ["all"], specifier = ">=5.1" },
     { name = "pip-audit", specifier = ">=2.10" },
     { name = "pytest", specifier = ">=8.4" },
@@ -342,6 +344,9 @@ s3 = [
 ]
 secretsmanager = [
     { name = "mypy-boto3-secretsmanager" },
+]
+sns = [
+    { name = "mypy-boto3-sns" },
 ]
 sqs = [
     { name = "mypy-boto3-sqs" },
@@ -732,6 +737,25 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e0/4d/f332313098c1de1b2d2ff91cf2674415cc7cddab2ca1b01ae29774bd5fdf/docstring_parser-0.18.0.tar.gz", hash = "sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015", size = 29341, upload-time = "2026-04-14T04:09:19.867Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/5f/ed01f9a3cdffbd5a008556fc7b2a08ddb1cc6ace7effa7340604b1d16699/docstring_parser-0.18.0-py3-none-any.whl", hash = "sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b", size = 22484, upload-time = "2026-04-14T04:09:18.638Z" },
+]
+
+[[package]]
+name = "drift-detector"
+version = "0.0.0"
+source = { editable = "lambdas/drift_detector" }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.28.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "botocore", specifier = "==1.43.2" },
+    { name = "pydantic", specifier = "==2.13.3" },
 ]
 
 [[package]]
@@ -1379,6 +1403,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c6/e0/3b9f954dcce063407224e6601ed5af2d684185387b0572901c5f984fc8f6/mypy_boto3_secretsmanager-1.43.0.tar.gz", hash = "sha256:265ee2fddf9d3e42ae39685625fb7861a539110d8e324372847c0e1cbd666b20", size = 19967, upload-time = "2026-04-29T23:05:45.139Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4f/93/ae939d61eed240972553395b5e31f780825685b99f0ab4ebe5767430f103/mypy_boto3_secretsmanager-1.43.0-py3-none-any.whl", hash = "sha256:38415cdecb73dd20e485707a7cf456f6dde54ff4b155e7fb255eb001eb47d5bc", size = 27335, upload-time = "2026-04-29T23:05:43.152Z" },
+]
+
+[[package]]
+name = "mypy-boto3-sns"
+version = "1.43.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/6b/dc934c8023ae5bc786122ecfda71cf06140b4cb1f561dfe89d72784d05b7/mypy_boto3_sns-1.43.0.tar.gz", hash = "sha256:2ad60f8e6c662e91b4c6f45439cbeb53f04ed2a764f0a611d75e4fa0fdfe4c41", size = 32710, upload-time = "2026-04-29T23:06:14.193Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/8c/c20c52fd18ebb23f81e7f642175d817de8f48822711de8e16198bd19d52a/mypy_boto3_sns-1.43.0-py3-none-any.whl", hash = "sha256:a77ba63525f7b2a16ea8f93bf6be84693fdde81cf9937ab6cf37e1b6525caaa8", size = 40007, upload-time = "2026-04-29T23:06:11.64Z" },
 ]
 
 [[package]]
@@ -2452,6 +2485,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
+]
+
+[[package]]
+name = "proposer"
+version = "0.0.0"
+source = { editable = "agents/proposer" }
+dependencies = [
+    { name = "bedrock-agentcore" },
+    { name = "boto3" },
+    { name = "common" },
+    { name = "pydantic" },
+    { name = "strands-agents" },
+    { name = "structlog" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bedrock-agentcore", specifier = "==1.8.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
+    { name = "strands-agents", specifier = "==1.38.0" },
+    { name = "structlog", specifier = "==25.5.0" },
 ]
 
 [[package]]

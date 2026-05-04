@@ -118,6 +118,11 @@ module "agents" {
       targets          = ["artifact_tool", "repo_helper"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
+    proposer = {
+      description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
+      targets          = ["repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+    }
   }
 
   github_app = var.github_app
@@ -198,6 +203,9 @@ module "dashboard" {
   cognito_user_pool_id        = module.auth.user_pool_id
   cognito_user_pool_client_id = module.auth.client_id
   cognito_user_pool_domain    = module.auth.domain
+
+  dashboard_workload_name    = module.agents.dashboard_workload_name
+  github_oauth_provider_name = module.agents.github_oauth_provider_name
 }
 
 module "improvement" {
@@ -217,4 +225,8 @@ module "improvement" {
 
   sdlc_state_machine_arn = module.pipeline.state_machine_arn
   alerts_topic_arn       = module.observability.alerts_topic_arn
+
+  proposer_runtime_arn  = lookup(module.agents.runtime_arns, "proposer", "")
+  proposer_target_repo  = "${var.github_owner}/${var.github_repo}"
+  proposer_project_slug = var.project
 }

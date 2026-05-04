@@ -75,6 +75,15 @@ output "github_app_secret_arn" {
   )
 }
 
+output "dashboard_workload_name" {
+  description = "AgentCore workload identity name for the dashboard's /auth/github flow. Empty when github_app isn't configured."
+  value = (
+    length(aws_bedrockagentcore_workload_identity.dashboard) > 0
+    ? aws_bedrockagentcore_workload_identity.dashboard[0].name
+    : ""
+  )
+}
+
 output "runtime_arns" {
   description = "Map of agent name → AgentCore Runtime ARN."
   value = {

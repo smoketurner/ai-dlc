@@ -44,6 +44,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         payload.intent,
         project_slug=payload.project_slug,
         prior_feedback=payload.prior_feedback,
+        run_id=payload.run_id,
     )
     upload_spec(spec)
 

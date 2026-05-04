@@ -13,9 +13,9 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
-from architect.prompts import SYSTEM_PROMPT
 from architect.spec import SpecBundle
 from architect.tools import read_memory_md_tool, write_spec_doc_tool
+from common.routing import load_system_prompt, pick_variant
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7-20260301-v1:0"
 
@@ -25,8 +25,13 @@ def model_id() -> str:
     return os.environ.get("AIDLC_ARCHITECT_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent() -> Agent:
-    """Build a fresh Strands Agent for one architect invocation."""
+def build_agent(run_id: str) -> Agent:
+    """Build a fresh Strands Agent for one architect invocation.
+
+    The system prompt is selected via A/B routing — if ``architect.prompts_b``
+    exists, half of runs (deterministically picked from ``run_id``) use it.
+    """
+    variant = pick_variant(run_id, "architect")
     return Agent(
         model=BedrockModel(
             model_id=model_id(),
@@ -34,24 +39,27 @@ def build_agent() -> Agent:
             max_tokens=8192,
             streaming=True,
         ),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=load_system_prompt("architect", variant),
         tools=[read_memory_md_tool, write_spec_doc_tool],
     )
 
 
-def generate_spec(intent: str, *, project_slug: str, prior_feedback: str | None) -> SpecBundle:
+def generate_spec(
+    intent: str, *, project_slug: str, prior_feedback: str | None, run_id: str
+) -> SpecBundle:
     """Run the agent and return the validated SpecBundle.
 
     Args:
         intent: Free-text feature intent from the user.
         project_slug: Project the spec belongs to.
         prior_feedback: Reviewer feedback from a prior rejection, or ``None``.
+        run_id: Run UUID7 — drives prompt-variant selection.
 
     Returns:
         A validated :class:`SpecBundle` ready for Markdown rendering.
     """
     user_message = _compose_message(intent, project_slug, prior_feedback)
-    agent = build_agent()
+    agent = build_agent(run_id)
     return agent.structured_output(SpecBundle, user_message)
 
 

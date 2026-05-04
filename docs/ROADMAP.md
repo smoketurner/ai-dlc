@@ -214,16 +214,25 @@ Three landings, each independently shippable:
 - [x] `terraform/modules/improvement/` — single logical-grouping module owning the self-improvement infrastructure: telemetry + few_shot_miner Lambdas (built via `terraform-aws-modules/lambda` arm64), EventBridge rule routing `SPEC.REJECTED`/`TASK.REJECTED` to telemetry, DDB stream event-source mapping with the filter pattern. Reserved space for 9b/9c.
 - [x] `module.improvement` wired into `envs/dev/main.tf`; outputs telemetry + miner Lambda ARNs.
 
-### 9b — Eval runner + Drift detector ⬜
+### 9b — Eval runner + Drift detector ✅
 
-- [ ] `terraform/modules/improvement/` adds a Step Functions distributed Map state machine. Maps over the cases in `docs/eval-set/` and invokes the live pipeline once per case. Captures pass/fail/cost matrix.
-- [ ] EventBridge schedule (nightly) + GitHub Actions workflow trigger on PRs that touch `agents/*/prompts.py` / model IDs / `docs/MEMORY.md`.
-- [ ] CloudWatch alarm: trailing-week pass rate < trailing-30-day baseline by > 15% triggers an alarm + opens an automated revert PR for the offending change.
+- [x] `terraform/modules/improvement/` Step Functions distributed Map state machine maps over `docs/eval-set/cases.yaml` and invokes the live SDLC pipeline once per case via `states:startExecution.sync:2`. Captures pass/fail/cost matrix.
+- [x] `lambdas/eval_runner/` — 4 ops: `load_cases` (with `tier_filter`), `evaluate_result`, `record_result` (S3 + per-case CW metric), `aggregate_results` (suite-wide `PassRate`).
+- [x] `tier: smoke|full` field on each case in `cases.yaml`. PR-triggered runs use the smoke tier (3 cases: `02-small-feature-add`, `04-bug-fix`, `07-memory-md-learning`); nightly + manual runs use the full suite.
+- [x] **HITL auto-approval in eval mode**: SDLC ASL threads `eval_mode` through both gate payloads; `hitl_handler` short-circuits with `SendTaskSuccess` when set. Without this, eval runs would hang at `WaitForSpecApproval`.
+- [x] EventBridge schedule (nightly) + `evals.yml` GitHub Actions workflow on PRs touching prompts / model IDs / `docs/MEMORY.md`.
+- [x] `lambdas/drift_detector/` — Lambda that compares trailing-7d vs trailing-30d pass rate from S3 records. Persists a structured drift report at `evals/drift/{ts}.json`, emits the `RegressionDetected` CW metric, and publishes a structured alert to the alerts SNS topic when a regression fires. Triggered on each eval-state-machine `ExecutionSucceeded` and on a daily floor schedule.
+- [x] CloudWatch alarm `${prefix}-eval-regression` watches `RegressionDetected`; routes to alerts SNS.
+- [ ] **PR commenting on the offending change** (deferred): needs a `git_sha → PR` resolver primitive (e.g., a new `resolve_pr` op on `repo_helper` wrapping `GET /repos/{owner}/{repo}/commits/{sha}/pulls`) plus threading the commit SHA through eval result records. Tracked as a 9b follow-up.
 
-### 9c — Improvement Proposer + A/B routing ⬜
+### 9c — Improvement Proposer + A/B routing ✅
 
-- [ ] `agents/proposer/` — Strands agent (Opus 4.7) added to the `var.agents` map. Reads rejection-category histogram + few-shot bank stats + eval deltas. Outputs a PR proposing **specific edits** to one of `MEMORY.md`, `agents/architect/.../prompts.py`, `agents/implementer/.../prompts.py`, or the agent map (e.g., "promote a Critic agent" / "split the Architect prompt by intent class").
-- [ ] A/B routing — when two prompt variants exist (`prompts.py` + `prompts.b.py`), the agent's `app.py` hashes `run_id` and picks one. Telemetry tags the variant; the proposer compares variants after N=50 runs and recommends a winner.
+- [x] `packages/common/src/common/routing.py` — `pick_variant(run_id, agent_name)` returns `"a"` or `"b"` via stable SHA-256 hash; `load_system_prompt(agent, variant)` imports `{agent}.prompts_b` when variant is `b` and the module exists, else falls back to `{agent}.prompts`. 7 unit tests.
+- [x] Every Strands agent (`architect`, `critic`, `reviewer`, `tester`) plus the Implementer's `options.py` updated: `build_agent(run_id)` resolves the variant per call. Falls back to `prompts.py` when no `prompts_b.py` exists, so the routing is dormant by default — adding a B variant is a single PR adding the file.
+- [x] `agents/proposer/` — Strands + Opus 4.7. Reads rejection histogram (from telemetry), drift report (from 9b), eval pass-rate aggregate, few-shot example counts, and `MEMORY.md`. Output is a `Proposal` with one or more `FileEdit`s; **the Pydantic validator restricts target files to `docs/MEMORY.md` or `agents/*/src/*/prompts(_b)?.py`** — blast radius is bounded at the model level, not just at code review. App orchestrates branch creation + commit + PR open via `repo_helper` (installation-token path; PRs attribute to `ai-dlc[bot]`).
+- [x] `proposer` registered in `var.agents` (`targets = ["repo_helper"]`); ECR repo + CI matrix + per-repo runtime env (`AIDLC_REPO_HELPER_FUNCTION_NAME`) wired.
+- [x] Per-runtime IAM extended with a `DirectInvokeToolLambdas` statement gated on `targets`, so agents that orchestrate tool Lambdas directly (vs. via the gateway) get only the Lambdas in their declared targets.
+- [x] Two trigger paths: (a) `aws_scheduler_schedule.proposer_weekly` (Mondays 09:00 UTC); (b) `proposer_trigger` Lambda subscribed to the alerts SNS topic — invokes the Proposer with `trigger_reason="regression"` when the eval-regression alarm fires.
 
 **Data sample policy:** 100% of rejected runs, 10% of approved (full prompt + output). DSAR redaction needed if user data flows in.
 
@@ -258,6 +267,56 @@ Receive
 - [x] `images-build.yml` matrix extended to `[architect, critic, implementer, reviewer, tester]`.
 - [x] `docs/eval-set/cases.yaml` pass-criteria schema extended with `critique_present`, `review_present`, `test_report_present` (all default true in v1 — the agents always run).
 - [ ] Live AWS smoke (gated on Phase 6 completion + `repo_helper` network calls): a single run produces critique + review + test-report artifacts in S3 and the dashboard timeline shows the 3 new event types per task.
+
+---
+
+## Phase 11 — On-behalf-of GitHub auth 🟡
+
+So commits, PR opens, and PR comments attribute to the human who submitted the run rather than to `ai-dlc[bot]`. Bot attribution remains the fallback for system-driven runs (eval suite, scheduled Proposer, runs without a linked user).
+
+```
+User → Cognito sign-in → Dashboard → "Connect GitHub" (one time)
+                                       │
+                                       ▼
+                         AgentCore Identity USER_FEDERATION on GithubOauth2
+                                       │
+                                       ▼
+                       Token Vault stores user GitHub OAuth token (keyed by Cognito sub)
+
+Run submission carries `requestor_sub` (Cognito sub) + `target_repo` →
+Step Functions threads them through Architect → Critic → Implementer/Reviewer/Tester →
+each agent that touches GitHub fetches the user's token via
+`GetWorkloadAccessTokenForUserId` + `GetResourceOauth2Token(USER_FEDERATION)`.
+```
+
+### 11a — Plumbing + Reviewer/Tester OBO ✅
+
+- [x] `packages/common/src/common/events.py` — `RequestReceived.requestor_sub` (Cognito sub) + `target_repo` (`owner/name`). Both nullable for system-driven runs.
+- [x] `packages/common/src/common/runtime.py` — same fields added to every agent input (`Architect/Critic/Implementer/Reviewer/Tester`).
+- [x] `lambdas/repo_helper/src/repo_helper/auth.py` — refactored from `requestor_jwt` (a credential) to `requestor_sub` (an identifier) using `bedrock-agentcore:GetWorkloadAccessTokenForUserId`. JWTs no longer flow through events / state-machine input — only the stable Cognito sub does.
+- [x] `terraform/modules/pipeline/asl/sdlc.asl.json.tftpl` — threads `requestor_sub` + `target_repo` through `Receive → Architect → Critic → IterateTasks ItemSelector → Implementer/Reviewer/Tester` payloads.
+- [x] `services/dashboard/src/dashboard/routes/runs.py` + `models.py` + `templates/submit.html` — submit form gains a `target_repo` input; `submit_run` populates `requestor_sub` from `user.sub`.
+- [x] `agents/reviewer/src/reviewer/app.py` + `agents/tester/src/tester/app.py` — invoke `repo_helper.comment_pr` via Lambda invoke after producing the review/report. Forwards `requestor_sub`; advisory (failure never blocks the run).
+
+### 11b — Implementer commits as user ✅
+
+- [x] `agents/implementer/src/implementer/agentcore_auth.py` — fetches the user's GitHub OAuth token from AgentCore Identity (`GetWorkloadAccessTokenForUserId` + `GetResourceOauth2Token`). Falls back to `AIDLC_GITHUB_TOKEN` env (installation token) when no requestor is linked.
+- [x] `agents/implementer/src/implementer/repo_ops.py` — replaced the env-var-based auth with a per-invocation `RepoSession` that holds: target_repo, access token, author_login + author_email (resolved via `GET /user`), and an `on_behalf_of_user` flag. `clone_repo`, `open_pr`, etc. all take the session. `configure_git_author` writes `user.name` + `user.email` from the session into the freshly-cloned repo so commits attribute to the requestor.
+- [x] `agents/implementer/src/implementer/client.py` — builds the session at run start; logs whether the run is on-behalf-of-user or bot-attributed; passes the session through every git/GitHub call.
+- [x] `terraform/modules/agents/runtime.tf` — runtime IAM gains the `AgentCoreUserObo` statement (gated on `targets` containing `repo_helper` and `var.github_app != null`); env vars `AIDLC_GITHUB_OAUTH_PROVIDER_NAME` + `AIDLC_AGENT_WORKLOAD_NAME` set on the same condition. Implementer's runtime role now has everything it needs.
+
+### 11c — Dashboard "Connect GitHub" OAuth flow ✅
+
+- [x] `services/dashboard/src/dashboard/routes/auth_github.py` — two routes:
+  - `GET /auth/github` calls `bedrock-agentcore:GetWorkloadAccessTokenForUserId` (with `user.sub`) + `GetResourceOauth2Token(USER_FEDERATION, scopes=[])`. If AgentCore returns an `accessToken` (already linked) → renders "linked". Otherwise sets the `aidlc_obo_session_uri` cookie (10-min TTL, secure + httponly + lax) and redirects to the returned `authorizationUrl`.
+  - `GET /auth/github/callback` reads the cookie, calls `complete_resource_token_auth(userIdentifier={"userId": user.sub}, sessionUri=...)`, deletes the cookie, renders the success page.
+- [x] `services/dashboard/src/dashboard/templates/connect_github.html` — page covering all four states: linked, just-linked, missing-session, callback-failed.
+- [x] `templates/base.html` nav — "connect github" link.
+- [x] `services/dashboard/src/dashboard/deps.py` — `Settings` carries `dashboard_workload_name` + `github_oauth_provider_name`.
+- [x] `terraform/modules/agents/identity.tf` — adds `aws_bedrockagentcore_workload_identity.dashboard` (gated on `github_app != null`); `outputs.tf` exposes its name.
+- [x] `terraform/modules/dashboard/data.tf` + `ecs.tf` + `variables.tf` — task IAM gains `bedrock-agentcore:GetWorkloadAccessTokenForUserId` / `GetResourceOauth2Token` / `CompleteResourceTokenAuth`; container env carries `AIDLC_DASHBOARD_WORKLOAD_NAME` + `AIDLC_GITHUB_OAUTH_PROVIDER_NAME`.
+- [x] `terraform/envs/dev/main.tf` — wires `module.agents.dashboard_workload_name` + `module.agents.github_oauth_provider_name` into the dashboard module.
+- [ ] Live smoke: install the GitHub App on a real repo, sign into the dashboard, click "Connect GitHub", complete authorization on github.com, submit a run, observe the Implementer commit + Reviewer/Tester PR comments attributed to the user. Gated on Phase 6 live AWS smoke.
 
 **Cost delta** (rough, per run): spec phase ~2× (1 Opus → 2 Opus); task phase ~2.4× per task (1 Sonnet → 1 Sonnet + 1 Sonnet + 1 Haiku). Latency adds ~30s spec phase, ~90s per task. Acceptable given the quality lift; revisit if real runs show a problem.
 

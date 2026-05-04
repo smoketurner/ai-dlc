@@ -43,7 +43,13 @@ class BaseOp(BaseModel):
 
 
 class RequestApprovalInput(BaseOp):
-    """Persist a Step Functions task_token waiting for human approval."""
+    """Persist a Step Functions task_token waiting for human approval.
+
+    ``eval_mode=true`` short-circuits the HITL gate by immediately calling
+    ``SendTaskSuccess`` with an auto-approval payload. The eval runner sets
+    this so its synthetic SDLC runs don't block forever on human review.
+    Real (production) runs always have ``eval_mode=false``.
+    """
 
     op: Literal["REQUEST_APPROVAL"]
     task_token: str = Field(min_length=1)
@@ -52,6 +58,7 @@ class RequestApprovalInput(BaseOp):
     gate_ref: str = Field(min_length=1, max_length=64)
     pr_url: str | None = None
     summary: str = Field(max_length=4096)
+    eval_mode: bool = False
 
 
 class DecideInput(BaseOp):
@@ -132,8 +139,27 @@ def mark_resolved(run_id: str, gate_ref: str, decision: str, reviewer: str) -> N
 
 
 def request_approval(req: RequestApprovalInput) -> dict[str, Any]:
-    """Persist token; the GitHub PR comment is wired in Phase 6."""
+    """Persist token; auto-approve and short-circuit if running in eval mode."""
     store_token(req)
+    if req.eval_mode:
+        sfn().send_task_success(
+            taskToken=req.task_token,
+            output=json.dumps(
+                {
+                    "run_id": req.run_id,
+                    "gate_ref": req.gate_ref,
+                    "reviewer": "eval-runner",
+                    "decision": "approve",
+                    "reason": "eval_mode auto-approval",
+                },
+            ),
+        )
+        mark_resolved(req.run_id, req.gate_ref, "approve", "eval-runner")
+        logger.info(
+            "approval gate auto-approved (eval_mode)",
+            extra={"run_id": req.run_id, "gate_ref": req.gate_ref},
+        )
+        return {"ok": True, "gate_ref": req.gate_ref, "auto_approved": True}
     logger.info(
         "approval gate opened",
         extra={"run_id": req.run_id, "gate_ref": req.gate_ref, "pr_url": req.pr_url},

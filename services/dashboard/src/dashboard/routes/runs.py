@@ -41,6 +41,8 @@ async def submit_run(req: SubmitRunRequest, user: CurrentUser) -> SubmitRunRespo
             project_slug=req.project_slug,
             intent=req.intent,
             requestor=req.requestor or user.sub,
+            requestor_sub=user.sub,
+            target_repo=req.target_repo,
         ),
     )
     publish(envelope, cfg.bus_name)

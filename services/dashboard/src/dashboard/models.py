@@ -52,6 +52,7 @@ class SubmitRunRequest(_Frozen):
     project_slug: str
     intent: str
     requestor: str
+    target_repo: str
     idempotency_key: str | None = None
 
 

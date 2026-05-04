@@ -108,6 +108,39 @@ data "aws_iam_policy_document" "runtime_inline" {
     resources = [aws_bedrockagentcore_gateway.agent[each.key].gateway_arn]
   }
 
+  # Direct lambda:InvokeFunction on the agent's tool targets. Most agents
+  # call tools via the gateway (which has its own role) — this is the
+  # escape hatch for agents that orchestrate Lambdas directly (e.g., the
+  # Proposer calling repo_helper to commit + open a PR). The set is
+  # already bounded by `targets`, so least-privilege still holds.
+  dynamic "statement" {
+    for_each = length(each.value.targets) > 0 ? [1] : []
+    content {
+      sid       = "DirectInvokeToolLambdas"
+      actions   = ["lambda:InvokeFunction"]
+      resources = [for tool in each.value.targets : module.tool_lambda[tool].lambda_function_arn]
+    }
+  }
+
+  # AgentCore Identity user-OBO. Granted to agents whose ``targets``
+  # include ``repo_helper`` — these are the agents that may need to
+  # mint user-on-behalf-of GitHub tokens directly (Implementer for
+  # git CLI auth). The wildcard resource is intentional: AgentCore
+  # itself enforces scope via the workload identity + credential
+  # provider configuration.
+  dynamic "statement" {
+    for_each = contains(each.value.targets, "repo_helper") && var.github_app != null ? [1] : []
+    content {
+      sid = "AgentCoreUserObo"
+      actions = [
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+        "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+        "bedrock-agentcore:GetResourceOauth2Token",
+      ]
+      resources = ["*"]
+    }
+  }
+
   statement {
     sid = "Logs"
     actions = [
@@ -168,14 +201,23 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     }
   }
 
-  environment_variables = {
-    AIDLC_ENV               = var.env
-    AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
-    AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
-    AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
-    AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
-    AIDLC_BEDROCK_MODEL_ID  = each.value.bedrock_model_id
-  }
+  environment_variables = merge(
+    {
+      AIDLC_ENV               = var.env
+      AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
+      AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
+      AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
+      AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
+      AIDLC_BEDROCK_MODEL_ID  = each.value.bedrock_model_id
+    },
+    contains(each.value.targets, "repo_helper") ? {
+      AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
+    } : {},
+    contains(each.value.targets, "repo_helper") && var.github_app != null ? {
+      AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
+      AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.agent[each.key].name
+    } : {},
+  )
 
   # The images-build workflow updates the container URI out-of-band via
   # `aws bedrock-agentcore-control update-agent-runtime`. Let those updates

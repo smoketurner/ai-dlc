@@ -67,11 +67,14 @@ jobs:
         env:
           STATE_MACHINE_ARN: ${{ vars.AIDLC_EVAL_STATE_MACHINE_ARN }}
           INPUT_CASES: ${{ inputs.cases }}
+          # PR triggers run the smoke tier (3 cases, ~$5-15); nightly + manual
+          # workflow_dispatch run the full suite unless cases are pinned.
+          TIER: ${{ github.event_name == 'pull_request' && 'smoke' || 'full' }}
         run: |
           if [ -n "${INPUT_CASES}" ]; then
             python3 -c "import json,sys,os; slugs=os.environ['INPUT_CASES'].split(','); print(json.dumps({'override_cases':[{'slug':s.strip()} for s in slugs if s.strip()]}))" > input.json
           else
-            echo '{}' > input.json
+            python3 -c "import json,os; print(json.dumps({'tier': os.environ['TIER']}))" > input.json
           fi
           arn=$(aws stepfunctions start-execution \
             --state-machine-arn "${STATE_MACHINE_ARN}" \
@@ -79,6 +82,7 @@ jobs:
             --input file://input.json \
             --query executionArn --output text)
           echo "execution_arn=${arn}" >>"$GITHUB_OUTPUT"
+          echo "tier=${TIER}" >>"$GITHUB_OUTPUT"
 
       - name: Wait for eval execution
         id: wait

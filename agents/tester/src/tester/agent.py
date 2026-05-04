@@ -12,7 +12,7 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
-from tester.prompts import SYSTEM_PROMPT
+from common.routing import load_system_prompt, pick_variant
 from tester.report import Report
 from tester.tools import read_memory_md_tool, read_spec_doc_tool
 
@@ -24,8 +24,12 @@ def model_id() -> str:
     return os.environ.get("AIDLC_TESTER_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent() -> Agent:
-    """Build a fresh Strands Agent for one tester invocation."""
+def build_agent(run_id: str) -> Agent:
+    """Build a fresh Strands Agent for one tester invocation.
+
+    Prompt variant routed via :func:`common.routing.pick_variant`.
+    """
+    variant = pick_variant(run_id, "tester")
     return Agent(
         model=BedrockModel(
             model_id=model_id(),
@@ -33,7 +37,7 @@ def build_agent() -> Agent:
             max_tokens=4096,
             streaming=True,
         ),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=load_system_prompt("tester", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool],
     )
 
@@ -45,6 +49,7 @@ def analyze_gaps(
     task_id: str,
     pr_url: str,
     diff_summary: str,
+    run_id: str,
 ) -> Report:
     """Run the agent and return the validated Report.
 
@@ -54,6 +59,7 @@ def analyze_gaps(
         task_id: Identifier of the task the PR implements.
         pr_url: GitHub PR URL.
         diff_summary: Diff summary the Implementer produced.
+        run_id: Run UUID7 — drives prompt-variant selection.
 
     Returns:
         A validated :class:`Report` ready for Markdown rendering.
@@ -65,7 +71,7 @@ def analyze_gaps(
         pr_url=pr_url,
         diff_summary=diff_summary,
     )
-    agent = build_agent()
+    agent = build_agent(run_id)
     return agent.structured_output(Report, user_message)
 
 

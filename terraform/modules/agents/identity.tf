@@ -27,6 +27,15 @@ resource "aws_bedrockagentcore_workload_identity" "repo_helper" {
   name = "${local.prefix}-repo-helper"
 }
 
+# Dashboard workload identity — used by /auth/github to bridge the
+# Cognito-authenticated user into AgentCore's USER_FEDERATION on the
+# GithubOauth2 credential provider.
+resource "aws_bedrockagentcore_workload_identity" "dashboard" {
+  count = var.github_app == null ? 0 : 1
+
+  name = "${local.prefix}-dashboard"
+}
+
 resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {
   count = var.github_app == null ? 0 : 1
 

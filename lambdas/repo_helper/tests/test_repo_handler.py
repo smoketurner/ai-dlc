@@ -20,7 +20,6 @@ import pytest
 import repo_helper.auth as auth_mod
 import repo_helper.handler as h
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from pydantic import SecretStr
 
 
 def ctx() -> LambdaContext:
@@ -45,9 +44,9 @@ def stub_token_for_call(monkeypatch: pytest.MonkeyPatch) -> None:
     was taken via the Authorization header.
     """
 
-    def fake_token_for_call(*, repo: str, requestor_jwt: str | None) -> str:
+    def fake_token_for_call(*, repo: str, requestor_sub: str | None) -> str:
         del repo
-        return "ghs_fake_user" if requestor_jwt else "ghs_fake_install"
+        return "ghs_fake_user" if requestor_sub else "ghs_fake_install"
 
     monkeypatch.setattr(h, "token_for_call", fake_token_for_call)
     monkeypatch.setattr(auth_mod, "token_for_call", fake_token_for_call)
@@ -62,11 +61,8 @@ def patch_client(monkeypatch: pytest.MonkeyPatch) -> Callable[[httpx.MockTranspo
     """
 
     def _patch(transport: httpx.MockTransport) -> None:
-        def fake_client(*, repo: str, requestor_jwt: SecretStr | None) -> httpx.Client:
-            token = h.token_for_call(
-                repo=repo,
-                requestor_jwt=requestor_jwt.get_secret_value() if requestor_jwt else None,
-            )
+        def fake_client(*, repo: str, requestor_sub: str | None) -> httpx.Client:
+            token = h.token_for_call(repo=repo, requestor_sub=requestor_sub)
             return httpx.Client(
                 base_url=h.GITHUB_API,
                 transport=transport,
@@ -150,10 +146,10 @@ def test_token_field_is_rejected_in_input() -> None:
     assert out["error"]["kind"] == "validation_error"
 
 
-def test_requestor_jwt_routes_through_user_token(
+def test_requestor_sub_routes_through_user_token(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
-    """When `requestor_jwt` is set, the call goes out with the user-on-behalf-of token."""
+    """When `requestor_sub` is set, the call goes out with the user-on-behalf-of token."""
     seen: list[httpx.Request] = []
 
     def respond(request: httpx.Request) -> httpx.Response:
@@ -177,7 +173,7 @@ def test_requestor_jwt_routes_through_user_token(
                 "head": "x",
                 "title": "t",
                 "body": "b",
-                "requestor_jwt": "eyJfakeCognitoIdToken",
+                "requestor_sub": "cognito-sub-abc123",
             },
         },
         ctx(),
@@ -186,10 +182,10 @@ def test_requestor_jwt_routes_through_user_token(
     assert seen[0].headers["authorization"] == "Bearer ghs_fake_user"
 
 
-def test_requestor_jwt_absent_falls_back_to_installation_token(
+def test_requestor_sub_absent_falls_back_to_installation_token(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
-    """When `requestor_jwt` is absent, the call goes out with the installation token."""
+    """When `requestor_sub` is absent, the call goes out with the installation token."""
     seen: list[httpx.Request] = []
 
     def respond(request: httpx.Request) -> httpx.Response:

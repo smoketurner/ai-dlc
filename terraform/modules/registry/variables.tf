@@ -7,13 +7,21 @@ variable "project" {
 variable "repositories" {
   description = "Repositories to create. Each is named `<project>/<key>`."
   type        = set(string)
-  default     = ["architect", "critic", "implementer", "reviewer", "tester", "dashboard"]
+  default = [
+    "architect",
+    "critic",
+    "implementer",
+    "reviewer",
+    "tester",
+    "proposer",
+    "dashboard",
+  ]
 }
 
 variable "agentcore_pull_repositories" {
   description = "Subset of repositories that AgentCore Runtime is allowed to pull."
   type        = set(string)
-  default     = ["architect", "critic", "implementer", "reviewer", "tester"]
+  default     = ["architect", "critic", "implementer", "reviewer", "tester", "proposer"]
 }
 
 variable "untagged_image_retention_days" {

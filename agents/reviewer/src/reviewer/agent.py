@@ -11,7 +11,7 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
-from reviewer.prompts import SYSTEM_PROMPT
+from common.routing import load_system_prompt, pick_variant
 from reviewer.review import Review
 from reviewer.tools import read_memory_md_tool, read_spec_doc_tool
 
@@ -23,8 +23,12 @@ def model_id() -> str:
     return os.environ.get("AIDLC_REVIEWER_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent() -> Agent:
-    """Build a fresh Strands Agent for one reviewer invocation."""
+def build_agent(run_id: str) -> Agent:
+    """Build a fresh Strands Agent for one reviewer invocation.
+
+    Prompt variant routed via :func:`common.routing.pick_variant`.
+    """
+    variant = pick_variant(run_id, "reviewer")
     return Agent(
         model=BedrockModel(
             model_id=model_id(),
@@ -32,7 +36,7 @@ def build_agent() -> Agent:
             max_tokens=8192,
             streaming=True,
         ),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=load_system_prompt("reviewer", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool],
     )
 
@@ -44,6 +48,7 @@ def review_pr(
     task_id: str,
     pr_url: str,
     diff_summary: str,
+    run_id: str,
 ) -> Review:
     """Run the agent and return the validated Review.
 
@@ -53,6 +58,7 @@ def review_pr(
         task_id: Identifier of the task the PR implements.
         pr_url: GitHub PR URL.
         diff_summary: Diff summary the Implementer produced.
+        run_id: Run UUID7 — drives prompt-variant selection.
 
     Returns:
         A validated :class:`Review` ready for Markdown rendering.
@@ -64,7 +70,7 @@ def review_pr(
         pr_url=pr_url,
         diff_summary=diff_summary,
     )
-    agent = build_agent()
+    agent = build_agent(run_id)
     return agent.structured_output(Review, user_message)
 
 

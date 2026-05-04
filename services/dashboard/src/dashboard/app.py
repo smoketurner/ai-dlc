@@ -8,7 +8,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from dashboard.routes import pages, runs, stream, webhooks
+from dashboard.routes import auth_github, pages, runs, stream, webhooks
 
 logger = structlog.get_logger()
 
@@ -27,3 +27,4 @@ app.include_router(pages.router)
 app.include_router(runs.router)
 app.include_router(stream.router)
 app.include_router(webhooks.router)
+app.include_router(auth_github.router)

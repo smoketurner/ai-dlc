@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Connect GitHub · ai-dlc{% endblock %}
+{% block content %}
+<div class="max-w-2xl space-y-4">
+  <h1 class="text-xl font-semibold">Connect GitHub</h1>
+
+  {% if status == "linked" %}
+  <div class="rounded border border-green-300 bg-green-50 p-4 text-sm">
+    <p class="font-medium text-green-900">You're already connected.</p>
+    <p class="mt-2 text-green-800">
+      AI-DLC has a valid GitHub authorization for your account. Commits and PR
+      comments on runs you submit will attribute to your GitHub identity.
+    </p>
+  </div>
+  {% elif status == "just_linked" %}
+  <div class="rounded border border-green-300 bg-green-50 p-4 text-sm">
+    <p class="font-medium text-green-900">Connected.</p>
+    <p class="mt-2 text-green-800">
+      AI-DLC can now act on your behalf for runs you submit. You can
+      <a href="/runs/new" class="underline">submit a run</a> any time.
+    </p>
+  </div>
+  {% elif status == "missing_session" %}
+  <div class="rounded border border-amber-300 bg-amber-50 p-4 text-sm">
+    <p class="font-medium text-amber-900">No active authorization session.</p>
+    <p class="mt-2 text-amber-800">
+      The session cookie expired or was cleared. Start the flow again from
+      <a href="/auth/github" class="underline">/auth/github</a>.
+    </p>
+  </div>
+  {% elif status == "callback_failed" %}
+  <div class="rounded border border-red-300 bg-red-50 p-4 text-sm">
+    <p class="font-medium text-red-900">Connection failed.</p>
+    <p class="mt-2 text-red-800 font-mono text-xs">{{ error }}</p>
+    <p class="mt-2">
+      <a href="/auth/github" class="underline text-red-900">Try again</a>.
+    </p>
+  </div>
+  {% else %}
+  <p class="text-sm text-slate-700">
+    AI-DLC needs your authorization to open PRs and comment on your behalf.
+    <a href="/auth/github" class="underline">Start the GitHub authorization flow</a>.
+  </p>
+  {% endif %}
+
+  <p class="text-xs text-slate-500">
+    Connecting GitHub lets AI-DLC's agents commit, open PRs, and comment as you on
+    repositories the AI-DLC GitHub App is installed on. If you skip this step,
+    runs you submit will attribute to <code>ai-dlc[bot]</code> instead.
+  </p>
+</div>
+{% endblock %}

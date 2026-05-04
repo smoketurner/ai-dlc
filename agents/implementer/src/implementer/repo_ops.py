@@ -2,16 +2,19 @@
 
 The implementer needs to:
 
-  * clone the project repo into ``/workspace/repo``,
+  * resolve the GitHub identity it'll act under for this run — either the
+    requestor's user OAuth token (commits attribute to the user) or the
+    App's installation token (commits attribute to ``ai-dlc[bot]``),
+  * clone the target repo into ``/workspace/repo`` using that token,
   * fetch the spec bundle from S3 into ``/workspace/spec/``,
-  * create a new branch named after the task,
-  * after Claude finishes editing, commit + push,
-  * open a PR via the GitHub API.
+  * configure local git author from the resolved identity,
+  * create a new branch named after the task, let Claude edit, commit,
+    push, and open a PR via the GitHub API.
 
-Phase 6 scope: structurally complete code with subprocess-based ``git`` and
-``httpx``-based GitHub API calls. The actual smoke run depends on real
-GitHub credentials and a live AWS account, so end-to-end is deferred. Unit
-tests cover the pure helpers; the I/O wrappers are integration-tested.
+The :class:`RepoSession` holds the token + author identity + target repo
+for one Implementer invocation. ``execute_task`` builds the session at
+the start of a run and passes it through every git/GitHub operation —
+no module-level env-var reads in this code path.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -26,10 +30,30 @@ from typing import TYPE_CHECKING
 import boto3
 import httpx
 
+from implementer.agentcore_auth import (
+    installation_token_fallback,
+    user_oauth_token_for_requestor_sub,
+)
+
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
 GIT_BIN = "/usr/bin/git"
+GITHUB_API = "https://api.github.com"
+HTTP_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+BOT_LOGIN_FALLBACK = "ai-dlc[bot]"
+BOT_EMAIL_FALLBACK = "ai-dlc-bot@users.noreply.github.com"
+
+
+@dataclass(frozen=True)
+class RepoSession:
+    """Per-invocation auth + identity context for git/GitHub calls."""
+
+    target_repo: str  # owner/name
+    access_token: str  # bearer (user OAuth or installation token)
+    author_login: str  # git config user.name
+    author_email: str  # git config user.email
+    on_behalf_of_user: bool  # True when commits attribute to a real user
 
 
 @cache
@@ -41,16 +65,6 @@ def s3_client() -> S3Client:
 def artifacts_bucket() -> str:
     """Bucket holding spec artifacts."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
-
-
-def github_token() -> str:
-    """OAuth token used for GitHub API calls."""
-    return os.environ["AIDLC_GITHUB_TOKEN"]
-
-
-def github_repo() -> str:
-    """Project's GitHub repo in ``owner/name`` form."""
-    return os.environ["AIDLC_GITHUB_REPO"]
 
 
 def workspace_root() -> Path:
@@ -68,6 +82,55 @@ def spec_path() -> Path:
     return workspace_root() / "spec"
 
 
+def make_session(*, target_repo: str, requestor_sub: str | None) -> RepoSession:
+    """Resolve auth + author identity for one Implementer run.
+
+    When ``requestor_sub`` is set and the user has authorized the GitHub
+    App, the session uses the user's OAuth token and queries
+    ``GET /user`` to derive the git author identity. Otherwise falls back
+    to the App's installation token and ``ai-dlc[bot]`` attribution.
+    """
+    if requestor_sub:
+        token = user_oauth_token_for_requestor_sub(requestor_sub)
+        if token is not None:
+            login, email = resolve_user_identity(token)
+            return RepoSession(
+                target_repo=target_repo,
+                access_token=token,
+                author_login=login,
+                author_email=email,
+                on_behalf_of_user=True,
+            )
+    return RepoSession(
+        target_repo=target_repo,
+        access_token=installation_token_fallback(),
+        author_login=BOT_LOGIN_FALLBACK,
+        author_email=BOT_EMAIL_FALLBACK,
+        on_behalf_of_user=False,
+    )
+
+
+def resolve_user_identity(token: str) -> tuple[str, str]:
+    """Look up the GitHub login + noreply email for ``token`` via GET /user."""
+    response = httpx.get(
+        f"{GITHUB_API}/user",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    body = response.json()
+    login = str(body["login"])
+    user_id = int(body["id"])
+    # GitHub's privacy-respecting noreply email pattern. See
+    # https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/setting-your-commit-email-address
+    email = f"{user_id}+{login}@users.noreply.github.com"
+    return login, email
+
+
 def run_git(*args: str, cwd: Path | None = None) -> str:
     """Run a git command and return stdout (raises on non-zero exit)."""
     cmd = [GIT_BIN, *args]
@@ -81,19 +144,26 @@ def run_git(*args: str, cwd: Path | None = None) -> str:
     return proc.stdout
 
 
-def clone_repo(branch: str = "main") -> None:
+def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
     """Clone the project repo into the container workspace."""
     target = repo_path()
     if target.exists():
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    url = f"https://x-access-token:{github_token()}@github.com/{github_repo()}.git"
+    url = f"https://x-access-token:{session.access_token}@github.com/{session.target_repo}.git"
     subprocess.run(  # noqa: S603 - args are well-formed
         [GIT_BIN, "clone", "--depth", "1", "--branch", branch, url, str(target)],
         check=True,
         capture_output=True,
         text=True,
     )
+    configure_git_author(session)
+
+
+def configure_git_author(session: RepoSession) -> None:
+    """Set ``user.name`` and ``user.email`` on the freshly-cloned repo."""
+    run_git("config", "user.name", session.author_login)
+    run_git("config", "user.email", session.author_email)
 
 
 def fetch_spec(spec_s3_prefix: str) -> None:
@@ -129,16 +199,16 @@ def push_branch(branch: str) -> None:
     run_git("push", "--set-upstream", "origin", branch)
 
 
-def open_pr(*, branch: str, base: str, title: str, body: str) -> str:
+def open_pr(session: RepoSession, *, branch: str, base: str, title: str, body: str) -> str:
     """Open a PR via the GitHub REST API; return the PR HTML URL."""
-    url = f"https://api.github.com/repos/{github_repo()}/pulls"
+    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls"
     headers = {
         "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {github_token()}",
+        "Authorization": f"Bearer {session.access_token}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     payload = {"title": title, "body": body, "head": branch, "base": base}
-    with httpx.Client(timeout=30.0) as client:
+    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
         resp = client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()["html_url"]

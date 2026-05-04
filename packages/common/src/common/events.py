@@ -65,11 +65,27 @@ def now() -> datetime:
 
 
 class RequestReceived(Payload):
-    """A new run request has entered the system."""
+    """A new run request has entered the system.
+
+    ``requestor`` is the human-readable identity submitted via the form
+    (typically an email). ``requestor_sub`` is the stable Cognito subject
+    identifier — used as the user_id when fetching this user's GitHub
+    OAuth token from the AgentCore Identity Token Vault. ``target_repo``
+    is the GitHub repository (``owner/name``) the agents should operate
+    on for this run.
+    """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     intent: Annotated[str, Field(min_length=1, max_length=4096)]
     requestor: Annotated[str, Field(min_length=1, max_length=128)]
+    requestor_sub: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    target_repo: (
+        Annotated[
+            str,
+            Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$"),
+        ]
+        | None
+    ) = None
 
 
 class SpecReady(Payload):

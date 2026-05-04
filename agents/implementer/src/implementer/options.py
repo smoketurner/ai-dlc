@@ -6,8 +6,8 @@ import os
 
 from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
+from common.routing import load_system_prompt, pick_variant
 from implementer.hooks import deny_dangerous_bash, deny_sensitive_writes
-from implementer.prompts import SYSTEM_PROMPT
 
 DEFAULT_MODEL_ID = "claude-sonnet-4-6-20260301"
 DEFAULT_BUDGET_USD = 5.0
@@ -24,11 +24,16 @@ def working_dir() -> str:
     return os.environ.get("AIDLC_WORKSPACE", "/workspace/repo")
 
 
-def build_options() -> ClaudeAgentOptions:
-    """Build the ClaudeAgentOptions used for one task invocation."""
+def build_options(run_id: str) -> ClaudeAgentOptions:
+    """Build the ClaudeAgentOptions used for one task invocation.
+
+    System prompt is selected via A/B routing — half of runs (deterministic
+    in ``run_id``) use ``implementer.prompts_b`` if present.
+    """
+    variant = pick_variant(run_id, "implementer")
     return ClaudeAgentOptions(
         model=model_id(),
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=load_system_prompt("implementer", variant),
         cwd=working_dir(),
         permission_mode="acceptEdits",
         max_turns=DEFAULT_MAX_TURNS,

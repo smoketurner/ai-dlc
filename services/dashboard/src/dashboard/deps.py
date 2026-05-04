@@ -34,6 +34,8 @@ class Settings(BaseModel):
     cognito_user_pool_id: str
     cognito_client_id: str
     auth_disabled: bool
+    dashboard_workload_name: str
+    github_oauth_provider_name: str
 
 
 @cache
@@ -53,6 +55,8 @@ def settings() -> Settings:
         cognito_user_pool_id=os.environ["AIDLC_COGNITO_USER_POOL_ID"],
         cognito_client_id=os.environ["AIDLC_COGNITO_CLIENT_ID"],
         auth_disabled=os.environ.get("AIDLC_AUTH", "enabled").lower() == "disabled",
+        dashboard_workload_name=os.environ.get("AIDLC_DASHBOARD_WORKLOAD_NAME", ""),
+        github_oauth_provider_name=os.environ.get("AIDLC_GITHUB_OAUTH_PROVIDER_NAME", ""),
     )
 
 

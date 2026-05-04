@@ -172,6 +172,18 @@ variable "log_retention_days" {
   default     = 30
 }
 
+variable "dashboard_workload_name" {
+  description = "AgentCore workload identity name for the dashboard. Empty disables /auth/github."
+  type        = string
+  default     = ""
+}
+
+variable "github_oauth_provider_name" {
+  description = "AgentCore Identity OAuth2 credential provider name (GithubOauth2). Empty disables /auth/github."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

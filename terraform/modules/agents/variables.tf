@@ -50,6 +50,11 @@ variable "agents" {
       targets          = ["artifact_tool", "repo_helper"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
+    proposer = {
+      description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
+      targets          = ["repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-7-20260301-v1:0"
+    }
   }
 
   validation {

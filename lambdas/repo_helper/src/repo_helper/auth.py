@@ -4,15 +4,20 @@
     AgentCore Identity's ``USER_FEDERATION`` flow on the ``GithubOauth2``
     credential provider; AgentCore caches the resulting GitHub OAuth token
     in the Token Vault keyed by the user's identity. At call time the
-    Lambda calls ``bedrock-agentcore:GetWorkloadAccessTokenForJWT`` with
-    the requestor's JWT, then ``bedrock-agentcore:GetResourceOauth2Token``
-    with ``oauth2Flow=USER_FEDERATION`` to retrieve the cached user token.
+    Lambda calls ``bedrock-agentcore:GetWorkloadAccessTokenForUserId`` with
+    the requestor's Cognito ``sub``, then
+    ``bedrock-agentcore:GetResourceOauth2Token`` with
+    ``oauth2Flow=USER_FEDERATION`` to retrieve the cached user token.
     Commits and PRs attribute to the requestor in GitHub UI. AgentCore
     handles refresh + storage.
   * **Installation token** (fallback). For runs without a linked user
     (admin/bootstrap or before a user has authorized the App) the Lambda
     mints a fresh installation-scoped token from the App's private key
     in Secrets Manager. Commits attribute to ``ai-dlc[bot]``.
+
+We pass the Cognito sub (a string identifier) rather than a JWT through
+events / state-machine input. The sub isn't a credential and is safe to
+persist; JWTs are credentials and should never land in DDB / CloudWatch.
 
 Required env vars:
   * ``AIDLC_GITHUB_APP_SECRET_ARN`` — Secrets Manager secret holding
@@ -22,7 +27,7 @@ Required env vars:
     user-OBO tokens.
   * ``AIDLC_AGENT_WORKLOAD_NAME`` — name of the AgentCore workload identity
     the Lambda runs under (used as the workload-name argument to
-    ``GetWorkloadAccessTokenForJWT``).
+    ``GetWorkloadAccessTokenForUserId``).
 
 Caches are module-level globals because Lambda containers stay warm across
 invocations.
@@ -164,21 +169,23 @@ def app_headers() -> dict[str, str]:
     }
 
 
-def user_oauth_token_for_requestor(requestor_jwt: str) -> str | None:
+def user_oauth_token_for_requestor_sub(requestor_sub: str) -> str | None:
     """Resolve the requestor's GitHub OAuth token via AgentCore Identity.
 
-    Calls ``GetWorkloadAccessTokenForJWT`` to convert the requestor's
-    Cognito ID token into a workload-scoped access token, then
+    Calls ``GetWorkloadAccessTokenForUserId`` to derive a workload-scoped
+    access token bound to ``requestor_sub``, then
     ``GetResourceOauth2Token`` with ``oauth2Flow=USER_FEDERATION`` to fetch
-    the user's GitHub OAuth token from the Token Vault. Returns ``None``
-    if the user has not yet authorized the App (the dashboard's "Connect
-    GitHub" flow has not been completed for this user).
+    the user's cached GitHub OAuth token from the Token Vault. Returns
+    ``None`` when the user hasn't authorized the App yet — the dashboard's
+    "Connect GitHub" flow has to run first — *or* when the user's session
+    is otherwise unavailable (token expired, vault returned no access
+    token). The caller treats ``None`` as "fall back to install token".
     """
     client = agentcore_client()
     try:
-        workload_token_response = client.get_workload_access_token_for_jwt(
+        workload_token_response = client.get_workload_access_token_for_user_id(
             workloadName=workload_name(),
-            userToken=requestor_jwt,
+            userId=requestor_sub,
         )
         workload_token = workload_token_response["workloadAccessToken"]
         resource_response = client.get_resource_oauth2_token(
@@ -189,19 +196,23 @@ def user_oauth_token_for_requestor(requestor_jwt: str) -> str | None:
         )
     except client.exceptions.ResourceNotFoundException:
         return None
-    return resource_response["accessToken"]
+    access_token = resource_response.get("accessToken")
+    if not access_token:
+        # sessionStatus may be PENDING (user mid-authorization) — caller falls back.
+        return None
+    return access_token
 
 
-def token_for_call(*, repo: str, requestor_jwt: str | None) -> str:
+def token_for_call(*, repo: str, requestor_sub: str | None) -> str:
     """Return the right bearer token for a GitHub call.
 
     Prefers the user-on-behalf-of token from AgentCore Identity (commits
     attributed to the requestor); falls back to the App's installation
-    token (commits attributed to ``ai-dlc[bot]``) when no user JWT is
+    token (commits attributed to ``ai-dlc[bot]``) when no Cognito sub is
     provided or the user hasn't completed the "Connect GitHub" flow.
     """
-    if requestor_jwt is not None:
-        user_token = user_oauth_token_for_requestor(requestor_jwt)
+    if requestor_sub is not None:
+        user_token = user_oauth_token_for_requestor_sub(requestor_sub)
         if user_token is not None:
             return user_token
     return installation_token_for_repo(repo)

@@ -66,6 +66,24 @@ data "aws_iam_policy_document" "task_inline" {
       "${var.artifacts_bucket_arn}/*",
     ]
   }
+
+  # AgentCore Identity user-OBO flow — used by /auth/github to bridge the
+  # Cognito-authenticated user into AgentCore's USER_FEDERATION on the
+  # GithubOauth2 credential provider. Empty when github_app isn't
+  # configured; AgentCore-side enforcement bounds these by workload
+  # identity + credential provider, so the wildcard resource is safe.
+  dynamic "statement" {
+    for_each = var.dashboard_workload_name == "" ? [] : [1]
+    content {
+      sid = "AgentCoreUserObo"
+      actions = [
+        "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
+        "bedrock-agentcore:GetResourceOauth2Token",
+        "bedrock-agentcore:CompleteResourceTokenAuth",
+      ]
+      resources = ["*"]
+    }
+  }
 }
 
 data "aws_iam_policy_document" "execution_assume" {

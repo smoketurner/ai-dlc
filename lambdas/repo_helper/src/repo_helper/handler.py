@@ -25,7 +25,7 @@ from typing import Any, Literal
 import httpx
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from repo_helper.auth import (
     ACCEPT_HEADER,
@@ -42,17 +42,21 @@ logger = Logger(service="repo_helper")
 class BaseOp(BaseModel):
     """Common configuration for every input model.
 
-    ``requestor_jwt`` is the user's identity token (Cognito ID token)
+    ``requestor_sub`` is the user's stable Cognito subject identifier
     threaded through from the dashboard / Step Functions input. When set,
-    the Lambda asks AgentCore Identity to resolve it into the user's
-    GitHub OAuth token (commits attributed to them). When ``None``, the
-    Lambda falls back to the App's installation token (commits attributed
-    to ``ai-dlc[bot]``).
+    the Lambda asks AgentCore Identity (via ``GetWorkloadAccessTokenForUserId``
+    + ``GetResourceOauth2Token``) to resolve it into the user's stored
+    GitHub OAuth token. When ``None``, the Lambda falls back to the App's
+    installation token (commits attributed to ``ai-dlc[bot]``).
+
+    The sub is just a string identifier, not a credential — safe to
+    persist in events / state-machine input. JWTs would be credentials
+    and were intentionally avoided here.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    requestor_jwt: SecretStr | None = Field(default=None)
+    requestor_sub: str | None = Field(default=None, max_length=128)
 
 
 class OpenPrInput(BaseOp):
@@ -134,9 +138,9 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     except ValidationError as exc:
         return error("validation_error", json.loads(exc.json()))
 
-    logger.info("dispatch", extra={"op": op, "on_behalf_of": req.requestor_jwt is not None})
+    logger.info("dispatch", extra={"op": op, "on_behalf_of": req.requestor_sub is not None})
     try:
-        with github_client(repo=target_repo(req), requestor_jwt=req.requestor_jwt) as client:
+        with github_client(repo=target_repo(req), requestor_sub=req.requestor_sub) as client:
             return run_op(req, client)
     except httpx.HTTPStatusError as exc:
         return error(
@@ -327,17 +331,14 @@ def update_ref(repo: str, branch: str, commit_sha: str, client: httpx.Client) ->
     response.raise_for_status()
 
 
-def github_client(*, repo: str, requestor_jwt: SecretStr | None) -> httpx.Client:
+def github_client(*, repo: str, requestor_sub: str | None) -> httpx.Client:
     """Build an httpx client authenticated for ``repo``.
 
     Picks a user-on-behalf-of token via AgentCore Identity if
-    ``requestor_jwt`` resolves to a linked user; otherwise falls back to
+    ``requestor_sub`` resolves to a linked user; otherwise falls back to
     the App's installation token. See :func:`repo_helper.auth.token_for_call`.
     """
-    token = token_for_call(
-        repo=repo,
-        requestor_jwt=requestor_jwt.get_secret_value() if requestor_jwt is not None else None,
-    )
+    token = token_for_call(repo=repo, requestor_sub=requestor_sub)
     return httpx.Client(
         base_url=GITHUB_API,
         timeout=HTTP_TIMEOUT,

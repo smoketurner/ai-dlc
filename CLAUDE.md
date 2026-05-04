@@ -25,6 +25,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore. The full architectural 
 | `agents/implementer/` | Claude Agent SDK agent — opens code PRs. |
 | `agents/reviewer/` | Strands agent — code-reviews each task PR (advisory). |
 | `agents/tester/` | Strands agent — flags test gaps in each task PR (advisory). |
+| `agents/proposer/` | Strands agent — schedule/regression-driven; opens PRs proposing prompt or MEMORY.md edits. |
 | `lambdas/entry_adapter/` | API Gateway → EventBridge `REQUEST.RECEIVED`. |
 | `lambdas/hitl_handler/` | Step Functions `.waitForTaskToken` request + GitHub webhook DECIDE. |
 | `lambdas/event_projector/` | DynamoDB Streams + EventBridge → DDB read model + AgentCore Memory `CreateEvent`. |

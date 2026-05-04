@@ -46,10 +46,16 @@ class BaseOp(BaseModel):
 
 
 class LoadCasesInput(BaseOp):
-    """Read the case index. Optional override skips the S3 read."""
+    """Read the case index. Optional override skips the S3 read.
+
+    ``tier_filter`` (when set) keeps only cases whose ``tier`` matches —
+    used by the PR-triggered workflow to run the smoke set instead of the
+    full suite. Cases without a ``tier`` field are treated as ``"full"``.
+    """
 
     op: Literal["load_cases"]
     override_cases: list[dict[str, Any]] | None = None
+    tier_filter: Literal["smoke", "full"] | None = None
 
 
 class PassCriteria(BaseModel):
@@ -72,6 +78,7 @@ class CaseDef(BaseModel):
     slug: str = Field(min_length=1, max_length=128)
     project_slug: str = Field(min_length=1, max_length=64)
     intent: str = Field(min_length=1, max_length=4096)
+    tier: Literal["smoke", "full"] = "full"
     pass_criteria: PassCriteria
 
 
@@ -158,16 +165,19 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
 
 
 def load_cases(req: LoadCasesInput) -> dict[str, Any]:
-    """Resolve the case list — either from the override or from S3."""
+    """Resolve the case list — either from the override or from S3, then filter."""
     if req.override_cases is not None:
-        cases = [CaseDef.model_validate(c).model_dump() for c in req.override_cases]
+        cases = [CaseDef.model_validate(c) for c in req.override_cases]
     else:
         body = s3().get_object(Bucket=artifacts_bucket(), Key=cases_key())["Body"].read()
         parsed = yaml.safe_load(body)
         raw = parsed.get("cases") or [] if isinstance(parsed, dict) else []
-        cases = [CaseDef.model_validate(c).model_dump() for c in raw]
-    logger.info("cases loaded", extra={"count": len(cases)})
-    return {"ok": True, "cases": cases}
+        cases = [CaseDef.model_validate(c) for c in raw]
+    if req.tier_filter is not None:
+        cases = [c for c in cases if c.tier == req.tier_filter]
+    cases_dict = [c.model_dump() for c in cases]
+    logger.info("cases loaded", extra={"count": len(cases_dict), "tier_filter": req.tier_filter})
+    return {"ok": True, "cases": cases_dict}
 
 
 def evaluate_result(req: EvaluateInput) -> dict[str, Any]:

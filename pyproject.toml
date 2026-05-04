@@ -19,7 +19,7 @@ dev = [
     "pytest-mock>=3.14",
     "moto[all]>=5.1",
     "pip-audit>=2.10",
-    "boto3-stubs[bedrock-agentcore,cloudwatch,dynamodb,events,lambda,s3,secretsmanager,sqs,stepfunctions]==1.43.2",
+    "boto3-stubs[bedrock-agentcore,cloudwatch,dynamodb,events,lambda,s3,secretsmanager,sns,sqs,stepfunctions]==1.43.2",
 ]
 
 [tool.ruff]
@@ -67,7 +67,7 @@ max-positional-args = 5
 ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
-known-first-party = ["common", "architect", "critic", "implementer", "reviewer", "tester", "dashboard"]
+known-first-party = ["common", "architect", "critic", "implementer", "reviewer", "tester", "proposer", "dashboard"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "D", "PLR2004"]        # asserts, missing docstrings, magic-number comparisons in tests

@@ -44,6 +44,9 @@ class ArchitectInput(_Frozen):
 
     Step Functions sends this body when invoking the architect runtime,
     populating ``prior_feedback`` if this is a retry after rejection.
+    ``requestor_sub`` and ``target_repo`` are threaded through every agent's
+    input so downstream agents (Implementer, Reviewer, Tester) can act on
+    behalf of the user against the right repo.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -52,6 +55,8 @@ class ArchitectInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     prior_feedback: str | None = None
+    requestor_sub: str | None = None
+    target_repo: str | None = None
 
 
 class ArchitectResult(_Frozen):
@@ -81,6 +86,8 @@ class CriticInput(_Frozen):
     run_id: str
     correlation_id: str
     actor_id: str = "system"
+    requestor_sub: str | None = None
+    target_repo: str | None = None
 
 
 class CriticResult(_Frozen):
@@ -97,7 +104,14 @@ class CriticResult(_Frozen):
 
 
 class ImplementerInput(_Frozen):
-    """Input passed to the Implementer's ``/invocations`` endpoint, per task."""
+    """Input passed to the Implementer's ``/invocations`` endpoint, per task.
+
+    ``target_repo`` (``owner/name``) is required for the Implementer — it's
+    the repo the Implementer clones, commits to, and opens a PR on. When
+    ``requestor_sub`` is set, the Implementer fetches that user's GitHub
+    OAuth token via AgentCore Identity and configures git author identity
+    accordingly so commits attribute to the requestor.
+    """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
@@ -107,6 +121,14 @@ class ImplementerInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     prior_feedback: str | None = None
+    requestor_sub: str | None = None
+    target_repo: (
+        Annotated[
+            str,
+            Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$"),
+        ]
+        | None
+    ) = None
 
 
 class ImplementerResult(_Frozen):
@@ -130,6 +152,7 @@ class ReviewerInput(_Frozen):
     run_id: str
     correlation_id: str
     actor_id: str = "system"
+    requestor_sub: str | None = None
 
 
 class ReviewerResult(_Frozen):
@@ -158,6 +181,7 @@ class TesterInput(_Frozen):
     run_id: str
     correlation_id: str
     actor_id: str = "system"
+    requestor_sub: str | None = None
 
 
 class TesterResult(_Frozen):
@@ -167,5 +191,36 @@ class TesterResult(_Frozen):
     pr_url: str
     gap_count: Annotated[int, Field(ge=0)]
     suggested_test_count: Annotated[int, Field(ge=0)]
+    summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
+class ProposerInput(_Frozen):
+    """Input passed to the Proposer's ``/invocations`` endpoint.
+
+    The Proposer runs out of the main SDLC pipeline — it's invoked by an
+    EventBridge schedule (weekly) and on regression detection from 9b.
+    """
+
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
+    base_branch: Annotated[str, Field(min_length=1, max_length=128)] = "main"
+    trigger_reason: Literal["scheduled", "regression"] = "scheduled"
+    evals_lookback_days: Annotated[int, Field(ge=1, le=365)] = 30
+    run_id: str
+    correlation_id: str
+    actor_id: str = "system"
+
+
+class ProposerResult(_Frozen):
+    """Result the Proposer returns.
+
+    ``proposal_made=False`` indicates the Proposer judged the signals
+    insufficient to warrant a change — no PR opened.
+    """
+
+    proposal_made: bool
+    pr_url: str | None = None
+    target_files: list[str] = []
     summary: Annotated[str, Field(max_length=2048)]
     session_id: str
