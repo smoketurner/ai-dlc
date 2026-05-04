@@ -239,13 +239,13 @@ resource "aws_cloudwatch_event_target" "start_sdlc" {
 
   input_transformer {
     input_paths = {
-      run_id          = "$.detail.run_id"
-      correlation_id  = "$.detail.correlation_id"
-      actor_id        = "$.detail.actor_id"
-      project_slug    = "$.detail.payload.project_slug"
-      intent          = "$.detail.payload.intent"
-      requestor_sub   = "$.detail.payload.requestor_sub"
-      target_repo     = "$.detail.payload.target_repo"
+      run_id         = "$.detail.run_id"
+      correlation_id = "$.detail.correlation_id"
+      actor_id       = "$.detail.actor_id"
+      project_slug   = "$.detail.payload.project_slug"
+      intent         = "$.detail.payload.intent"
+      requestor_sub  = "$.detail.payload.requestor_sub"
+      target_repo    = "$.detail.payload.target_repo"
     }
     input_template = <<-JSON
       {

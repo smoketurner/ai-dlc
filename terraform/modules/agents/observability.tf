@@ -67,8 +67,51 @@ resource "aws_cloudwatch_log_delivery" "runtime_app_logs" {
   })
 }
 
-# TRACES log type is intentionally NOT delivered to CloudWatch Logs. Per AWS
-# (validation rejects it), TRACES require an X-Ray destination. Account-level
-# Transaction Search is enabled (``aws xray update-trace-segment-destination
-# --destination CloudWatchLogs``), which makes OTEL spans flow into the
-# ``aws/spans`` log group — see that group for trace data.
+# A second delivery for ``TRACES`` log type. APPLICATION_LOGS only carries
+# AgentCore service-side request/response envelopes; the container's
+# stdout/stderr (including Python tracebacks) flows through the OTEL pipeline
+# as TRACES. Without this, ``aws/spans`` stays empty and ``response_payload``
+# is null with no insight into why the agent is failing inside the runtime.
+#
+# TRACES requires an X-Ray destination (``delivery_destination_type=XRAY``);
+# CloudWatch Logs is rejected by service validation. Account-level
+# Transaction Search must also be enabled (``aws xray
+# update-trace-segment-destination --destination CloudWatchLogs``) so X-Ray
+# fans the spans into the ``aws/spans`` log group.
+
+resource "aws_cloudwatch_log_delivery_source" "runtime_traces" {
+  for_each = var.agent_image_tags
+
+  name         = "${local.prefix}-${each.key}-traces"
+  log_type     = "TRACES"
+  resource_arn = aws_bedrockagentcore_agent_runtime.agent[each.key].agent_runtime_arn
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-${each.key}-traces"
+    Component = "agents"
+  })
+}
+
+resource "aws_cloudwatch_log_delivery_destination" "runtime_traces" {
+  for_each = var.agent_image_tags
+
+  name                      = "${local.prefix}-${each.key}-traces"
+  delivery_destination_type = "XRAY"
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-${each.key}-traces"
+    Component = "agents"
+  })
+}
+
+resource "aws_cloudwatch_log_delivery" "runtime_traces" {
+  for_each = var.agent_image_tags
+
+  delivery_source_name     = aws_cloudwatch_log_delivery_source.runtime_traces[each.key].name
+  delivery_destination_arn = aws_cloudwatch_log_delivery_destination.runtime_traces[each.key].arn
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-${each.key}-traces"
+    Component = "agents"
+  })
+}

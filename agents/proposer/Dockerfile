@@ -42,4 +42,4 @@ COPY --from=builder --chown=agent:agent /app /app
 USER agent
 EXPOSE 8080
 
-CMD ["python", "-m", "proposer.app"]
+CMD ["opentelemetry-instrument", "python", "-m", "proposer.app"]

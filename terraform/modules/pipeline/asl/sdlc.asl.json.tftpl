@@ -64,7 +64,7 @@
         "eval_mode": "{% $states.input.eval_mode %}",
         "requestor_sub": "{% $states.input.requestor_sub %}",
         "target_repo": "{% $states.input.target_repo %}",
-        "spec": "{% $parse($states.result.Payload) %}"
+        "spec": "{% $parse($states.result.Response) %}"
       },
       "Next": "InvokeCritic"
     },
@@ -99,7 +99,7 @@
         "requestor_sub": "{% $states.input.requestor_sub %}",
         "target_repo": "{% $states.input.target_repo %}",
         "spec": "{% $states.input.spec %}",
-        "critique": "{% $parse($states.result.Payload) %}"
+        "critique": "{% $parse($states.result.Response) %}"
       },
       "Next": "PublishCritiqueReady"
     },
@@ -207,7 +207,7 @@
               "task_id": "{% $states.input.task_id %}",
               "requestor_sub": "{% $states.input.requestor_sub %}",
               "target_repo": "{% $states.input.target_repo %}",
-              "result": "{% $parse($states.result.Payload) %}"
+              "result": "{% $parse($states.result.Response) %}"
             },
             "Next": "InvokeReviewer"
           },
@@ -232,7 +232,7 @@
               "task_id": "{% $states.input.task_id %}",
               "requestor_sub": "{% $states.input.requestor_sub %}",
               "result": "{% $states.input.result %}",
-              "review": "{% $parse($states.result.Payload) %}"
+              "review": "{% $parse($states.result.Response) %}"
             },
             "Next": "InvokeTester"
           },
@@ -256,7 +256,7 @@
               "task_id": "{% $states.input.task_id %}",
               "result": "{% $states.input.result %}",
               "review": "{% $states.input.review %}",
-              "test_report": "{% $parse($states.result.Payload) %}"
+              "test_report": "{% $parse($states.result.Response) %}"
             },
             "Next": "PublishReviewReady"
           },

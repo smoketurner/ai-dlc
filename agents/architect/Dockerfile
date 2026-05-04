@@ -48,4 +48,4 @@ USER agent
 EXPOSE 8080
 
 # AgentCore Runtime expects POST /invocations + GET /ping on :8080.
-CMD ["python", "-m", "architect.app"]
+CMD ["opentelemetry-instrument", "python", "-m", "architect.app"]

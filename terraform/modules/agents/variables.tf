@@ -174,9 +174,9 @@ variable "github_app_secret_name" {
 
     Set to ``null`` to skip the GitHub integration entirely.
   EOT
-  type      = string
-  default   = null
-  nullable  = true
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "tags" {

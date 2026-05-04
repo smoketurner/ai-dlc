@@ -99,6 +99,7 @@ name = "architect"
 version = "0.0.0"
 source = { editable = "agents/architect" }
 dependencies = [
+    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "common" },
@@ -109,6 +110,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
@@ -588,6 +590,7 @@ name = "critic"
 version = "0.0.0"
 source = { editable = "agents/critic" }
 dependencies = [
+    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "common" },
@@ -598,6 +601,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
@@ -1013,6 +1017,7 @@ name = "implementer"
 version = "0.0.0"
 source = { editable = "agents/implementer" }
 dependencies = [
+    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "claude-agent-sdk" },
@@ -1024,6 +1029,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "claude-agent-sdk", specifier = "==0.1.72" },
@@ -2492,6 +2498,7 @@ name = "proposer"
 version = "0.0.0"
 source = { editable = "agents/proposer" }
 dependencies = [
+    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "common" },
@@ -2502,6 +2509,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
@@ -2895,6 +2903,7 @@ name = "reviewer"
 version = "0.0.0"
 source = { editable = "agents/reviewer" }
 dependencies = [
+    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "common" },
@@ -2905,6 +2914,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
@@ -3143,6 +3153,7 @@ name = "tester"
 version = "0.0.0"
 source = { editable = "agents/tester" }
 dependencies = [
+    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "common" },
@@ -3153,6 +3164,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },

@@ -70,9 +70,9 @@ variable "github_app_secret_name" {
     ``private_key_base64``, ``client_id``, ``client_secret``, ``version``.
     Set to ``null`` to skip the GitHub integration.
   EOT
-  type      = string
-  default   = null
-  nullable  = true
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "aws_profile" {
