@@ -19,8 +19,8 @@ DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 
 
 def model_id() -> str:
-    """Bedrock model id, overridable via ``AIDLC_REVIEWER_MODEL_ID``."""
-    return os.environ.get("AIDLC_REVIEWER_MODEL_ID", DEFAULT_MODEL_ID)
+    """Bedrock model id, overridable via ``AIDLC_BEDROCK_MODEL_ID``."""
+    return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
 def build_agent(run_id: str) -> Agent:
