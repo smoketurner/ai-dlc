@@ -85,8 +85,11 @@ resource "aws_secretsmanager_secret_version" "github_app" {
   count = var.github_app == null ? 0 : 1
 
   secret_id = aws_secretsmanager_secret.github_app[0].id
+  # ``private_key`` is base64-encoded so the stored value stays opaque +
+  # single-line (no JSON-escaped newlines, no multi-line console rendering).
+  # The repo_helper Lambda decodes it back to PEM bytes at use time.
   secret_string = jsonencode({
-    app_id      = var.github_app.app_id
-    private_key = var.github_app.private_key
+    app_id             = var.github_app.app_id
+    private_key_base64 = base64encode(var.github_app.private_key)
   })
 }

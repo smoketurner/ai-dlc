@@ -21,7 +21,9 @@ persist; JWTs are credentials and should never land in DDB / CloudWatch.
 
 Required env vars:
   * ``AIDLC_GITHUB_APP_SECRET_ARN`` — Secrets Manager secret holding
-    ``{"app_id": int, "private_key": str}`` (used by the installation path).
+    ``{"app_id": int, "private_key_base64": str}`` where
+    ``private_key_base64`` is the App's PEM private key, base64-encoded
+    (used by the installation path).
   * ``AIDLC_GITHUB_OAUTH_PROVIDER_NAME`` — name of the AgentCore Identity
     OAuth2 credential provider (``GithubOauth2`` vendor) to query for
     user-OBO tokens.
@@ -35,6 +37,7 @@ invocations.
 
 from __future__ import annotations
 
+import base64
 import os
 import time
 from functools import cache
@@ -61,12 +64,20 @@ JWT_REFRESH_MARGIN = 30  # rotate this many seconds before TTL
 
 
 class AppCredentials(BaseModel):
-    """Decoded App credentials read from Secrets Manager."""
+    """Decoded App credentials read from Secrets Manager.
+
+    ``private_key_base64`` is the PEM private key, base64-encoded as
+    stored. Use :meth:`private_key_pem` to get the decoded PEM bytes.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     app_id: int = Field(ge=1)
-    private_key: SecretStr
+    private_key_base64: SecretStr
+
+    def private_key_pem(self) -> bytes:
+        """Decode the base64-wrapped PEM into raw bytes for pyjwt."""
+        return base64.b64decode(self.private_key_base64.get_secret_value())
 
 
 @cache
@@ -114,7 +125,7 @@ def app_jwt() -> str:
         "exp": int(now) + JWT_TTL_SECONDS,
         "iss": creds.app_id,
     }
-    token = jwt.encode(payload, creds.private_key.get_secret_value(), algorithm="RS256")
+    token = jwt.encode(payload, creds.private_key_pem(), algorithm="RS256")
     jwt_cache["jwt"] = (token, now + JWT_TTL_SECONDS - JWT_REFRESH_MARGIN)
     return token
 

@@ -154,6 +154,20 @@ data "aws_iam_policy_document" "image_publisher_inline" {
     ]
     resources = ["*"]
   }
+
+  # ``UpdateAgentRuntime`` re-asserts the runtime's execution role on the
+  # resource, so the caller needs ``iam:PassRole`` on each agent's runtime
+  # role. Scoped to the per-agent runtime role ARN pattern.
+  statement {
+    sid       = "AgentCorePassRuntimeRole"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:${local.aws_partition}:iam::${local.aws_account_id}:role/${var.project}-*-runtime"]
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["bedrock-agentcore.amazonaws.com"]
+    }
+  }
 }
 
 data "aws_iam_policy_document" "evals_assume" {
