@@ -43,7 +43,7 @@ def build_agent(run_id: str) -> Agent:
             region_name=os.environ["AWS_REGION"],
             temperature=0.3,
             max_tokens=8192,
-            streaming=True,
+            streaming=False,
         ),
         system_prompt=load_system_prompt("proposer", variant),
         tools=[

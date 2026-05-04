@@ -38,7 +38,7 @@ def build_agent(run_id: str) -> Agent:
             region_name=os.environ["AWS_REGION"],
             temperature=0.4,
             max_tokens=8192,
-            streaming=True,
+            streaming=False,
         ),
         system_prompt=load_system_prompt("architect", variant),
         tools=[read_memory_md_tool, write_spec_doc_tool],

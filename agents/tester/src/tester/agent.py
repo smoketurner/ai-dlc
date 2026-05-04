@@ -36,7 +36,7 @@ def build_agent(run_id: str) -> Agent:
             region_name=os.environ["AWS_REGION"],
             temperature=0.2,
             max_tokens=4096,
-            streaming=True,
+            streaming=False,
         ),
         system_prompt=load_system_prompt("tester", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool],
