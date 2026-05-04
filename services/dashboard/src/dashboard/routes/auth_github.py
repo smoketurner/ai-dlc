@@ -24,6 +24,7 @@ provider:
 from __future__ import annotations
 
 from functools import cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import boto3
@@ -40,7 +41,7 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 router = APIRouter()
-templates = Jinja2Templates(directory="src/dashboard/templates")
+templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 
 SESSION_URI_COOKIE = "aidlc_obo_session_uri"
 SESSION_URI_COOKIE_TTL = 600  # 10 minutes — only needed for the OAuth round-trip
