@@ -32,6 +32,7 @@ def build_agent(run_id: str) -> Agent:
     return Agent(
         model=BedrockModel(
             model_id=model_id(),
+            region_name=os.environ["AWS_REGION"],
             temperature=0.2,
             max_tokens=8192,
             streaming=True,

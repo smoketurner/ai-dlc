@@ -15,8 +15,6 @@ entrypoint:
 
 from __future__ import annotations
 
-import os
-import traceback
 from typing import Any
 
 import structlog
@@ -34,32 +32,20 @@ app = BedrockAgentCoreApp()
 @app.entrypoint
 async def handler(event: dict[str, Any]) -> dict[str, Any]:
     """Architect entrypoint. Returns a JSON-serialisable ArchitectResult."""
-    # DEBUG: surface env vars + exception tracebacks back through the
-    # response body so we can see what's failing without CloudWatch logs.
-    # Remove after the credential-injection issue is diagnosed.
-    aws_env = {k: v for k, v in os.environ.items() if k.startswith(("AWS_", "AIDLC_"))}
-    try:
-        payload = ArchitectInput.model_validate(event)
-        logger.info(
-            "architect invoked",
-            run_id=payload.run_id,
-            project_slug=payload.project_slug,
-            retry=payload.prior_feedback is not None,
-        )
+    payload = ArchitectInput.model_validate(event)
+    logger.info(
+        "architect invoked",
+        run_id=payload.run_id,
+        project_slug=payload.project_slug,
+        retry=payload.prior_feedback is not None,
+    )
 
-        spec = generate_spec(
-            payload.intent,
-            project_slug=payload.project_slug,
-            prior_feedback=payload.prior_feedback,
-            run_id=payload.run_id,
-        )
-    except Exception as exc:
-        return {
-            "debug_error": f"{type(exc).__name__}: {exc}",
-            "debug_traceback": traceback.format_exc(),
-            "debug_env_keys": sorted(aws_env.keys()),
-            "debug_event_keys": sorted(event.keys()) if isinstance(event, dict) else [],
-        }
+    spec = generate_spec(
+        payload.intent,
+        project_slug=payload.project_slug,
+        prior_feedback=payload.prior_feedback,
+        run_id=payload.run_id,
+    )
     upload_spec(spec)
 
     result = ArchitectResult(

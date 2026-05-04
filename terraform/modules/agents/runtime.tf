@@ -24,11 +24,11 @@ data "aws_iam_policy_document" "runtime_assume" {
       type        = "Service"
       identifiers = ["bedrock-agentcore.amazonaws.com"]
     }
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [local.aws_account_id]
-    }
+    # Per AWS samples (sample-strands-agent-with-agentcore et al), the
+    # runtime trust policy is a bare service-principal allow — no
+    # ``aws:SourceAccount`` condition. AgentCore appears to not pass the
+    # source-account context when assuming the role, which silently
+    # blocks assumption when the condition is present.
   }
 }
 
@@ -61,12 +61,46 @@ data "aws_iam_policy_document" "runtime_inline" {
   }
 
   statement {
-    sid     = "BedrockInvokeModel"
-    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    sid = "BedrockInvokeModel"
+    # Strands' BedrockModel uses the Converse API, not raw InvokeModel.
+    # Both the Converse and InvokeModel families need to be on the role
+    # so the agent works regardless of which Strands code path is hit.
+    actions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+      "bedrock:Converse",
+      "bedrock:ConverseStream",
+    ]
     resources = [
       "arn:${local.aws_partition}:bedrock:*::foundation-model/*",
       "arn:${local.aws_partition}:bedrock:*:${local.aws_account_id}:inference-profile/*",
     ]
+  }
+
+  # ADOT auto-instrumentation in the AgentCore runtime emits X-Ray
+  # segments + CloudWatch metrics. Without these perms the OTEL exporter
+  # blocks on permission errors at startup, which the runtime surfaces
+  # as a generic 500.
+  statement {
+    sid = "Telemetry"
+    actions = [
+      "xray:PutTraceSegments",
+      "xray:PutTelemetryRecords",
+      "xray:GetSamplingRules",
+      "xray:GetSamplingTargets",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "Metrics"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["bedrock-agentcore"]
+    }
   }
 
   statement {
