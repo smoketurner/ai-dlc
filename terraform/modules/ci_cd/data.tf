@@ -91,8 +91,8 @@ data "aws_iam_policy_document" "terraform_inline" {
       "ecs:List*",
       "bedrock:List*",
       "bedrock:Get*",
-      "bedrock-agentcore-control:Get*",
-      "bedrock-agentcore-control:List*",
+      "bedrock-agentcore:Get*",
+      "bedrock-agentcore:List*",
       "secretsmanager:GetResourcePolicy",
       "secretsmanager:DescribeSecret",
       "secretsmanager:ListSecrets",
@@ -145,10 +145,12 @@ data "aws_iam_policy_document" "image_publisher_inline" {
 
   statement {
     sid = "AgentCoreRollRuntime"
+    # IAM actions for AgentCore live under the ``bedrock-agentcore:``
+    # prefix even though the CLI command is ``bedrock-agentcore-control``.
     actions = [
-      "bedrock-agentcore-control:ListAgentRuntimes",
-      "bedrock-agentcore-control:GetAgentRuntime",
-      "bedrock-agentcore-control:UpdateAgentRuntime",
+      "bedrock-agentcore:ListAgentRuntimes",
+      "bedrock-agentcore:GetAgentRuntime",
+      "bedrock-agentcore:UpdateAgentRuntime",
     ]
     resources = ["*"]
   }

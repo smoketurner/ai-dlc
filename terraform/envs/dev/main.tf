@@ -125,7 +125,27 @@ module "agents" {
     }
   }
 
-  github_app = var.github_app
+  # Agents whose ECR image has been pushed at least once. AgentCore Runtimes
+  # are only created for these — agents missing an image get IAM / gateway /
+  # identity but no runtime, so `terraform apply` works before the first
+  # `images-build` run. Add an entry after pushing the image, then re-apply
+  # to provision the runtime. Subsequent image pushes flow through the
+  # workflow's update-agent-runtime call (lifecycle.ignore_changes).
+  agent_image_tags = {
+    architect   = "latest"
+    implementer = "latest"
+    # critic, reviewer, tester, proposer omitted — images haven't been
+    # pushed yet (the Phase 10 / Phase 9c images-build runs are failing).
+    # Add each entry once the images-build workflow has published its image.
+  }
+
+  github_app = var.github_app == null ? null : {
+    app_id        = var.github_app.app_id
+    private_key   = file("${path.module}/${var.github_app.private_key_pem_file}")
+    client_id     = var.github_app.client_id
+    client_secret = var.github_app.client_secret
+    version       = var.github_app.version
+  }
 }
 
 resource "aws_secretsmanager_secret" "github_webhook" {

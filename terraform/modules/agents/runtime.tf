@@ -33,10 +33,10 @@ data "aws_iam_policy_document" "runtime_assume" {
 }
 
 data "aws_ecr_image" "agent" {
-  for_each = var.agents
+  for_each = var.agent_image_tags
 
   repository_name = "${var.project}/${each.key}"
-  image_tag       = "latest"
+  image_tag       = each.value
 }
 
 data "aws_iam_policy_document" "runtime_inline" {
@@ -174,10 +174,10 @@ resource "aws_iam_role_policy" "runtime_inline" {
 }
 
 resource "aws_bedrockagentcore_agent_runtime" "agent" {
-  for_each = var.agents
+  for_each = var.agent_image_tags
 
   agent_runtime_name = replace("${local.prefix}-${each.key}", "-", "_")
-  description        = each.value.description
+  description        = var.agents[each.key].description
   role_arn           = aws_iam_role.runtime[each.key].arn
 
   agent_runtime_artifact {
@@ -208,12 +208,12 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
       AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
       AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
-      AIDLC_BEDROCK_MODEL_ID  = each.value.bedrock_model_id
+      AIDLC_BEDROCK_MODEL_ID  = var.agents[each.key].bedrock_model_id
     },
-    contains(each.value.targets, "repo_helper") ? {
+    contains(var.agents[each.key].targets, "repo_helper") ? {
       AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
     } : {},
-    contains(each.value.targets, "repo_helper") && var.github_app != null ? {
+    contains(var.agents[each.key].targets, "repo_helper") && var.github_app != null ? {
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.agent[each.key].name
     } : {},

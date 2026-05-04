@@ -48,7 +48,7 @@ module "tool_lambda" {
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
-  attach_policy_statements = each.key == "artifact_tool" || each.key == "repo_helper"
+  attach_policy_statements = each.key == "artifact_tool" || (each.key == "repo_helper" && var.github_app != null)
   policy_statements = each.key == "artifact_tool" ? {
     s3_artifacts = {
       effect = "Allow"

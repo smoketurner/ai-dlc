@@ -19,6 +19,14 @@ resource "aws_bedrockagentcore_workload_identity" "agent" {
 
   name                                = "${local.prefix}-${each.key}"
   allowed_resource_oauth2_return_urls = each.value.allowed_resource_oauth2_return_urls
+
+  # The AgentCore API never returns ``allowed_resource_oauth2_return_urls`` in
+  # the read response, so each plan re-shows ``+ allowed_resource_oauth2_return_urls = []``
+  # even though the desired state is already in place. Ignore the read-side
+  # diff; create-time still sends the configured value.
+  lifecycle {
+    ignore_changes = [allowed_resource_oauth2_return_urls]
+  }
 }
 
 resource "aws_bedrockagentcore_workload_identity" "repo_helper" {

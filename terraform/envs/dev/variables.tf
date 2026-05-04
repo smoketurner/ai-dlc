@@ -66,17 +66,18 @@ variable "github_app" {
   description = <<-EOT
     GitHub App credentials. ``client_id`` + ``client_secret`` configure the
     AgentCore Identity ``GithubOauth2`` credential provider for the
-    user-on-behalf-of flow; ``app_id`` + ``private_key`` (PEM) are stored
-    in Secrets Manager and used by the repo_helper Lambda for installation
-    tokens. Set to ``null`` to skip the GitHub integration. Bump
-    ``version`` to rotate AgentCore-side credentials.
+    user-on-behalf-of flow; ``app_id`` + the PEM file at
+    ``private_key_pem_file`` (path resolved relative to ``envs/dev``) are
+    stored in Secrets Manager and used by the repo_helper Lambda for
+    installation tokens. Set to ``null`` to skip the GitHub integration.
+    Bump ``version`` to rotate AgentCore-side credentials.
   EOT
   type = object({
-    app_id        = number
-    private_key   = string
-    client_id     = string
-    client_secret = string
-    version       = number
+    app_id               = number
+    private_key_pem_file = string
+    client_id            = string
+    client_secret        = string
+    version              = number
   })
   default   = null
   sensitive = true

@@ -64,3 +64,5 @@ terraform.rc
 .claude/settings.local.json
 /terraform/envs/dev/builds
 terraform/envs/dev/tfplan
+terraform/envs/dev/secrets.auto.tfvars
+terraform/envs/dev/*.private-key.pem

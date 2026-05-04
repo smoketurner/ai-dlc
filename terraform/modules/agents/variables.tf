@@ -71,6 +71,25 @@ variable "ecr_repository_urls" {
   type        = map(string)
 }
 
+variable "agent_image_tags" {
+  description = <<-EOT
+    Map of agent name → ECR image tag (typically ``"latest"``). Only agents
+    listed here get an AgentCore Runtime created — agents whose image hasn't
+    been pushed to ECR yet are skipped, so the IAM role + gateway + workload
+    identity can be apply-able before the first image build.
+
+    Lifecycle: add a new agent to ``var.agents``, apply (creates IAM /
+    gateway / workload identity but no runtime yet), push the image via the
+    ``images-build`` workflow, add the agent to this map, apply again
+    (creates the runtime). Subsequent image pushes flow through the
+    workflow's ``update-agent-runtime`` call — Terraform ignores the
+    container URI on subsequent applies via the runtime resource's
+    ``lifecycle.ignore_changes``.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "artifacts_bucket" {
   description = "S3 bucket name for run artifacts (read/write by artifact_tool)."
   type        = string

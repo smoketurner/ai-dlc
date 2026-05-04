@@ -14,18 +14,21 @@ The platform follows a spec-driven SDLC inspired by Kiro's three-document model:
 
 ```
 REQUEST.RECEIVED
-  → SPEC.READY     (Architect writes requirements + design + tasks)
-  → SPEC.APPROVED  (gate 1 — reviewer signs off on the whole spec bundle)
-  → TASK.READY     ┐
-  → TASK.APPROVED  │ loop while tasks remain — one PR per task
-  → ...            ┘
+  → SPEC.READY        (Architect writes requirements + design + tasks)
+  → CRITIQUE.READY    (Critic adversarially reviews the spec — advisory)
+  → SPEC.APPROVED     (gate 1 — human reviewer)
+  → TASK.READY        ┐
+  → REVIEW.READY      │ Reviewer code-reviews the PR — advisory
+  → TEST_REPORT.READY │ Tester flags test gaps — advisory
+  → TASK.APPROVED     │ loop while tasks remain — one PR per task
+  → ...               ┘
   → RUN.COMPLETED
 ```
 
 - **Specs** live at `docs/specs/{slug}/{requirements,design,tasks}.md` (template in [`docs/specs/_template/`](specs/_template/)).
 - **ADRs** at `docs/ADRs/NNNN-slug.md` capture cross-cutting architectural decisions; most specs don't produce one.
-- **Agents**: Architect (Strands, Opus 4.7) and Implementer (Claude Agent SDK, Sonnet 4.6).
-- **Events** (9 types): `REQUEST.RECEIVED`, `SPEC.{READY,APPROVED,REJECTED}`, `TASK.{READY,APPROVED,REJECTED}`, `RUN.{COMPLETED,FAILED}`.
+- **Agents** (6): Architect / Critic / Reviewer / Tester / Proposer (Strands) and Implementer (Claude Agent SDK). Architect + Critic + Proposer use Opus 4.7; Implementer + Reviewer use Sonnet 4.6; Tester + memory consolidation use Haiku 4.5.
+- **Events** (11 types): `REQUEST.RECEIVED`, `SPEC.{READY,APPROVED,REJECTED}`, `CRITIQUE.READY`, `TASK.{READY,APPROVED,REJECTED}`, `REVIEW.READY`, `TEST_REPORT.READY`, `RUN.{COMPLETED,FAILED}`.
 
 ---
 
@@ -60,7 +63,7 @@ Shared package every other component depends on. Lambdas pull from `common`; the
 - [x] `src/common/gateway.py` — minimal MCP JSON-RPC client to AgentCore Gateway
 - [x] `src/common/git_ops.py` — `subprocess`-based git helpers for the Implementer's persistent FS
 - [x] `src/common/runtime.py` — `InvocationPayload` model used by every agent's `/invocations` entrypoint
-- [x] `tests/` — 26 tests pass (errors, ids, events, memory_md, settings); `ruff check`, `ruff format --check`, `ty check` all green
+- [x] `tests/` — 37 tests pass (errors, ids, events, memory_md, routing, settings); `ruff check`, `ruff format --check`, `ty check` all green
 - [ ] tests for `s3`, `agentcore_memory`, `memory`, `gateway`, `git_ops`, `telemetry` (deferred — written alongside their first integration in Phases 3–6, with `moto` for AWS and a real `BedrockAgentCoreClient` stub via `pytest-mock`)
 
 ## Phase 2 — Terraform foundation 🟡
@@ -133,11 +136,10 @@ The Implementer reads an approved spec, picks one unchecked task from `tasks.md`
 - [x] `agents/implementer/src/implementer/{app.py, client.py, options.py, hooks.py, prompts.py, tasks.py, repo_ops.py}` — `tasks.py` parses + flips checkboxes (10 unit tests); `hooks.py` enforces the deny-list at the PreToolUse boundary; `repo_ops.py` wraps git + GitHub REST.
 - [x] Step Functions Map state already iterates per-task; the Implementer's `ImplementerInput`/`ImplementerResult` contract matches the existing `InvokeImplementer` ASL.
 - [x] `module.agents` runtime resource is generic over agents — flip `implementer_image_tag` once CI pushes an image and the runtime is provisioned.
-- [x] `lambdas/repo_helper/` — replaced Phase 3 stubs with real GitHub REST calls (open_pr, comment_pr, create_branch, commit_files via Git Data API, get_pr). Two auth paths: **user on-behalf-of** via AgentCore Identity `GithubOauth2` credential provider (`USER_FEDERATION` flow → Token Vault → `GetWorkloadAccessTokenForJWT` + `GetResourceOauth2Token`) and **installation-token fallback** minted from the App's private key in Secrets Manager. 14 unit tests covering both paths via `httpx.MockTransport`.
-- [x] Terraform `agents` module: `github_oauth` → `github_app` (adds `app_id` + `private_key`); kept the `GithubOauth2` credential provider for user OBO; added Secrets Manager secret for App credentials; added repo_helper workload identity; wired env vars + IAM (Secrets Manager + `bedrock-agentcore:GetWorkloadAccessTokenForJWT` + `bedrock-agentcore:GetResourceOauth2Token`) to the repo_helper Lambda.
+- [x] `lambdas/repo_helper/` — replaced Phase 3 stubs with real GitHub REST calls (open_pr, comment_pr, create_branch, commit_files via Git Data API, get_pr). Two auth paths: **user on-behalf-of** via AgentCore Identity `GithubOauth2` credential provider (`USER_FEDERATION` flow → Token Vault → `GetWorkloadAccessTokenForUserId` + `GetResourceOauth2Token`) and **installation-token fallback** minted from the App's private key in Secrets Manager. 14 unit tests covering both paths via `httpx.MockTransport`.
+- [x] Terraform `agents` module: `github_oauth` → `github_app` (adds `app_id` + `private_key`); kept the `GithubOauth2` credential provider for user OBO; added Secrets Manager secret for App credentials; added repo_helper workload identity; wired env vars + IAM (Secrets Manager + `bedrock-agentcore:GetWorkloadAccessTokenForUserId` + `bedrock-agentcore:GetResourceOauth2Token`) to the repo_helper Lambda.
+- [x] Dashboard "Connect GitHub" flow + threading `requestor_sub` (Cognito sub) into agent inputs and through to the repo_helper tool calls — **shipped in Phase 11** (see below). Commits attribute to the requestor when they've linked GitHub; fall back to `ai-dlc[bot]` otherwise.
 - [ ] Skills (`ai-dlc-conventions`, `memory-md-writer`) — deferred. Phase 6 ships without Claude Skills; system prompt + hooks cover guard-rails. Promote when an actual gap appears.
-- [ ] Dashboard "Connect GitHub" flow (gated on Phase 11): redirect through AgentCore's authorize URL so the requestor's GitHub OAuth token lands in the Token Vault. Until then, runs use the installation-token fallback (commits attribute to `ai-dlc[bot]`).
-- [ ] Thread `requestor_jwt` through `ImplementerInput` / `ReviewerInput` / `TesterInput` into the repo_helper tool calls so commits attribute to the requestor (Phase 11).
 - [ ] Full pipeline smoke (deferred — needs live AWS + a real GitHub App install): `POST /v1/runs` → spec PR → approve → task-1 PR → approve → ... → `RUN.COMPLETED`.
 
 ## Phase 7 — Dashboard 🟡
@@ -167,7 +169,7 @@ Per the logical-groupings preference, the three planned modules (`ecr_dashboard`
 
 ---
 
-## Phase 9 — Continuous improvement (self-tuning loop) ⬜
+## Phase 9 — Continuous improvement (self-tuning loop) 🟡
 
 The platform should learn from itself. Every rejection is a labeled signal; every clean run is a few-shot example; every model/prompt change is a regression risk. Phase 9 closes the loop, but **never auto-mutates agent prompts** — improvements always land as PRs that humans review (the same trust boundary the platform itself uses).
 
@@ -266,7 +268,16 @@ Receive
 - [x] ASL: `InvokeCritic` inserted between `InvokeArchitect` and `PublishSpecReady`; `InvokeReviewer` + `InvokeTester` (serial) inserted inside the `IterateTasks` Map ItemProcessor between `InvokeImplementer` and `PublishTaskReady`. `WaitForSpecApproval` carries `critique_s3_key`; `WaitForTaskApproval` carries `review_verdict`/`review_comment_count`/`test_gap_count` so the HITL gate has the advisory signals at hand.
 - [x] `images-build.yml` matrix extended to `[architect, critic, implementer, reviewer, tester]`.
 - [x] `docs/eval-set/cases.yaml` pass-criteria schema extended with `critique_present`, `review_present`, `test_report_present` (all default true in v1 — the agents always run).
-- [ ] Live AWS smoke (gated on Phase 6 completion + `repo_helper` network calls): a single run produces critique + review + test-report artifacts in S3 and the dashboard timeline shows the 3 new event types per task.
+- [ ] Live AWS smoke (gated only on the live-AWS apply now that `repo_helper` network calls have shipped): a single run produces critique + review + test-report artifacts in S3 and the dashboard timeline shows the 3 new event types per task.
+
+**Cost delta** (rough, per run): spec phase ~2× (1 Opus → 2 Opus); task phase ~2.4× per task (1 Sonnet → 1 Sonnet + 1 Sonnet + 1 Haiku). Latency adds ~30s spec phase, ~90s per task. Acceptable given the quality lift; revisit if real runs show a problem.
+
+**Out of scope (Phase 10b+):**
+- Out-of-pipeline peer agents beyond the Proposer (Researcher, Debugger, TechWriter) — separate phase, different trigger model.
+- Promoting Critic/Reviewer/Tester to gating with `*.REJECTED` events.
+- Parallel execution of Reviewer + Tester (Step Functions `Parallel` state).
+- A registry-driven ASL (declarative agent sequencing) — only justifies itself when the team grows past ~6 agents.
+- Per-agent token-cost split on the dashboard run-detail panel (extends the existing `STATE` row from Phase 8).
 
 ---
 
@@ -316,22 +327,17 @@ each agent that touches GitHub fetches the user's token via
 - [x] `terraform/modules/agents/identity.tf` — adds `aws_bedrockagentcore_workload_identity.dashboard` (gated on `github_app != null`); `outputs.tf` exposes its name.
 - [x] `terraform/modules/dashboard/data.tf` + `ecs.tf` + `variables.tf` — task IAM gains `bedrock-agentcore:GetWorkloadAccessTokenForUserId` / `GetResourceOauth2Token` / `CompleteResourceTokenAuth`; container env carries `AIDLC_DASHBOARD_WORKLOAD_NAME` + `AIDLC_GITHUB_OAUTH_PROVIDER_NAME`.
 - [x] `terraform/envs/dev/main.tf` — wires `module.agents.dashboard_workload_name` + `module.agents.github_oauth_provider_name` into the dashboard module.
-- [ ] Live smoke: install the GitHub App on a real repo, sign into the dashboard, click "Connect GitHub", complete authorization on github.com, submit a run, observe the Implementer commit + Reviewer/Tester PR comments attributed to the user. Gated on Phase 6 live AWS smoke.
-
-**Cost delta** (rough, per run): spec phase ~2× (1 Opus → 2 Opus); task phase ~2.4× per task (1 Sonnet → 1 Sonnet + 1 Sonnet + 1 Haiku). Latency adds ~30s spec phase, ~90s per task. Acceptable given the quality lift; revisit if real runs show a problem.
-
-**Out of scope (Phase 10b+):**
-- Out-of-pipeline peer agents (Researcher, Debugger, TechWriter, Proposer) — separate phase, different trigger model.
-- Promoting Critic/Reviewer/Tester to gating with `*.REJECTED` events.
-- Parallel execution of Reviewer + Tester (Step Functions `Parallel` state).
-- A registry-driven ASL (declarative agent sequencing) — only justifies itself when the team grows past ~6 agents.
-- Per-agent token-cost split on the dashboard run-detail panel (extends the existing `STATE` row from Phase 8).
+- [ ] Live smoke: install the GitHub App on a real repo, sign into the dashboard, click "Connect GitHub", complete authorization on github.com, submit a run, observe the Implementer commit + Reviewer/Tester PR comments attributed to the user.
 
 ---
 
 ## Status
 
-Phases 0-8 have their main deliverables in place — the platform stands up via `terraform apply` (modulo first-time bootstrap), the agents are container-buildable, and the spec-driven pipeline + dashboard are wired end-to-end. Phase 9 (continuous improvement loop) and Phase 10 (team v1) are both in flight; their main code deliverables are landed, and live-AWS smoke is the remaining gate on each.
+**Test totals**: 176 unit tests pass across `packages/common`, all six agents, all eight Lambdas, and the dashboard. `ruff check`, `ruff format --check`, `ty check`, and `terraform validate` are all green.
+
+Phases 0-8 have their main deliverables in place — the platform stands up via `terraform apply` (modulo first-time bootstrap), the agents are container-buildable, and the spec-driven pipeline + dashboard are wired end-to-end. Phases 9 (continuous improvement loop), 10 (team v1: Critic + Reviewer + Tester), and 11 (on-behalf-of GitHub auth) are all in flight; their main code deliverables are landed, and live-AWS smoke is the remaining gate on each.
+
+**Terraform lifecycle note**: the `agents` module gates AgentCore Runtime creation on `var.agent_image_tags` — only agents listed there get a runtime. Add a new agent to `var.agents` first (creates IAM / gateway / workload identity), push the image via `images-build`, then add the agent to `agent_image_tags` and re-apply. This avoids the `aws_ecr_image` data source failing on agents whose first image hasn't been built yet.
 
 ---
 
