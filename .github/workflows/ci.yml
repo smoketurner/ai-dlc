@@ -55,8 +55,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write   # zizmor uploads SARIF to GitHub Code Scanning
-      actions: read            # zizmor-action telemetry calls /actions/workflow-runs
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -65,3 +63,8 @@ jobs:
 
       - name: zizmor
         uses: zizmorcore/zizmor-action@b1d7e1fb5de872772f31590499237e7cce841e8e  # v0.5.3
+        with:
+          # Plain check mode — fail the job on findings, don't upload SARIF
+          # to GitHub Code Scanning (would require Advanced Security to be
+          # enabled on the repo, which we don't have).
+          advanced-security: false
