@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from dashboard.auth import CurrentUser
+from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
     get_run_events,
     list_pending_approvals,
@@ -59,7 +60,12 @@ async def approvals_page(request: Request, user: CurrentUser) -> HTMLResponse:
 @router.get("/submit", response_class=HTMLResponse)
 async def submit_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """Form: new run."""
-    return templates.TemplateResponse(request, "submit.html", {"user": user})
+    target_repos = repos_for_user(user.sub)
+    return templates.TemplateResponse(
+        request,
+        "submit.html",
+        {"user": user, "target_repos": target_repos},
+    )
 
 
 @router.get("/healthz", response_class=HTMLResponse)

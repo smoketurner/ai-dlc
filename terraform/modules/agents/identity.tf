@@ -84,4 +84,15 @@ resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {
     Name      = "${local.prefix}-github"
     Component = "agents"
   })
+
+  # Recreating this resource mints a NEW per-provider callback UUID
+  # (``…/identities/oauth2/callback/{uuid}``), which invalidates the
+  # callback URL registered on the GitHub App and breaks the Connect
+  # GitHub flow until an operator manually pastes the new URL into the
+  # App's settings. Block accidental destroys; if a real destroy is
+  # needed (e.g. switching credential vendor), remove this lifecycle
+  # block in a dedicated PR.
+  lifecycle {
+    prevent_destroy = true
+  }
 }

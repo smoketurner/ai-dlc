@@ -11,14 +11,27 @@
     </label>
     <label class="block">
       <span class="text-sm font-medium">target_repo</span>
+      {% if target_repos %}
+      <select x-model="targetRepo" required
+              class="mt-1 block w-full rounded border border-slate-300 px-3 py-2 text-sm font-mono">
+        <option value="" disabled>Select a repo…</option>
+        {% for repo in target_repos %}
+        <option value="{{ repo }}">{{ repo }}</option>
+        {% endfor %}
+      </select>
+      <span class="text-xs text-slate-500">
+        Repos where the AI-DLC GitHub App is installed AND you have access. Commits will attribute to you.
+      </span>
+      {% else %}
       <input x-model="targetRepo" required minlength="3" maxlength="128"
              pattern="^[\w.\-]+/[\w.\-]+$" placeholder="owner/name (e.g., smoketurner/echo)"
              class="mt-1 block w-full rounded border border-slate-300 px-3 py-2 text-sm font-mono" />
       <span class="text-xs text-slate-500">
         GitHub repo the agents will operate on. The AI-DLC GitHub App must be installed on this repo.
-        <a href="/auth/github" class="text-blue-600 underline">Connect GitHub</a> first if you want
-        commits attributed to you (otherwise they'll show as ai-dlc[bot]).
+        <a href="/auth/github" class="text-blue-600 underline">Connect GitHub</a> first to populate this
+        as a dropdown and have commits attributed to you (otherwise they'll show as ai-dlc-dev[bot]).
       </span>
+      {% endif %}
     </label>
     <label class="block">
       <span class="text-sm font-medium">intent</span>

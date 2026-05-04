@@ -4,7 +4,7 @@ version = "0.0.0"
 description = "Compares trailing-week eval pass rate against trailing-30-day baseline; alarms on regression."
 requires-python = ">=3.13,<3.15"
 dependencies = [
-    "aws-lambda-powertools==3.28.0",
+    "aws-lambda-powertools==3.29.0",
     "boto3==1.43.2",
     "botocore==1.43.2",
     "pydantic==2.13.3",
