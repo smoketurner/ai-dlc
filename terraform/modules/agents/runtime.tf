@@ -143,7 +143,11 @@ data "aws_iam_policy_document" "runtime_inline" {
 
   statement {
     sid = "Logs"
+    # ``CreateLogGroup`` is needed because AgentCore Runtime auto-creates
+    # its log group on first invocation. Without this perm, AWS silently
+    # drops logs and there's no group to tail.
     actions = [
+      "logs:CreateLogGroup",
       "logs:CreateLogStream",
       "logs:PutLogEvents",
       "logs:DescribeLogStreams",
@@ -194,15 +198,19 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     server_protocol = "HTTP"
   }
 
-  authorizer_configuration {
-    custom_jwt_authorizer {
-      discovery_url    = var.cognito_discovery_url
-      allowed_audience = var.cognito_audience
-    }
-  }
+  # Auth is IAM/SigV4. Step Functions invokes via the native SDK
+  # integration (``aws-sdk:bedrockagentcore:invokeAgentRuntime``) signed
+  # by its execution role — no Cognito JWT round-trip. Direct invokers
+  # need ``bedrock-agentcore:InvokeAgentRuntime`` on the runtime's
+  # endpoint ARN. Omitting ``authorizer_configuration`` selects IAM auth.
 
   environment_variables = merge(
     {
+      # boto3 inside the agent container needs ``AWS_REGION`` to reach
+      # the AgentCore-injected credential metadata endpoint and to sign
+      # Bedrock requests. Without it the default-creds chain fails with
+      # ``NoCredentialsError``.
+      AWS_REGION              = local.aws_region
       AIDLC_ENV               = var.env
       AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
       AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket

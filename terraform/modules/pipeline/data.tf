@@ -25,9 +25,16 @@ data "aws_iam_policy_document" "states_inline" {
   dynamic "statement" {
     for_each = length(local.runtime_arns) > 0 ? [1] : []
     content {
-      sid       = "InvokeAgentRuntime"
-      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
-      resources = local.runtime_arns
+      sid     = "InvokeAgentRuntime"
+      actions = ["bedrock-agentcore:InvokeAgentRuntime"]
+      # AgentCore enforces InvokeAgentRuntime against the *endpoint* ARN
+      # (``…/runtime/{name}/runtime-endpoint/{qualifier}``), not the bare
+      # runtime ARN. Granting both the runtime and its ``/runtime-endpoint/*``
+      # children covers every qualifier (``DEFAULT`` today, others later).
+      resources = concat(
+        local.runtime_arns,
+        [for arn in local.runtime_arns : "${arn}/runtime-endpoint/*"],
+      )
     }
   }
 

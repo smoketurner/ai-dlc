@@ -211,3 +211,89 @@ resource "aws_lambda_permission" "events_invoke_projector" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.all_events.arn
 }
+
+# EventBridge rule that converts REQUEST.RECEIVED events into Step Functions
+# executions of the SDLC state machine. The InputTransformer flattens the
+# envelope's payload into the shape the ASL ``Receive`` state expects.
+
+resource "aws_cloudwatch_event_rule" "request_received" {
+  name           = "${local.prefix}-pipeline-request-received"
+  description    = "Start a new SDLC state-machine execution for each REQUEST.RECEIVED event."
+  event_bus_name = var.bus_name
+  event_pattern = jsonencode({
+    source      = [{ "prefix" : "ai-dlc." }]
+    detail-type = ["REQUEST.RECEIVED"]
+  })
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-pipeline-request-received"
+    Component = "pipeline"
+  })
+}
+
+resource "aws_cloudwatch_event_target" "start_sdlc" {
+  rule           = aws_cloudwatch_event_rule.request_received.name
+  event_bus_name = var.bus_name
+  arn            = aws_sfn_state_machine.sdlc.arn
+  role_arn       = aws_iam_role.events_to_sfn.arn
+
+  input_transformer {
+    input_paths = {
+      run_id          = "$.detail.run_id"
+      correlation_id  = "$.detail.correlation_id"
+      actor_id        = "$.detail.actor_id"
+      project_slug    = "$.detail.payload.project_slug"
+      intent          = "$.detail.payload.intent"
+      requestor_sub   = "$.detail.payload.requestor_sub"
+      target_repo     = "$.detail.payload.target_repo"
+    }
+    input_template = <<-JSON
+      {
+        "run_id": "<run_id>",
+        "correlation_id": "<correlation_id>",
+        "actor_id": "<actor_id>",
+        "project_slug": "<project_slug>",
+        "intent": <intent>,
+        "requestor_sub": <requestor_sub>,
+        "target_repo": <target_repo>
+      }
+    JSON
+  }
+}
+
+# IAM role EventBridge assumes when starting the state machine.
+resource "aws_iam_role" "events_to_sfn" {
+  name               = "${local.prefix}-events-to-sfn"
+  assume_role_policy = data.aws_iam_policy_document.events_assume.json
+  description        = "Lets EventBridge call states:StartExecution on the SDLC state machine."
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-events-to-sfn"
+    Component = "pipeline"
+  })
+}
+
+resource "aws_iam_role_policy" "events_to_sfn" {
+  name   = "events-to-sfn"
+  role   = aws_iam_role.events_to_sfn.id
+  policy = data.aws_iam_policy_document.events_to_sfn.json
+}
+
+data "aws_iam_policy_document" "events_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "events_to_sfn" {
+  statement {
+    sid       = "StartSdlcExecution"
+    actions   = ["states:StartExecution"]
+    resources = [aws_sfn_state_machine.sdlc.arn]
+  }
+}
