@@ -143,16 +143,22 @@ data "aws_iam_policy_document" "runtime_inline" {
 
   statement {
     sid = "Logs"
-    # ``CreateLogGroup`` is needed because AgentCore Runtime auto-creates
-    # its log group on first invocation. Without this perm, AWS silently
-    # drops logs and there's no group to tail.
+    # AgentCore Runtime creates ``/aws/bedrock-agentcore/runtimes/{id}-{qualifier}``
+    # for OTEL traces and may also create ``application-logs`` / similar streams
+    # under a sibling group. Granting both ``log-group:`` and the ``log-stream``
+    # children of any ``/aws/bedrock-agentcore/*`` group covers every shape
+    # without leaking log access outside the AgentCore namespace.
     actions = [
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
       "logs:PutLogEvents",
       "logs:DescribeLogStreams",
+      "logs:DescribeLogGroups",
     ]
-    resources = ["arn:${local.aws_partition}:logs:*:${local.aws_account_id}:log-group:/aws/bedrock-agentcore/runtimes/*"]
+    resources = [
+      "arn:${local.aws_partition}:logs:*:${local.aws_account_id}:log-group:/aws/bedrock-agentcore/*",
+      "arn:${local.aws_partition}:logs:*:${local.aws_account_id}:log-group:/aws/bedrock-agentcore/*:log-stream:*",
+    ]
   }
 }
 
