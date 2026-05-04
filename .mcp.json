@@ -8,6 +8,17 @@
         "--rm",
         "hashicorp/terraform-mcp-server:0.5.2"
       ]
+    },
+    "bedrock-agentcore": {
+      "command": "uvx",
+      "args": [
+        "awslabs.amazon-bedrock-agentcore-mcp-server@latest"
+      ],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "AWS_PROFILE": "aidlc-admin",
+        "AWS_REGION": "us-east-1"
+      }
     }
   }
 }
