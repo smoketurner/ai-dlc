@@ -15,7 +15,20 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+
+def _none_to_empty_list[T](v: list[T] | None) -> list[T]:
+    """Coerce ``None`` to ``[]`` for optional list fields.
+
+    Strands' ``structured_output`` sometimes hands us ``None`` for optional
+    list fields the model didn't populate; coerce so downstream Pydantic
+    validation accepts the SpecBundle.
+    """
+    return v if v is not None else []
+
+
+_OptionalStrList = Annotated[list[str], BeforeValidator(_none_to_empty_list)]
 
 SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$")
 TASK_ID_PATTERN = re.compile(r"^T-\d{3,}$")
@@ -53,8 +66,8 @@ class Requirements(_Frozen):
     summary: Annotated[str, Field(min_length=1, max_length=1024)]
     user_stories: Annotated[list[UserStory], Field(min_length=1, max_length=64)]
     acceptance_criteria: Annotated[list[AcceptanceCriterion], Field(min_length=1, max_length=256)]
-    out_of_scope: list[str] = Field(default_factory=list)
-    open_questions: list[str] = Field(default_factory=list)
+    out_of_scope: _OptionalStrList = Field(default_factory=list)
+    open_questions: _OptionalStrList = Field(default_factory=list)
 
 
 class DesignComponent(_Frozen):
@@ -72,10 +85,10 @@ class Design(_Frozen):
     components: Annotated[list[DesignComponent], Field(min_length=1, max_length=32)]
     data_model: Annotated[str, Field(min_length=1, max_length=4096)]
     sequence: Annotated[str, Field(min_length=1, max_length=4096)]
-    failure_modes: list[str] = Field(default_factory=list)
-    trade_offs: list[str] = Field(default_factory=list)
-    proposed_adrs: list[str] = Field(default_factory=list)
-    references: list[str] = Field(default_factory=list)
+    failure_modes: _OptionalStrList = Field(default_factory=list)
+    trade_offs: _OptionalStrList = Field(default_factory=list)
+    proposed_adrs: _OptionalStrList = Field(default_factory=list)
+    references: _OptionalStrList = Field(default_factory=list)
 
 
 class Task(_Frozen):
@@ -84,7 +97,7 @@ class Task(_Frozen):
     id: Annotated[str, Field(pattern=TASK_ID_PATTERN.pattern)]
     title: Annotated[str, Field(min_length=1, max_length=256)]
     implements: Annotated[list[str], Field(min_length=1, max_length=16)]
-    touches: list[str] = Field(default_factory=list)
+    touches: _OptionalStrList = Field(default_factory=list)
     done_when: Annotated[str, Field(min_length=1, max_length=1024)]
 
 
