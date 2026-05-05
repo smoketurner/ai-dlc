@@ -252,6 +252,12 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       # ``NoCredentialsError``.
       AWS_REGION              = local.aws_region
       AIDLC_ENV               = var.env
+      # Defer to the modern aws-opentelemetry-distro logging handler.
+      # AgentCore injects this set to "true" by default, which activates a
+      # deprecated SDK handler and emits a startup warning about duplicate
+      # logs. Setting it to "false" lets opentelemetry-instrumentation-logging
+      # install its own handler and silences the warning.
+      OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED = "false"
       AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
       AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
       AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id

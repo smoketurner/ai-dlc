@@ -29,6 +29,22 @@
     </div>
   </dl>
   {% endif %}
+  {% if critique %}
+  <section class="bg-white shadow-sm rounded p-4 space-y-3">
+    <header class="flex items-baseline gap-3">
+      <h2 class="text-base font-semibold">Critique</h2>
+      <span class="text-xs px-2 py-0.5 rounded bg-rose-100 text-rose-800">{{ critique.high_severity_count }} high</span>
+      <span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">{{ critique.medium_severity_count }} medium</span>
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">{{ critique.low_severity_count }} low</span>
+    </header>
+    {% if critique.summary %}
+    <p class="text-sm text-slate-600">{{ critique.summary }}</p>
+    {% endif %}
+    <article class="prose prose-sm max-w-none text-sm">
+      {{ critique.body_html | safe }}
+    </article>
+  </section>
+  {% endif %}
   <ul class="bg-white shadow-sm rounded divide-y">
     {% for ev in events %}
     <li class="px-4 py-3 text-sm flex items-baseline gap-3">

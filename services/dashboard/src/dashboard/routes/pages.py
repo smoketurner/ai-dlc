@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from dashboard.artifacts import read_critique
 from dashboard.auth import CurrentUser
 from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
@@ -39,10 +40,17 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
     if not events:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
     summary = first_known_run(run_id, events)
+    critique = read_critique(run_id)
     return templates.TemplateResponse(
         request,
         "run_detail.html",
-        {"run_id": run_id, "events": events, "summary": summary, "user": user},
+        {
+            "run_id": run_id,
+            "events": events,
+            "summary": summary,
+            "critique": critique,
+            "user": user,
+        },
     )
 
 
