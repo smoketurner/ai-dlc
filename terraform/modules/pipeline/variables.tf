@@ -81,6 +81,22 @@ variable "agent_runtime_arns" {
   default     = {}
 }
 
+variable "repo_helper_function_name" {
+  description = "Name of the repo_helper Lambda — Triage invokes it for issue comments + labels."
+  type        = string
+}
+
+variable "repo_helper_function_arn" {
+  description = "ARN of the repo_helper Lambda."
+  type        = string
+}
+
+variable "triage_bedrock_model_id" {
+  description = "Bedrock model id Triage uses to classify issues. Defaults to Haiku 4.5."
+  type        = string
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
 variable "cognito_user_pool_arn" {
   description = "Cognito user pool ARN — used by the API Gateway JWT authorizer."
   type        = string

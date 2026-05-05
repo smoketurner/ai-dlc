@@ -179,6 +179,9 @@ module "pipeline" {
 
   agent_runtime_arns = module.agents.runtime_arns
 
+  repo_helper_function_name = element(split(":", module.agents.tool_lambda_arns["repo_helper"]), 6)
+  repo_helper_function_arn  = module.agents.tool_lambda_arns["repo_helper"]
+
   cognito_user_pool_arn = module.auth.user_pool_arn
   cognito_audience      = [module.auth.client_id]
   cognito_issuer_url    = module.auth.issuer_url
@@ -213,6 +216,9 @@ module "dashboard" {
 
   hitl_handler_function_name = "${var.project}-${var.env}-hitl-handler"
   hitl_handler_function_arn  = module.pipeline.lambda_arns["hitl_handler"]
+
+  triage_dispatcher_function_name = module.pipeline.triage_dispatcher_function_name
+  triage_dispatcher_function_arn  = module.pipeline.triage_dispatcher_function_arn
 
   github_webhook_secret_id  = aws_secretsmanager_secret.github_webhook.name
   github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn

@@ -106,6 +106,73 @@ module "hitl_handler" {
   })
 }
 
+module "triage_dispatcher" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${local.prefix}-triage-dispatcher"
+  description   = "GitHub issue → Bedrock classify → REQUEST.RECEIVED or comment+label."
+  handler       = "triage_dispatcher.handler.handler"
+  runtime       = "python3.13"
+  architectures = ["arm64"]
+  memory_size   = 512
+  timeout       = 60
+  publish       = true
+
+  source_path = [{
+    path             = "${local.source_dir}/triage_dispatcher/src"
+    pip_requirements = "${local.source_dir}/triage_dispatcher/requirements.txt"
+  }]
+  build_in_docker = true
+  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+
+  environment_variables = {
+    AIDLC_BUS_NAME                  = var.bus_name
+    AIDLC_REPO_HELPER_FUNCTION_NAME = var.repo_helper_function_name
+    AIDLC_BEDROCK_MODEL_ID          = var.triage_bedrock_model_id
+    POWERTOOLS_SERVICE_NAME         = "triage_dispatcher"
+    POWERTOOLS_LOG_LEVEL            = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT     = "false"
+  }
+
+  cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
+
+  attach_policy_statements = true
+  policy_statements = {
+    put_events = {
+      effect    = "Allow"
+      actions   = ["events:PutEvents"]
+      resources = [var.bus_arn]
+    }
+    invoke_repo_helper = {
+      effect    = "Allow"
+      actions   = ["lambda:InvokeFunction"]
+      resources = [var.repo_helper_function_arn]
+    }
+    bedrock_invoke = {
+      # Triage uses the Bedrock Converse API directly; both action names
+      # are listed because boto3 ``converse`` may surface as either at the
+      # IAM policy layer depending on SDK release.
+      effect = "Allow"
+      actions = [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:Converse",
+        "bedrock:ConverseStream",
+      ]
+      resources = [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:*:*:inference-profile/*",
+      ]
+    }
+  }
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-triage-dispatcher"
+    Component = "pipeline"
+  })
+}
+
 module "event_projector" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"

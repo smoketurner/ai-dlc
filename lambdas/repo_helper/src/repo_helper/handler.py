@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
@@ -115,12 +116,52 @@ class GetPrInput(BaseOp):
     pr_number: int = Field(ge=1)
 
 
+class CommentIssueInput(BaseOp):
+    """Add a comment to an issue."""
+
+    op: Literal["comment_issue"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    issue_number: int = Field(ge=1)
+    body: str = Field(min_length=1, max_length=65_536)
+
+
+class LabelIssueInput(BaseOp):
+    """Apply labels to an issue (additive — existing labels are preserved)."""
+
+    op: Literal["label_issue"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    issue_number: int = Field(ge=1)
+    labels: list[str] = Field(min_length=1, max_length=16)
+
+
+class GetIssueInput(BaseOp):
+    """Read an issue's title, body, labels, and state."""
+
+    op: Literal["get_issue"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    issue_number: int = Field(ge=1)
+
+
+class ListIssuesInput(BaseOp):
+    """List open issues (optionally filtered by labels) for the cron backstop."""
+
+    op: Literal["list_issues"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    labels: list[str] | None = Field(default=None, max_length=16)
+    state: Literal["open", "closed", "all"] = "open"
+    per_page: int = Field(default=30, ge=1, le=100)
+
+
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
     "comment_pr": CommentPrInput,
     "create_branch": CreateBranchInput,
     "commit_files": CommitFilesInput,
     "get_pr": GetPrInput,
+    "comment_issue": CommentIssueInput,
+    "label_issue": LabelIssueInput,
+    "get_issue": GetIssueInput,
+    "list_issues": ListIssuesInput,
 }
 
 
@@ -164,19 +205,13 @@ def target_repo(req: BaseOp) -> str:
 
 
 def run_op(req: BaseOp, client: httpx.Client) -> dict[str, Any]:
-    """Dispatch to the right operation function."""
-    if isinstance(req, OpenPrInput):
-        return wrap("open_pr", open_pr(req, client))
-    if isinstance(req, CommentPrInput):
-        return wrap("comment_pr", comment_pr(req, client))
-    if isinstance(req, CreateBranchInput):
-        return wrap("create_branch", create_branch(req, client))
-    if isinstance(req, CommitFilesInput):
-        return wrap("commit_files", commit_files(req, client))
-    if isinstance(req, GetPrInput):
-        return wrap("get_pr", get_pr(req, client))
-    msg = f"unhandled op type: {type(req).__name__}"
-    raise RuntimeError(msg)
+    """Dispatch to the right operation function based on input type."""
+    handler_fn = OP_HANDLERS.get(type(req))
+    if handler_fn is None:
+        msg = f"unhandled op type: {type(req).__name__}"
+        raise RuntimeError(msg)
+    op_name, fn = handler_fn
+    return wrap(op_name, fn(req, client))
 
 
 def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
@@ -261,6 +296,75 @@ def get_pr(req: GetPrInput, client: httpx.Client) -> dict[str, Any]:
         "merged": body["merged"],
         "title": body["title"],
         "head_sha": body["head"]["sha"],
+    }
+
+
+def comment_issue(req: CommentIssueInput, client: httpx.Client) -> dict[str, Any]:
+    """Add a comment to an issue."""
+    response = client.post(
+        f"/repos/{req.repo}/issues/{req.issue_number}/comments",
+        json={"body": req.body},
+    )
+    response.raise_for_status()
+    body = response.json()
+    return {
+        "comment_id": body["id"],
+        "comment_url": body["html_url"],
+    }
+
+
+def label_issue(req: LabelIssueInput, client: httpx.Client) -> dict[str, Any]:
+    """Add labels to an issue (existing labels are preserved)."""
+    response = client.post(
+        f"/repos/{req.repo}/issues/{req.issue_number}/labels",
+        json={"labels": req.labels},
+    )
+    response.raise_for_status()
+    body = response.json()
+    return {
+        "issue_number": req.issue_number,
+        "labels": [label["name"] for label in body],
+    }
+
+
+def get_issue(req: GetIssueInput, client: httpx.Client) -> dict[str, Any]:
+    """Read an issue's title, body, labels, and state."""
+    response = client.get(f"/repos/{req.repo}/issues/{req.issue_number}")
+    response.raise_for_status()
+    body = response.json()
+    return {
+        "issue_number": body["number"],
+        "issue_url": body["html_url"],
+        "title": body["title"],
+        "body": body.get("body") or "",
+        "state": body["state"],
+        "labels": [label["name"] for label in body.get("labels", [])],
+        "user": body["user"]["login"] if body.get("user") else "",
+    }
+
+
+def list_issues(req: ListIssuesInput, client: httpx.Client) -> dict[str, Any]:
+    """List issues on a repo, optionally filtered by labels.
+
+    GitHub's ``/issues`` endpoint mixes PRs and issues; we filter PRs out
+    so callers (like Triage) only see real issues.
+    """
+    params: dict[str, str] = {"state": req.state, "per_page": str(req.per_page)}
+    if req.labels:
+        params["labels"] = ",".join(req.labels)
+    response = client.get(f"/repos/{req.repo}/issues", params=params)
+    response.raise_for_status()
+    items = [item for item in response.json() if "pull_request" not in item]
+    return {
+        "issues": [
+            {
+                "issue_number": item["number"],
+                "issue_url": item["html_url"],
+                "title": item["title"],
+                "labels": [label["name"] for label in item.get("labels", [])],
+            }
+            for item in items
+        ],
     }
 
 
@@ -368,3 +472,19 @@ def error(kind: str, detail: object) -> dict[str, Any]:
     """Log a rejection and return the standard error envelope."""
     logger.warning("op rejected", extra={"kind": kind, "detail": detail})
     return {"ok": False, "error": {"kind": kind, "detail": detail}}
+
+
+# Type-keyed dispatch table — defined at module bottom so all op functions
+# above it are bound. Keeps ``run_op`` complexity in check as ops grow.
+OpHandler = Callable[[Any, httpx.Client], dict[str, Any]]
+OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
+    OpenPrInput: ("open_pr", open_pr),
+    CommentPrInput: ("comment_pr", comment_pr),
+    CreateBranchInput: ("create_branch", create_branch),
+    CommitFilesInput: ("commit_files", commit_files),
+    GetPrInput: ("get_pr", get_pr),
+    CommentIssueInput: ("comment_issue", comment_issue),
+    LabelIssueInput: ("label_issue", label_issue),
+    GetIssueInput: ("get_issue", get_issue),
+    ListIssuesInput: ("list_issues", list_issues),
+}

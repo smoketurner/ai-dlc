@@ -21,8 +21,19 @@ output "api_id" {
 output "lambda_arns" {
   description = "Map of platform Lambda name → ARN."
   value = {
-    entry_adapter   = module.entry_adapter.lambda_function_arn
-    hitl_handler    = module.hitl_handler.lambda_function_arn
-    event_projector = module.event_projector.lambda_function_arn
+    entry_adapter     = module.entry_adapter.lambda_function_arn
+    hitl_handler      = module.hitl_handler.lambda_function_arn
+    event_projector   = module.event_projector.lambda_function_arn
+    triage_dispatcher = module.triage_dispatcher.lambda_function_arn
   }
+}
+
+output "triage_dispatcher_function_name" {
+  description = "Name of the Triage dispatcher Lambda — needed by the dashboard webhook handler."
+  value       = module.triage_dispatcher.lambda_function_name
+}
+
+output "triage_dispatcher_function_arn" {
+  description = "ARN of the Triage dispatcher Lambda."
+  value       = module.triage_dispatcher.lambda_function_arn
 }

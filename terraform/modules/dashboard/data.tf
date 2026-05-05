@@ -54,6 +54,12 @@ data "aws_iam_policy_document" "task_inline" {
   }
 
   statement {
+    sid       = "InvokeTriageDispatcher"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [var.triage_dispatcher_function_arn]
+  }
+
+  statement {
     sid       = "ReadWebhookSecret"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [var.github_webhook_secret_arn]

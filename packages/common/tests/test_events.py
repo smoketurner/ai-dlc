@@ -37,6 +37,29 @@ def test_round_trip_request_received() -> None:
     assert parsed.payload.project_slug == "demo"
 
 
+def test_request_received_carries_source_issue_url() -> None:
+    payload = RequestReceived(
+        project_slug="demo",
+        intent="add /healthz",
+        requestor="triage",
+        source_issue_url="https://github.com/owner/repo/issues/42",
+    )
+    env = _env(payload)
+    raw = env.model_dump_json()
+    parsed = EventEnvelope[RequestReceived].model_validate_json(raw)
+    assert parsed.payload.source_issue_url == "https://github.com/owner/repo/issues/42"
+
+
+def test_request_received_rejects_non_github_source_url() -> None:
+    with pytest.raises(ValidationError):
+        RequestReceived(
+            project_slug="demo",
+            intent="x",
+            requestor="alice",
+            source_issue_url="https://example.com/issues/1",
+        )
+
+
 def test_unknown_field_rejected() -> None:
     with pytest.raises(ValidationError):
         RequestReceived.model_validate(

@@ -106,6 +106,16 @@ variable "hitl_handler_function_arn" {
   type        = string
 }
 
+variable "triage_dispatcher_function_name" {
+  description = "Name of the triage_dispatcher Lambda the dashboard invokes on issue webhooks."
+  type        = string
+}
+
+variable "triage_dispatcher_function_arn" {
+  description = "ARN of the triage_dispatcher Lambda."
+  type        = string
+}
+
 variable "github_webhook_secret_id" {
   description = "Secrets Manager secret id holding the GitHub webhook signing secret."
   type        = string

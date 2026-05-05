@@ -430,3 +430,140 @@ def test_github_http_error_is_envelope(
     detail: dict[str, Any] = out["error"]["detail"]
     assert detail["status_code"] == 404
     assert detail["body"] == {"message": "Not Found"}
+
+
+def test_comment_issue_posts_to_issues_endpoint(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/o/r/issues/7/comments"
+        assert json.loads(request.content) == {"body": "triage: deferred"}
+        return httpx.Response(
+            201,
+            json={
+                "id": 999,
+                "html_url": "https://github.com/o/r/issues/7#issuecomment-999",
+                "body": "triage: deferred",
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "comment_issue",
+                "repo": "o/r",
+                "issue_number": 7,
+                "body": "triage: deferred",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["comment_id"] == 999
+
+
+def test_label_issue_adds_labels_additively(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/o/r/issues/7/labels"
+        assert json.loads(request.content) == {"labels": ["aidlc:deferred"]}
+        return httpx.Response(
+            200,
+            json=[
+                {"name": "bug"},
+                {"name": "aidlc:deferred"},
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "label_issue",
+                "repo": "o/r",
+                "issue_number": 7,
+                "labels": ["aidlc:deferred"],
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["labels"] == ["bug", "aidlc:deferred"]
+
+
+def test_get_issue_returns_title_body_and_labels(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/issues/7"
+        return httpx.Response(
+            200,
+            json={
+                "number": 7,
+                "html_url": "https://github.com/o/r/issues/7",
+                "title": "Add /version",
+                "body": "Return container SHA from IMAGE_SHA.",
+                "state": "open",
+                "labels": [{"name": "aidlc:ready"}, {"name": "enhancement"}],
+                "user": {"login": "alice"},
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_issue", "repo": "o/r", "issue_number": 7}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["title"] == "Add /version"
+    assert out["result"]["labels"] == ["aidlc:ready", "enhancement"]
+    assert out["result"]["user"] == "alice"
+
+
+def test_list_issues_filters_out_pull_requests(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/issues"
+        assert request.url.params["state"] == "open"
+        assert request.url.params["labels"] == "aidlc:ready"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "number": 7,
+                    "html_url": "https://github.com/o/r/issues/7",
+                    "title": "Real issue",
+                    "labels": [{"name": "aidlc:ready"}],
+                },
+                {
+                    "number": 8,
+                    "html_url": "https://github.com/o/r/pull/8",
+                    "title": "A PR",
+                    "labels": [{"name": "aidlc:ready"}],
+                    "pull_request": {"url": "..."},
+                },
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "list_issues",
+                "repo": "o/r",
+                "labels": ["aidlc:ready"],
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    issues = out["result"]["issues"]
+    assert len(issues) == 1
+    assert issues[0]["issue_number"] == 7

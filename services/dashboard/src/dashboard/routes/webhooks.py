@@ -2,16 +2,19 @@
 
 GitHub's webhook hits this route with no Cognito JWT (the ALB listener rule
 lets it through unauthenticated). We verify the HMAC-SHA256 signature against
-the webhook secret stored in Secrets Manager, parse the PR review event, and
-forward an approve/reject decision to the ``hitl_handler`` Lambda's
-``DECIDE`` op.
+the webhook secret stored in Secrets Manager, then dispatch on event type:
 
-Event mapping:
-  * pull_request_review.submitted with state=approved   → decision=approve
-  * pull_request_review.submitted with state=changes_requested → decision=reject
-  * issue_comment.created with body containing magic strings:
-        ``/aidlc approve``         → approve
-        ``/aidlc reject <reason>`` → reject
+* HITL gates (forwarded to the ``hitl_handler`` Lambda's ``DECIDE`` op):
+    * pull_request_review.submitted state=approved          → approve
+    * pull_request_review.submitted state=changes_requested → reject
+    * issue_comment.created on a PR with body containing
+      ``/aidlc approve`` or ``/aidlc reject <reason>``      → approve / reject
+
+* Triage (forwarded to the ``triage_dispatcher`` Lambda):
+    * issues.opened with the ``aidlc:ready`` label
+    * issues.labeled when the new label is ``aidlc:ready``
+    * issue_comment.created on a real issue (not a PR) with
+      ``/aidlc go``                                          → triage
 """
 
 from __future__ import annotations
@@ -33,6 +36,10 @@ logger = structlog.get_logger()
 
 APPROVE_RE = re.compile(r"/aidlc\s+approve\b", re.IGNORECASE)
 REJECT_RE = re.compile(r"/aidlc\s+reject\s*(.*)", re.IGNORECASE)
+GO_RE = re.compile(r"/aidlc\s+go\b", re.IGNORECASE)
+
+READY_LABEL = "aidlc:ready"
+TERMINAL_LABELS = frozenset({"aidlc:in-progress", "aidlc:deferred", "aidlc:declined"})
 
 
 @cache
@@ -57,16 +64,23 @@ def verify_signature(*, body: bytes, signature_header: str | None) -> None:
 
 @router.post("/webhooks/github", status_code=status.HTTP_202_ACCEPTED)
 async def receive_github_webhook(request: Request) -> dict[str, Any]:
-    """Verify HMAC, extract decision, forward to hitl_handler."""
+    """Verify HMAC and route to hitl_handler (HITL gate) or triage_dispatcher."""
     body = await request.body()
     verify_signature(body=body, signature_header=request.headers.get("x-hub-signature-256"))
     event_type = request.headers.get("x-github-event", "")
     payload: dict[str, Any] = json.loads(body) if body else {}
+
     decision = parse_decision(event_type, payload)
-    if decision is None:
-        return {"ok": True, "ignored": True, "event": event_type}
-    invoke_hitl_decide(decision)
-    return {"ok": True, "decision": decision["decision"], "gate_ref": decision["gate_ref"]}
+    if decision is not None:
+        invoke_hitl_decide(decision)
+        return {"ok": True, "decision": decision["decision"], "gate_ref": decision["gate_ref"]}
+
+    triage = parse_triage(event_type, payload)
+    if triage is not None:
+        invoke_triage(triage)
+        return {"ok": True, "triage": triage["issue_url"]}
+
+    return {"ok": True, "ignored": True, "event": event_type}
 
 
 def parse_decision(event_type: str, payload: dict[str, Any]) -> dict[str, str] | None:
@@ -149,5 +163,82 @@ def invoke_hitl_decide(payload: dict[str, str]) -> None:
     lambda_client().invoke(
         FunctionName=settings().hitl_handler_function,
         InvocationType="RequestResponse",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+
+
+def parse_triage(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a triage envelope, or ``None`` if this webhook isn't a triage trigger."""
+    if event_type == "issues":
+        return triage_from_issues(payload)
+    if event_type == "issue_comment":
+        return triage_from_issue_comment(payload)
+    return None
+
+
+def triage_from_issues(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse an ``issues`` webhook (action=opened or labeled) for triage candidates."""
+    action = payload.get("action")
+    if action not in {"opened", "labeled"}:
+        return None
+    issue = payload.get("issue", {})
+    if not issue:
+        return None
+    label_names = {label.get("name") for label in issue.get("labels", []) if label.get("name")}
+    if action == "labeled":
+        added = payload.get("label", {}).get("name")
+        if added != READY_LABEL:
+            return None
+    elif READY_LABEL not in label_names:
+        return None
+    if label_names & TERMINAL_LABELS:
+        return None
+    return triage_envelope(payload.get("repository", {}), issue, list(label_names))
+
+
+def triage_from_issue_comment(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse an ``issue_comment.created`` for ``/aidlc go`` on a real issue."""
+    if payload.get("action") != "created":
+        return None
+    issue = payload.get("issue", {})
+    if issue.get("pull_request") is not None:
+        return None
+    body = (payload.get("comment", {}).get("body") or "").strip()
+    if not GO_RE.search(body):
+        return None
+    label_names = [label.get("name", "") for label in issue.get("labels", [])]
+    if set(label_names) & TERMINAL_LABELS:
+        return None
+    return triage_envelope(payload.get("repository", {}), issue, label_names)
+
+
+def triage_envelope(
+    repository: dict[str, Any],
+    issue: dict[str, Any],
+    labels: list[str],
+) -> dict[str, Any] | None:
+    """Shape the GitHub payload into the Triage Lambda's input contract."""
+    repo = repository.get("full_name")
+    issue_url = issue.get("html_url")
+    issue_number = issue.get("number")
+    title = issue.get("title")
+    if not (repo and issue_url and isinstance(issue_number, int) and title):
+        return None
+    return {
+        "repo": repo,
+        "issue_number": issue_number,
+        "issue_url": issue_url,
+        "title": title,
+        "body": issue.get("body") or "",
+        "labels": labels,
+        "user": (issue.get("user") or {}).get("login", ""),
+    }
+
+
+def invoke_triage(payload: dict[str, Any]) -> None:
+    """Asynchronously invoke the triage_dispatcher Lambda."""
+    lambda_client().invoke(
+        FunctionName=settings().triage_dispatcher_function,
+        InvocationType="Event",
         Payload=json.dumps(payload).encode("utf-8"),
     )

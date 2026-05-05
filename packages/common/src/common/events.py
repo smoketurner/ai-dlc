@@ -86,6 +86,16 @@ class RequestReceived(Payload):
         ]
         | None
     ) = None
+    # Set when the run was kicked off by the Triage agent acting on a
+    # GitHub issue. Implementer uses this to write ``Closes <url>`` in the
+    # PR body so a merge auto-closes the issue.
+    source_issue_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$"),
+        ]
+        | None
+    ) = None
 
 
 class SpecReady(Payload):

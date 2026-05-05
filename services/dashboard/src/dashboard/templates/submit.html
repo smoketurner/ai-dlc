@@ -1,8 +1,19 @@
 {% extends "base.html" %}
-{% block title %}submit · ai-dlc{% endblock %}
+{% block title %}ad-hoc submit · ai-dlc{% endblock %}
 {% block content %}
 <div x-data="submitForm()" class="max-w-2xl space-y-4">
-  <h1 class="text-xl font-semibold">Submit a run</h1>
+  <h1 class="text-xl font-semibold">Ad-hoc submit</h1>
+  <div class="bg-amber-50 border border-amber-200 text-amber-900 rounded p-3 text-sm space-y-1">
+    <p>
+      <strong>Heads up:</strong> the canonical input is a GitHub issue labeled
+      <code class="bg-white px-1 rounded">aidlc:ready</code>. Triage picks
+      it up automatically and starts a run.
+    </p>
+    <p>
+      Use this form for one-off work that doesn't have an upstream issue
+      (ops tasks, exploratory runs, debugging the platform itself).
+    </p>
+  </div>
   <form @submit.prevent="submit" class="space-y-3 bg-white p-4 rounded shadow-sm">
     <label class="block">
       <span class="text-sm font-medium">target_repo</span>

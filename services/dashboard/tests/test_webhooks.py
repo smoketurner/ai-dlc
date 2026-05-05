@@ -17,6 +17,9 @@ from dashboard.routes.webhooks import (
     decision_from_review,
     parse_decision,
     parse_run_meta,
+    parse_triage,
+    triage_from_issue_comment,
+    triage_from_issues,
     verify_signature,
     webhook_secret,
 )
@@ -154,3 +157,115 @@ def test_decision_round_trips_through_json() -> None:
     decision = decision_from_comment(payload)
     assert decision is not None
     assert json.dumps(decision)  # smoke test
+
+
+# --- Triage routing -------------------------------------------------------
+
+
+def issue_payload(
+    *,
+    action: str,
+    labels: list[str],
+    pull_request: bool = False,
+    label_added: str | None = None,
+    body: str = "Please add a /version endpoint.",
+) -> dict[str, Any]:
+    """Build a GitHub ``issues`` webhook payload with the bits triage cares about."""
+    issue: dict[str, Any] = {
+        "number": 7,
+        "html_url": "https://github.com/o/r/issues/7",
+        "title": "Add /version",
+        "body": body,
+        "labels": [{"name": name} for name in labels],
+        "user": {"login": "alice"},
+    }
+    if pull_request:
+        issue["pull_request"] = {"url": "..."}
+    payload: dict[str, Any] = {
+        "action": action,
+        "issue": issue,
+        "repository": {"full_name": "o/r"},
+    }
+    if label_added is not None:
+        payload["label"] = {"name": label_added}
+    return payload
+
+
+def test_triage_from_issues_opened_with_ready_label() -> None:
+    payload = issue_payload(action="opened", labels=["aidlc:ready", "enhancement"])
+
+    envelope = triage_from_issues(payload)
+
+    assert envelope is not None
+    assert envelope["repo"] == "o/r"
+    assert envelope["issue_number"] == 7
+    assert envelope["issue_url"] == "https://github.com/o/r/issues/7"
+    assert "aidlc:ready" in envelope["labels"]
+
+
+def test_triage_from_issues_labeled_event_only_fires_on_ready_label() -> None:
+    on_ready = issue_payload(
+        action="labeled",
+        labels=["aidlc:ready"],
+        label_added="aidlc:ready",
+    )
+    on_other = issue_payload(
+        action="labeled",
+        labels=["bug"],
+        label_added="bug",
+    )
+
+    assert triage_from_issues(on_ready) is not None
+    assert triage_from_issues(on_other) is None
+
+
+def test_triage_from_issues_skips_terminal_labels() -> None:
+    payload = issue_payload(action="opened", labels=["aidlc:ready", "aidlc:in-progress"])
+    assert triage_from_issues(payload) is None
+
+
+def test_triage_from_issue_comment_picks_up_aidlc_go() -> None:
+    payload = {
+        "action": "created",
+        "comment": {"body": "/aidlc go please", "user": {"login": "alice"}},
+        "issue": {
+            "number": 7,
+            "html_url": "https://github.com/o/r/issues/7",
+            "title": "Add /version",
+            "body": "context",
+            "labels": [],
+            "user": {"login": "alice"},
+        },
+        "repository": {"full_name": "o/r"},
+    }
+
+    envelope = triage_from_issue_comment(payload)
+
+    assert envelope is not None
+    assert envelope["issue_number"] == 7
+
+
+def test_triage_from_issue_comment_ignores_pr_comments() -> None:
+    payload = {
+        "action": "created",
+        "comment": {"body": "/aidlc go", "user": {"login": "alice"}},
+        "issue": {
+            "number": 7,
+            "html_url": "https://github.com/o/r/issues/7",
+            "title": "x",
+            "body": "x",
+            "labels": [],
+            "user": {"login": "alice"},
+            "pull_request": {"url": "..."},
+        },
+        "repository": {"full_name": "o/r"},
+    }
+
+    assert triage_from_issue_comment(payload) is None
+
+
+def test_parse_triage_routes_only_relevant_event_types() -> None:
+    issues_payload = issue_payload(action="opened", labels=["aidlc:ready"])
+    assert parse_triage("issues", issues_payload) is not None
+    assert parse_triage("ping", {}) is None
+    assert parse_triage("pull_request_review", {}) is None
