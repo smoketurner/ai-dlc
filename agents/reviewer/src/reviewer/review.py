@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+from common.validators import none_to_empty_list
 
 Severity = Literal["high", "medium", "low"]
 Verdict = Literal["approve", "request_changes", "comment"]
@@ -41,8 +43,15 @@ class Review(_Frozen):
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
     verdict: Verdict
     summary: Annotated[str, Field(min_length=1, max_length=2048)]
-    comments: Annotated[list[ReviewComment], Field(max_length=64)] = Field(default_factory=list)
-    strengths: list[str] = Field(default_factory=list)
+    comments: Annotated[
+        list[ReviewComment],
+        Field(max_length=64),
+        BeforeValidator(none_to_empty_list),
+    ] = Field(default_factory=list)
+    strengths: Annotated[
+        list[str],
+        BeforeValidator(none_to_empty_list),
+    ] = Field(default_factory=list)
 
 
 def severity_counts(review: Review) -> dict[Severity, int]:
