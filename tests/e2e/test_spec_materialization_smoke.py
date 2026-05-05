@@ -1,86 +1,85 @@
-"""E2E smoke test: spec materialization pipeline.
+"""E2E smoke test for the spec materialization pipeline.
 
-Loads a pre-canned SpecBundle fixture, validates it against the schema,
-materializes the three Markdown docs into a temp directory, then asserts
-structure and content — no LLM calls, no AWS calls.
+Validates that a SpecBundle fixture can be:
+  1. Loaded and validated against the SpecBundle schema.
+  2. Materialized into requirements.md, design.md, and tasks.md.
+  3. Produces non-empty files with expected section headers.
 """
 
 from __future__ import annotations
 
 import json
-import pathlib
+from pathlib import Path
 
 import pytest
 
 from architect.spec import SpecBundle, render_design, render_requirements, render_tasks
 
-FIXTURE_PATH = pathlib.Path(__file__).parent / "fixtures" / "smoke_spec_bundle.json"
-SPEC_SLUG = "smoke-test-fixture"
+_FIXTURE = Path(__file__).parent / "fixtures" / "smoke_spec_bundle.json"
 
 
-def _materialize(spec: SpecBundle, base: pathlib.Path) -> pathlib.Path:
-    """Render spec docs and write them under base/docs/specs/{spec_slug}/."""
-    out = base / "docs" / "specs" / spec.spec_slug
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "requirements.md").write_text(render_requirements(spec), encoding="utf-8")
-    (out / "design.md").write_text(render_design(spec), encoding="utf-8")
-    (out / "tasks.md").write_text(render_tasks(spec), encoding="utf-8")
-    return out
+def materialize(spec: SpecBundle, output_dir: Path) -> None:
+    """Write the three spec Markdown files into output_dir/docs/specs/{slug}/."""
+    dest = output_dir / "docs" / "specs" / spec.spec_slug
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "requirements.md").write_text(render_requirements(spec), encoding="utf-8")
+    (dest / "design.md").write_text(render_design(spec), encoding="utf-8")
+    (dest / "tasks.md").write_text(render_tasks(spec), encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def spec_bundle() -> SpecBundle:
+    """Load and validate the pre-canned SpecBundle fixture."""
+    raw = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+    return SpecBundle.model_validate(raw)
 
 
-def test_fixture_validates_against_spec_bundle_schema() -> None:
-    """AC-001: fixture JSON parses and validates as a SpecBundle."""
-    raw = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    bundle = SpecBundle.model_validate(raw)
-    assert bundle.spec_slug == SPEC_SLUG
-    assert len(bundle.requirements.user_stories) >= 1
-    assert len(bundle.requirements.acceptance_criteria) >= 1
-    assert len(bundle.design.components) >= 1
-    assert len(bundle.tasks) >= 1
+def test_fixture_validates_against_schema(spec_bundle: SpecBundle) -> None:
+    assert spec_bundle.spec_slug == "smoke-test-fixture"
+    assert spec_bundle.feature_name
+    assert len(spec_bundle.requirements.user_stories) >= 1
+    assert len(spec_bundle.requirements.acceptance_criteria) >= 1
+    assert len(spec_bundle.design.components) >= 1
+    assert len(spec_bundle.tasks) >= 1
 
 
-def test_materialization_creates_all_three_files(tmp_path: pathlib.Path) -> None:
-    """AC-002: all three Markdown files are created under the expected path."""
-    raw = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    bundle = SpecBundle.model_validate(raw)
-    out = _materialize(bundle, tmp_path)
-    assert (out / "requirements.md").exists()
-    assert (out / "design.md").exists()
-    assert (out / "tasks.md").exists()
+def test_materialization_produces_three_files(spec_bundle: SpecBundle, tmp_path: Path) -> None:
+    materialize(spec_bundle, tmp_path)
+    base = tmp_path / "docs" / "specs" / spec_bundle.spec_slug
+    assert (base / "requirements.md").exists()
+    assert (base / "design.md").exists()
+    assert (base / "tasks.md").exists()
 
 
-def test_materialized_files_are_non_empty(tmp_path: pathlib.Path) -> None:
-    """AC-002: each file has non-zero byte content."""
-    raw = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    bundle = SpecBundle.model_validate(raw)
-    out = _materialize(bundle, tmp_path)
+def test_materialized_files_are_non_empty(spec_bundle: SpecBundle, tmp_path: Path) -> None:
+    materialize(spec_bundle, tmp_path)
+    base = tmp_path / "docs" / "specs" / spec_bundle.spec_slug
     for name in ("requirements.md", "design.md", "tasks.md"):
-        assert (out / name).stat().st_size > 0, f"{name} is empty"
+        content = (base / name).read_text(encoding="utf-8")
+        assert content.strip(), f"{name} must not be empty"
 
 
-@pytest.mark.parametrize(
-    ("filename", "header"),
-    [
-        ("requirements.md", "## User stories"),
-        ("requirements.md", "## Acceptance criteria"),
-        ("design.md", "## Components"),
-        ("design.md", "## Approach"),
-        ("tasks.md", "- [ ] **T-001**"),
-    ],
-)
-def test_materialized_files_contain_expected_headers(
-    tmp_path: pathlib.Path,
-    filename: str,
-    header: str,
-) -> None:
-    """AC-003: expected section headers are present in each rendered file."""
-    raw = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
-    bundle = SpecBundle.model_validate(raw)
-    out = _materialize(bundle, tmp_path)
-    content = (out / filename).read_text(encoding="utf-8")
-    assert header in content, f"'{header}' not found in {filename}"
+def test_requirements_md_has_expected_headers(spec_bundle: SpecBundle, tmp_path: Path) -> None:
+    materialize(spec_bundle, tmp_path)
+    content = (tmp_path / "docs" / "specs" / spec_bundle.spec_slug / "requirements.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## User stories" in content
+    assert "## Acceptance criteria" in content
+
+
+def test_design_md_has_expected_headers(spec_bundle: SpecBundle, tmp_path: Path) -> None:
+    materialize(spec_bundle, tmp_path)
+    content = (tmp_path / "docs" / "specs" / spec_bundle.spec_slug / "design.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Components" in content
+    assert "## Approach" in content
+
+
+def test_tasks_md_has_expected_headers(spec_bundle: SpecBundle, tmp_path: Path) -> None:
+    materialize(spec_bundle, tmp_path)
+    content = (tmp_path / "docs" / "specs" / spec_bundle.spec_slug / "tasks.md").read_text(
+        encoding="utf-8"
+    )
+    assert "## Tasks" in content or "# Tasks" in content
