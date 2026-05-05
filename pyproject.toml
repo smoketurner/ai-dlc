@@ -90,7 +90,9 @@ invalid-type-form = "error"
 unused-ignore-comment = "error"
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-markers --strict-config"
+# importlib import mode keeps same-named test modules (e.g. test_hooks.py in
+# multiple agents) from colliding under pytest's default rootdir-based naming.
+addopts = "-q --strict-markers --strict-config --import-mode=importlib"
 markers = [
     "integration: cross-package integration tests (moto-backed)",
     "eval: agent evaluation cases (live AWS, gated)",

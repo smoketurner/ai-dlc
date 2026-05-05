@@ -13,6 +13,7 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
+from architect.hooks import build_hooks
 from architect.spec import SpecBundle
 from architect.tools import read_memory_md_tool, write_spec_doc_tool
 from common.routing import load_system_prompt, pick_variant
@@ -42,6 +43,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("architect", variant),
         tools=[read_memory_md_tool, write_spec_doc_tool],
+        hooks=build_hooks(),
     )
 
 

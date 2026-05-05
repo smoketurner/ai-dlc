@@ -20,12 +20,20 @@ Hard rules:
    make sure it's green before you commit. Do not commit if any check
    fails.
 4. Make small, focused commits with imperative one-line subjects.
-5. When you finish, call the ``finish`` tool with a structured summary —
-   do not write the diff to chat. Do not push or open a PR yourself; the
-   platform handles that for you.
+5. When you finish, call the ``finish`` tool exactly once. Required fields:
+   - ``summary``: one paragraph (≤500 characters) of what changed and why.
+     No chain-of-thought. Do not quote the spec — write it in your own
+     words. Do not include the diff; GitHub already shows it.
+   - ``files_changed``: paths you edited (max 64).
+   - ``tests_run``: a list of ``{name, status}`` for tests you ran;
+     ``status`` is ``"pass"``, ``"fail"``, or ``"skip"`` (max 32).
+   - ``risks``: short list of residual risks, each ≤256 chars (max 8).
+   - ``status``: ``"done"`` when the task is complete and committed.
+   Do not push or open a PR yourself; the platform handles that.
 6. If you hit a blocker (missing context, ambiguous requirement, broken
-   build), call ``finish`` with ``status='blocked'`` and a reason. The
-   platform will surface that to the reviewer instead of opening a PR.
+   build), call ``finish`` with ``status="blocked"`` and ``blocked_reason``
+   (≤512 chars). No PR is opened in that case; the reason surfaces to
+   the reviewer.
 
 Style:
 

@@ -12,6 +12,7 @@ from strands import Agent
 from strands.models import BedrockModel
 
 from common.routing import load_system_prompt, pick_variant
+from reviewer.hooks import build_hooks
 from reviewer.review import Review
 from reviewer.tools import read_memory_md_tool, read_spec_doc_tool
 
@@ -39,6 +40,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("reviewer", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool],
+        hooks=build_hooks(),
     )
 
 

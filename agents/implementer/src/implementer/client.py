@@ -7,6 +7,8 @@ Flow per invocation:
   3. ``create_branch`` — branch off ``main`` for this task.
   4. ``ClaudeSDKClient`` — feed Claude the spec + task and let it edit the
      repo via Read/Write/Edit/Bash. Hooks deny dangerous commands.
+     The agent ends the session by calling the in-process ``finish`` MCP
+     tool with a :class:`FinishReport`; that report drives the PR body.
   5. After Claude finishes, ``mark_done`` flips the tasks.md checkbox.
   6. Commit, push, open PR; return the PR URL + diff summary.
 """
@@ -16,9 +18,10 @@ from __future__ import annotations
 import os
 
 import structlog
-from claude_agent_sdk import AssistantMessage, ClaudeSDKClient, ResultMessage, TextBlock
+from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 
 from common.runtime import ImplementerInput, ImplementerResult
+from implementer.finish import FinishReport, FinishSink
 from implementer.options import build_options
 from implementer.repo_ops import (
     clone_repo,
@@ -63,7 +66,28 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     create_branch(branch)
 
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
-    assistant_text = await drive_agent(user_prompt, run_id=payload.run_id)
+    report = await drive_agent(user_prompt, run_id=payload.run_id)
+
+    if report is None:
+        logger.warning(
+            "implementer ended without calling finish",
+            run_id=payload.run_id,
+            task_id=payload.task_id,
+        )
+    elif report.status == "blocked":
+        logger.info(
+            "implementer reported blocked",
+            run_id=payload.run_id,
+            task_id=payload.task_id,
+            blocked_reason=report.blocked_reason,
+        )
+        return ImplementerResult(
+            task_id=payload.task_id,
+            pr_url=None,
+            diff_summary="(no diff — task blocked by agent)",
+            session_id=payload.run_id,
+            blocked_reason=report.blocked_reason,
+        )
 
     materialize_spec_in_repo(payload.spec_slug)
     update_tasks_md(payload.task_id, payload.spec_slug)
@@ -77,7 +101,7 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
         branch=branch,
         base="main",
         title=f"{payload.task_id}: {task.title}",
-        body=build_pr_body(payload, task_title=task.title, assistant_text=assistant_text),
+        body=render_pr_body(payload, task_title=task.title, report=report),
     )
 
     return ImplementerResult(
@@ -125,24 +149,27 @@ def compose_prompt(
     return "\n".join(parts)
 
 
-async def drive_agent(user_prompt: str, *, run_id: str) -> str:
-    """Run one ClaudeSDKClient session and return the concatenated assistant text."""
-    options = build_options(run_id)
-    text_blocks: list[str] = []
+async def drive_agent(user_prompt: str, *, run_id: str) -> FinishReport | None:
+    """Run one ClaudeSDKClient session and return the agent's structured report.
+
+    The ``finish`` MCP tool stashes its validated payload into
+    :class:`FinishSink`; this function reads it back after the SDK loop
+    drains. Returns ``None`` if the agent ended without calling
+    ``finish`` — the caller surfaces that as a fallback PR body and
+    emits a warning log.
+    """
+    sink = FinishSink()
+    options = build_options(run_id, finish_sink=sink)
     async with ClaudeSDKClient(options=options) as client:
         await client.query(user_prompt)
         async for msg in client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        text_blocks.append(block.text)
-            elif isinstance(msg, ResultMessage):
+            if isinstance(msg, ResultMessage):
                 logger.info(
                     "session done",
                     session_id=msg.session_id,
                     cost_usd=getattr(msg, "total_cost_usd", None),
                 )
-    return "\n\n".join(text_blocks)
+    return sink.report
 
 
 def materialize_spec_in_repo(spec_slug: str) -> None:
@@ -180,13 +207,60 @@ def build_commit_message(task_id: str, title: str) -> str:
     return f"{task_id}: {title}"
 
 
-def build_pr_body(payload: ImplementerInput, *, task_title: str, assistant_text: str) -> str:
-    """Markdown body for the PR — links spec, task, summary."""
+def render_pr_body(
+    payload: ImplementerInput,
+    *,
+    task_title: str,
+    report: FinishReport | None,
+) -> str:
+    """Render the PR body from a :class:`FinishReport`.
+
+    Sections (in order, omitted when empty): Summary, Files changed,
+    Tests, Risks. Always emits a footer with run + correlation IDs and
+    a link to the in-repo spec folder. If ``report`` is ``None``, emits
+    a fallback body explaining that ``finish`` was not called.
+    """
+    if report is None:
+        return render_no_finish_body(payload, task_title=task_title)
+
+    lines = [
+        f"## {payload.task_id}: {task_title}",
+        "",
+        "### Summary",
+        "",
+        report.summary,
+        "",
+    ]
+    if report.files_changed:
+        lines += ["### Files changed", ""]
+        lines += [f"- `{path}`" for path in report.files_changed]
+        lines += [""]
+    if report.tests_run:
+        lines += ["### Tests", ""]
+        lines += [f"- `{t.name}` — {t.status}" for t in report.tests_run]
+        lines += [""]
+    if report.risks:
+        lines += ["### Risks", ""]
+        lines += [f"- {risk}" for risk in report.risks]
+        lines += [""]
+    lines += [
+        "---",
+        (
+            f"_run_id: {payload.run_id}_  ·  "
+            f"_correlation_id: {payload.correlation_id}_  ·  "
+            f"_spec: `docs/specs/{payload.spec_slug}/`_"
+        ),
+    ]
+    return "\n".join(lines)
+
+
+def render_no_finish_body(payload: ImplementerInput, *, task_title: str) -> str:
+    """Fallback PR body when the agent never called ``finish``."""
     return (
         f"## {payload.task_id}: {task_title}\n\n"
-        f"Implements one task from spec `{payload.spec_slug}`.\n\n"
-        f"### Implementer notes\n\n"
-        f"{assistant_text}\n\n"
+        "_Implementer ended the session without calling the `finish` tool — "
+        "no structured summary is available. See the diff for details._\n\n"
         f"---\n"
-        f"_run_id: {payload.run_id}_  ·  _correlation_id: {payload.correlation_id}_"
+        f"_run_id: {payload.run_id}_  ·  _correlation_id: {payload.correlation_id}_  ·  "
+        f"_spec: `docs/specs/{payload.spec_slug}/`_"
     )

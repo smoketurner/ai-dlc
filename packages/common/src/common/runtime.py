@@ -138,12 +138,18 @@ class ImplementerInput(_Frozen):
 
 
 class ImplementerResult(_Frozen):
-    """Result the Implementer returns. Becomes the TASK.READY payload."""
+    """Result the Implementer returns. Becomes the TASK.READY payload.
+
+    ``pr_url`` is ``None`` when the agent reported ``status='blocked'`` via
+    the ``finish`` tool — no PR was opened. ``blocked_reason`` carries the
+    agent's explanation in that case.
+    """
 
     task_id: str
-    pr_url: str
+    pr_url: str | None = None
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
+    blocked_reason: Annotated[str, Field(max_length=512)] | None = None
 
 
 class ReviewerInput(_Frozen):

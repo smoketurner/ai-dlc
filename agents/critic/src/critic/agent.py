@@ -15,6 +15,7 @@ from strands.models import BedrockModel
 
 from common.routing import load_system_prompt, pick_variant
 from critic.critique import Critique
+from critic.hooks import build_hooks
 from critic.tools import read_memory_md_tool, read_spec_doc_tool
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
@@ -41,6 +42,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("critic", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool],
+        hooks=build_hooks(),
     )
 
 

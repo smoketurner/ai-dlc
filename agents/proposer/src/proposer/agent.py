@@ -14,6 +14,11 @@ from strands import Agent
 from strands.models import BedrockModel
 
 from common.routing import load_system_prompt, pick_variant
+from proposer.hooks import (
+    ProposerCallTracker,
+    build_hooks_with_tracker,
+    check_memory_md_prerequisites,
+)
 from proposer.proposal import Proposal
 from proposer.tools import (
     read_drift_report_tool,
@@ -31,13 +36,18 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> Agent:
-    """Build a fresh Strands Agent for one proposer invocation.
+def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
+    """Build a fresh Strands Agent + tracker for one proposer invocation.
+
+    Returns the agent and the :class:`ProposerCallTracker` so the caller
+    can validate the produced :class:`Proposal` against the agent's
+    actual tool-call history.
 
     Prompt variant routed via :func:`common.routing.pick_variant`.
     """
     variant = pick_variant(run_id, "proposer")
-    return Agent(
+    hooks, tracker = build_hooks_with_tracker()
+    agent = Agent(
         model=BedrockModel(
             model_id=model_id(),
             region_name=os.environ["AWS_REGION"],
@@ -53,7 +63,9 @@ def build_agent(run_id: str) -> Agent:
             read_few_shot_summary_tool,
             read_memory_md_tool,
         ],
+        hooks=hooks,
     )
+    return agent, tracker
 
 
 def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_id: str) -> Proposal:
@@ -70,14 +82,23 @@ def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_i
     Returns:
         A validated :class:`Proposal`. May contain zero edits if the
         agent decides no action is warranted.
+
+    Raises:
+        ValueError: When the proposal targets ``docs/MEMORY.md`` but the
+            agent did not first call ``read_memory_md`` and
+            ``read_drift_report``.
     """
     user_message = compose_message(
         project_slug=project_slug,
         trigger_reason=trigger_reason,
         lookback_days=lookback_days,
     )
-    agent = build_agent(run_id)
-    return agent.structured_output(Proposal, user_message)
+    agent, tracker = build_agent(run_id)
+    proposal = agent.structured_output(Proposal, user_message)
+    violation = check_memory_md_prerequisites(proposal, tracker)
+    if violation is not None:
+        raise ValueError(violation)
+    return proposal
 
 
 def compose_message(*, project_slug: str, trigger_reason: str, lookback_days: int) -> str:
