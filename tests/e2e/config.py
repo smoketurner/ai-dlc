@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from pydantic import AnyHttpUrl, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class SmokeTestConfig(BaseSettings):
     """Configuration for the end-to-end smoke test suite."""
 
-    ingest_endpoint: AnyHttpUrl = Field(
+    ingest_endpoint: str = Field(
         default="http://localhost:8080/ingest",
         description="HTTP(S) URL of the pipeline ingest endpoint.",
     )
