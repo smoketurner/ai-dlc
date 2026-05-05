@@ -77,6 +77,22 @@ data "aws_iam_policy_document" "runtime_inline" {
     ]
   }
 
+  # Bedrock-Marketplace prerequisite: ConverseStream against Anthropic
+  # models triggers a per-principal subscription check. Without these
+  # perms the runtime role gets ``AccessDeniedException ... AWS Marketplace
+  # subscription for this model cannot be completed`` on first use, even
+  # when the account is already subscribed via the console under a
+  # different IAM principal. Scoped to ViewSubscriptions / Subscribe;
+  # no Unsubscribe (the runtime should never tear down access).
+  statement {
+    sid = "BedrockMarketplaceSubscribe"
+    actions = [
+      "aws-marketplace:ViewSubscriptions",
+      "aws-marketplace:Subscribe",
+    ]
+    resources = ["*"]
+  }
+
   # ADOT auto-instrumentation in the AgentCore runtime emits X-Ray
   # segments + CloudWatch metrics. Without these perms the OTEL exporter
   # blocks on permission errors at startup, which the runtime surfaces
