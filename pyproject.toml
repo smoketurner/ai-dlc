@@ -98,3 +98,4 @@ markers = [
 ]
 testpaths = ["tests", "packages", "agents", "lambdas", "services"]
 asyncio_mode = "auto"
+pythonpath = ["."]
