@@ -50,6 +50,29 @@ jobs:
           uv run pip-audit --strict --disable-pip \
             -r <(uv export --frozen --format requirements-txt)
 
+  e2e:
+    name: e2e smoke tests
+    runs-on: ubuntu-latest
+    needs: python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Sync workspace
+        run: uv sync --all-packages --frozen
+
+      - name: pytest (e2e)
+        run: uv run pytest tests/e2e/ -q
+
   workflows:
     name: workflow security audit
     runs-on: ubuntu-latest
