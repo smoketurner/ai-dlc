@@ -137,10 +137,16 @@ def run_git(*args: str, cwd: Path | None = None) -> str:
     proc = subprocess.run(  # noqa: S603 - args are well-formed
         cmd,
         cwd=cwd or repo_path(),
-        check=True,
         capture_output=True,
         text=True,
+        check=False,
     )
+    if proc.returncode != 0:
+        msg = (
+            f"git {shell_safe_join(list(args))} failed (exit {proc.returncode}) "
+            f"cwd={cwd or repo_path()} stdout={proc.stdout!r} stderr={proc.stderr!r}"
+        )
+        raise RuntimeError(msg)
     return proc.stdout
 
 

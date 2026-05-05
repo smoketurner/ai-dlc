@@ -65,7 +65,8 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
     assistant_text = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    update_tasks_md(payload.task_id)
+    materialize_spec_in_repo(payload.spec_slug)
+    update_tasks_md(payload.task_id, payload.spec_slug)
 
     commit_msg = build_commit_message(payload.task_id, task.title)
     commit_changes(commit_msg)
@@ -144,19 +145,33 @@ async def drive_agent(user_prompt: str, *, run_id: str) -> str:
     return "\n\n".join(text_blocks)
 
 
-def update_tasks_md(task_id: str) -> None:
-    """Flip the task's checkbox in the repo's local copy of tasks.md."""
-    # The architect commits tasks.md to docs/specs/{slug}/tasks.md; the local
-    # spec copy under /workspace/spec is read-only context. Update the repo
-    # version so the commit reflects the completed task.
-    candidate = repo_path() / "docs" / "specs"
-    for p in candidate.rglob("tasks.md"):
-        body = p.read_text(encoding="utf-8")
-        try:
-            updated = mark_done(body, task_id)
-        except KeyError:
-            continue
-        p.write_text(updated, encoding="utf-8")
+def materialize_spec_in_repo(spec_slug: str) -> None:
+    """Copy the in-memory spec bundle into ``docs/specs/<slug>/`` in the repo.
+
+    The Architect uploads the bundle to S3 only; the implementer is the
+    first agent that touches the project repo, so it's responsible for
+    materializing the spec there. Idempotent — overwrites existing files
+    so the latest tasks.md state (with prior checkboxes) propagates.
+    """
+    target = repo_path() / "docs" / "specs" / spec_slug
+    target.mkdir(parents=True, exist_ok=True)
+    for doc in ("requirements", "design", "tasks"):
+        src = spec_path() / f"{doc}.md"
+        if src.exists():
+            (target / f"{doc}.md").write_bytes(src.read_bytes())
+
+
+def update_tasks_md(task_id: str, spec_slug: str) -> None:
+    """Flip the task's checkbox in the repo's copy of tasks.md.
+
+    Idempotent — if the row is already ``[x]`` (e.g. on a retry that
+    reuses the workspace) we leave the file untouched.
+    """
+    target = repo_path() / "docs" / "specs" / spec_slug / "tasks.md"
+    body = target.read_text(encoding="utf-8")
+    try:
+        target.write_text(mark_done(body, task_id), encoding="utf-8")
+    except KeyError:
         return
 
 
