@@ -173,6 +173,60 @@ module "triage_dispatcher" {
   })
 }
 
+module "runtime_invoker" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${local.prefix}-runtime-invoker"
+  description   = "Step Functions shim — fires invoke_agent_runtime + waits via SendTaskSuccess."
+  handler       = "runtime_invoker.handler.handler"
+  runtime       = "python3.13"
+  architectures = ["arm64"]
+  memory_size   = 256
+  # The shim returns ~immediately (read-timeout=2s for the dispatch +
+  # the network call setup), so a 60s Lambda timeout is plenty even
+  # under cold-start.
+  timeout = 60
+  publish = true
+
+  source_path = [{
+    path             = "${local.source_dir}/runtime_invoker/src"
+    pip_requirements = "${local.source_dir}/runtime_invoker/requirements.txt"
+  }]
+  build_in_docker = true
+  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+
+  environment_variables = {
+    POWERTOOLS_SERVICE_NAME     = "runtime_invoker"
+    POWERTOOLS_LOG_LEVEL        = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+  }
+
+  cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
+
+  attach_policy_statements = true
+  policy_statements = {
+    invoke_agent_runtime = {
+      effect    = "Allow"
+      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
+      resources = length(local.runtime_arns) > 0 ? concat(local.runtime_arns, [for arn in local.runtime_arns : "${arn}/runtime-endpoint/*"]) : ["*"]
+    }
+    states_callbacks = {
+      effect = "Allow"
+      # The shim only ever calls SendTaskFailure (when dispatch fails
+      # before the container can accept the work). SendTaskSuccess /
+      # Heartbeat come from the agent containers themselves.
+      actions   = ["states:SendTaskFailure"]
+      resources = ["*"]
+    }
+  }
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-runtime-invoker"
+    Component = "pipeline"
+  })
+}
+
 module "event_projector" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"

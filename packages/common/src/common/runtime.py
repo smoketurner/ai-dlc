@@ -129,6 +129,12 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
+    # Set by the runtime_invoker shim so the agent can call
+    # ``states:SendTaskSuccess`` / ``SendTaskFailure`` directly when
+    # done. Sessions longer than the SDK's HTTP read timeout (~60s) need
+    # this; the synchronous /invocations response body is ignored when
+    # ``task_token`` is set.
+    task_token: str | None = None
 
 
 class ImplementerResult(_Frozen):
@@ -153,6 +159,7 @@ class ReviewerInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
+    task_token: str | None = None
 
 
 class ReviewerResult(_Frozen):
@@ -182,6 +189,7 @@ class TesterInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
+    task_token: str | None = None
 
 
 class TesterResult(_Frozen):

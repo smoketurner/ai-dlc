@@ -27,6 +27,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.runtime import ReviewerInput, ReviewerResult
+from common.task_token import send_task_failure, send_task_success
 from reviewer.agent import review_pr
 from reviewer.review import Review, render_review, severity_counts
 from reviewer.tools import write_review
@@ -42,25 +43,37 @@ PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pul
 
 @app.entrypoint
 async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Reviewer entrypoint. Returns a JSON-serialisable ReviewerResult."""
+    """Reviewer entrypoint. Returns a JSON-serialisable ReviewerResult.
+
+    See :mod:`common.task_token` for the ``task_token``/SendTaskSuccess
+    callback pattern — the HTTP response body is ignored when SF is
+    waiting on a token.
+    """
     payload = ReviewerInput.model_validate(event)
     logger.info(
         "reviewer invoked",
         run_id=payload.run_id,
         task_id=payload.task_id,
         pr_url=payload.pr_url,
+        async_token=payload.task_token is not None,
     )
 
-    review = review_pr(
-        project_slug=payload.project_slug,
-        spec_slug=payload.spec_slug,
-        task_id=payload.task_id,
-        pr_url=payload.pr_url,
-        diff_summary=payload.diff_summary,
-        run_id=payload.run_id,
-    )
-    upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
-    post_pr_comment(payload=payload, review=review)
+    try:
+        review = review_pr(
+            project_slug=payload.project_slug,
+            spec_slug=payload.spec_slug,
+            task_id=payload.task_id,
+            pr_url=payload.pr_url,
+            diff_summary=payload.diff_summary,
+            run_id=payload.run_id,
+        )
+        upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
+        post_pr_comment(payload=payload, review=review)
+    except BaseException as exc:
+        if payload.task_token is not None:
+            send_task_failure(task_token=payload.task_token, exc=exc)
+            return {"task_token_dispatched": True, "ok": False}
+        raise
 
     counts = severity_counts(review)
     result = ReviewerResult(
@@ -81,7 +94,11 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         verdict=result.verdict,
         comment_count=result.comment_count,
     )
-    return result.model_dump()
+    output = result.model_dump()
+    if payload.task_token is not None:
+        send_task_success(task_token=payload.task_token, output=output)
+        return {"task_token_dispatched": True, "ok": True}
+    return output
 
 
 def upload_review(review: Review, *, run_id: str, task_id: str) -> None:

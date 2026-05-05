@@ -199,6 +199,24 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
+  # Task-phase agents (Implementer, Reviewer, Tester) report completion
+  # back to Step Functions directly via SendTaskSuccess/Failure once
+  # they finish — the InvokeAgentRuntime call from runtime_invoker is
+  # fire-and-forget. Without this perm the agent succeeds but SF stays
+  # blocked on the task token forever.
+  dynamic "statement" {
+    for_each = contains(["implementer", "reviewer", "tester"], each.key) ? [1] : []
+    content {
+      sid = "StatesTaskCallback"
+      actions = [
+        "states:SendTaskSuccess",
+        "states:SendTaskFailure",
+        "states:SendTaskHeartbeat",
+      ]
+      resources = ["*"]
+    }
+  }
+
   statement {
     sid = "Logs"
     # AgentCore Runtime creates ``/aws/bedrock-agentcore/runtimes/{id}-{qualifier}``

@@ -57,6 +57,12 @@ data "aws_iam_policy_document" "states_inline" {
   }
 
   statement {
+    sid       = "InvokeRuntimeInvoker"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [module.runtime_invoker.lambda_function_arn]
+  }
+
+  statement {
     sid = "Logs"
     actions = [
       "logs:CreateLogDelivery",

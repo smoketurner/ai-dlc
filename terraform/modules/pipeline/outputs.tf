@@ -25,6 +25,7 @@ output "lambda_arns" {
     hitl_handler      = module.hitl_handler.lambda_function_arn
     event_projector   = module.event_projector.lambda_function_arn
     triage_dispatcher = module.triage_dispatcher.lambda_function_arn
+    runtime_invoker   = module.runtime_invoker.lambda_function_arn
   }
 }
 

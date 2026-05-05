@@ -188,16 +188,29 @@
         "States": {
           "InvokeImplementer": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
             "Arguments": {
-              "AgentRuntimeArn": "${implementer_runtime_arn}",
-              "Qualifier": "DEFAULT",
-              "RuntimeSessionId": "{% $states.input.run_id & '-' & $states.input.task_id %}",
-              "ContentType": "application/json",
-              "Accept": "application/json",
-              "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug, 'spec_s3_prefix': $states.input.spec_s3_prefix, 'task_id': $states.input.task_id, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'requestor_sub': $states.input.requestor_sub, 'target_repo': $states.input.target_repo }) %}"
+              "FunctionName": "${runtime_invoker_function_name}",
+              "Payload": {
+                "task_token": "{% $states.context.Task.Token %}",
+                "agent_runtime_arn": "${implementer_runtime_arn}",
+                "qualifier": "DEFAULT",
+                "runtime_session_id": "{% $states.input.run_id & '-' & $states.input.task_id %}",
+                "agent_payload": {
+                  "project_slug": "{% $states.input.project_slug %}",
+                  "spec_slug": "{% $states.input.spec_slug %}",
+                  "spec_s3_prefix": "{% $states.input.spec_s3_prefix %}",
+                  "task_id": "{% $states.input.task_id %}",
+                  "run_id": "{% $states.input.run_id %}",
+                  "correlation_id": "{% $states.input.correlation_id %}",
+                  "actor_id": "system",
+                  "requestor_sub": "{% $states.input.requestor_sub %}",
+                  "target_repo": "{% $states.input.target_repo %}"
+                }
+              }
             },
-            "TimeoutSeconds": 3600,
+            "TimeoutSeconds": 7200,
+            "HeartbeatSeconds": 600,
             "Output": {
               "run_id": "{% $states.input.run_id %}",
               "correlation_id": "{% $states.input.correlation_id %}",
@@ -207,22 +220,36 @@
               "task_id": "{% $states.input.task_id %}",
               "requestor_sub": "{% $states.input.requestor_sub %}",
               "target_repo": "{% $states.input.target_repo %}",
-              "result": "{% $parse($states.result.Response) %}"
+              "result": "{% $states.result %}"
             },
             "Next": "InvokeReviewer"
           },
           "InvokeReviewer": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
             "Arguments": {
-              "AgentRuntimeArn": "${reviewer_runtime_arn}",
-              "Qualifier": "DEFAULT",
-              "RuntimeSessionId": "{% $states.input.run_id & '-' & $states.input.task_id & '-reviewer' %}",
-              "ContentType": "application/json",
-              "Accept": "application/json",
-              "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug, 'spec_s3_prefix': $states.input.spec_s3_prefix, 'task_id': $states.input.task_id, 'pr_url': $states.input.result.pr_url, 'diff_summary': $states.input.result.diff_summary, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'requestor_sub': $states.input.requestor_sub }) %}"
+              "FunctionName": "${runtime_invoker_function_name}",
+              "Payload": {
+                "task_token": "{% $states.context.Task.Token %}",
+                "agent_runtime_arn": "${reviewer_runtime_arn}",
+                "qualifier": "DEFAULT",
+                "runtime_session_id": "{% $states.input.run_id & '-' & $states.input.task_id & '-reviewer' %}",
+                "agent_payload": {
+                  "project_slug": "{% $states.input.project_slug %}",
+                  "spec_slug": "{% $states.input.spec_slug %}",
+                  "spec_s3_prefix": "{% $states.input.spec_s3_prefix %}",
+                  "task_id": "{% $states.input.task_id %}",
+                  "pr_url": "{% $states.input.result.pr_url %}",
+                  "diff_summary": "{% $states.input.result.diff_summary %}",
+                  "run_id": "{% $states.input.run_id %}",
+                  "correlation_id": "{% $states.input.correlation_id %}",
+                  "actor_id": "system",
+                  "requestor_sub": "{% $states.input.requestor_sub %}"
+                }
+              }
             },
-            "TimeoutSeconds": 1800,
+            "TimeoutSeconds": 3600,
+            "HeartbeatSeconds": 600,
             "Output": {
               "run_id": "{% $states.input.run_id %}",
               "correlation_id": "{% $states.input.correlation_id %}",
@@ -232,22 +259,36 @@
               "task_id": "{% $states.input.task_id %}",
               "requestor_sub": "{% $states.input.requestor_sub %}",
               "result": "{% $states.input.result %}",
-              "review": "{% $parse($states.result.Response) %}"
+              "review": "{% $states.result %}"
             },
             "Next": "InvokeTester"
           },
           "InvokeTester": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::aws-sdk:bedrockagentcore:invokeAgentRuntime",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
             "Arguments": {
-              "AgentRuntimeArn": "${tester_runtime_arn}",
-              "Qualifier": "DEFAULT",
-              "RuntimeSessionId": "{% $states.input.run_id & '-' & $states.input.task_id & '-tester' %}",
-              "ContentType": "application/json",
-              "Accept": "application/json",
-              "Payload": "{% $string({ 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug, 'spec_s3_prefix': $states.input.spec_s3_prefix, 'task_id': $states.input.task_id, 'pr_url': $states.input.result.pr_url, 'diff_summary': $states.input.result.diff_summary, 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'requestor_sub': $states.input.requestor_sub }) %}"
+              "FunctionName": "${runtime_invoker_function_name}",
+              "Payload": {
+                "task_token": "{% $states.context.Task.Token %}",
+                "agent_runtime_arn": "${tester_runtime_arn}",
+                "qualifier": "DEFAULT",
+                "runtime_session_id": "{% $states.input.run_id & '-' & $states.input.task_id & '-tester' %}",
+                "agent_payload": {
+                  "project_slug": "{% $states.input.project_slug %}",
+                  "spec_slug": "{% $states.input.spec_slug %}",
+                  "spec_s3_prefix": "{% $states.input.spec_s3_prefix %}",
+                  "task_id": "{% $states.input.task_id %}",
+                  "pr_url": "{% $states.input.result.pr_url %}",
+                  "diff_summary": "{% $states.input.result.diff_summary %}",
+                  "run_id": "{% $states.input.run_id %}",
+                  "correlation_id": "{% $states.input.correlation_id %}",
+                  "actor_id": "system",
+                  "requestor_sub": "{% $states.input.requestor_sub %}"
+                }
+              }
             },
-            "TimeoutSeconds": 1800,
+            "TimeoutSeconds": 3600,
+            "HeartbeatSeconds": 600,
             "Output": {
               "run_id": "{% $states.input.run_id %}",
               "correlation_id": "{% $states.input.correlation_id %}",
@@ -256,7 +297,7 @@
               "task_id": "{% $states.input.task_id %}",
               "result": "{% $states.input.result %}",
               "review": "{% $states.input.review %}",
-              "test_report": "{% $parse($states.result.Response) %}"
+              "test_report": "{% $states.result %}"
             },
             "Next": "PublishReviewReady"
           },

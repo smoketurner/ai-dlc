@@ -26,6 +26,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.runtime import TesterInput, TesterResult
+from common.task_token import send_task_failure, send_task_success
 from tester.agent import analyze_gaps
 from tester.report import Report, gap_count, render_report, suggestion_count
 from tester.tools import write_report
@@ -41,25 +42,36 @@ PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pul
 
 @app.entrypoint
 async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Tester entrypoint. Returns a JSON-serialisable TesterResult."""
+    """Tester entrypoint. Returns a JSON-serialisable TesterResult.
+
+    See :mod:`common.task_token` for the ``task_token``/SendTaskSuccess
+    callback pattern.
+    """
     payload = TesterInput.model_validate(event)
     logger.info(
         "tester invoked",
         run_id=payload.run_id,
         task_id=payload.task_id,
         pr_url=payload.pr_url,
+        async_token=payload.task_token is not None,
     )
 
-    report = analyze_gaps(
-        project_slug=payload.project_slug,
-        spec_slug=payload.spec_slug,
-        task_id=payload.task_id,
-        pr_url=payload.pr_url,
-        diff_summary=payload.diff_summary,
-        run_id=payload.run_id,
-    )
-    upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
-    post_pr_comment(payload=payload, report=report)
+    try:
+        report = analyze_gaps(
+            project_slug=payload.project_slug,
+            spec_slug=payload.spec_slug,
+            task_id=payload.task_id,
+            pr_url=payload.pr_url,
+            diff_summary=payload.diff_summary,
+            run_id=payload.run_id,
+        )
+        upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
+        post_pr_comment(payload=payload, report=report)
+    except BaseException as exc:
+        if payload.task_token is not None:
+            send_task_failure(task_token=payload.task_token, exc=exc)
+            return {"task_token_dispatched": True, "ok": False}
+        raise
 
     result = TesterResult(
         task_id=report.task_id,
@@ -76,7 +88,11 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         gap_count=result.gap_count,
         suggested_test_count=result.suggested_test_count,
     )
-    return result.model_dump()
+    output = result.model_dump()
+    if payload.task_token is not None:
+        send_task_success(task_token=payload.task_token, output=output)
+        return {"task_token_dispatched": True, "ok": True}
+    return output
 
 
 def upload_report(report: Report, *, run_id: str, task_id: str) -> None:

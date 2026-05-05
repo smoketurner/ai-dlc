@@ -40,14 +40,15 @@ resource "aws_sfn_state_machine" "sdlc" {
   type     = "STANDARD"
 
   definition = templatefile("${path.module}/asl/sdlc.asl.json.tftpl", {
-    runs_table              = var.runs_table
-    bus_name                = var.bus_name
-    architect_runtime_arn   = local.architect_runtime_arn
-    critic_runtime_arn      = local.critic_runtime_arn
-    implementer_runtime_arn = local.implementer_runtime_arn
-    reviewer_runtime_arn    = local.reviewer_runtime_arn
-    tester_runtime_arn      = local.tester_runtime_arn
-    hitl_function_name      = module.hitl_handler.lambda_function_name
+    runs_table                    = var.runs_table
+    bus_name                      = var.bus_name
+    architect_runtime_arn         = local.architect_runtime_arn
+    critic_runtime_arn            = local.critic_runtime_arn
+    implementer_runtime_arn       = local.implementer_runtime_arn
+    reviewer_runtime_arn          = local.reviewer_runtime_arn
+    tester_runtime_arn            = local.tester_runtime_arn
+    hitl_function_name            = module.hitl_handler.lambda_function_name
+    runtime_invoker_function_name = module.runtime_invoker.lambda_function_name
   })
 
   logging_configuration {
