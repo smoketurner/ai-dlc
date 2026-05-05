@@ -29,13 +29,13 @@ class StubBeforeInvocation:
 
 def call(counter: ToolCallCounter, name: str) -> StubBeforeToolCall:
     event = StubBeforeToolCall(tool_use={"name": name})
-    counter.check(event)  # type: ignore[arg-type]
+    counter.check(event)  # ty: ignore[invalid-argument-type]
     return event
 
 
 def call_required(hook: RequirePriorCall, name: str) -> StubBeforeToolCall:
     event = StubBeforeToolCall(tool_use={"name": name})
-    hook.check(event)  # type: ignore[arg-type]
+    hook.check(event)  # ty: ignore[invalid-argument-type]
     return event
 
 
@@ -95,7 +95,7 @@ def test_tool_call_counter_resets_on_invocation() -> None:
     counter = ToolCallCounter({"read_spec_doc": 2})
     call(counter, "read_spec_doc")
     call(counter, "read_spec_doc")
-    counter.reset(StubBeforeInvocation())  # type: ignore[arg-type]
+    counter.reset(StubBeforeInvocation())  # ty: ignore[invalid-argument-type]
     after_reset = call(counter, "read_spec_doc")
     assert after_reset.cancel_tool is None
 
@@ -118,7 +118,7 @@ def test_require_prior_call_resets_on_invocation() -> None:
     hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
     call_required(hook, "read_memory_md")
     call_required(hook, "write_spec_doc")
-    hook.reset(StubBeforeInvocation())  # type: ignore[arg-type]
+    hook.reset(StubBeforeInvocation())  # ty: ignore[invalid-argument-type]
     after_reset = call_required(hook, "write_spec_doc")
     assert after_reset.cancel_tool is not None
 

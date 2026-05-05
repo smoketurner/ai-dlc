@@ -55,6 +55,11 @@ variable "agents" {
       targets          = ["repo_helper"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
+    triage = {
+      description      = "Triage agent — classifies tagged GitHub issues and routes them into a workflow phase."
+      targets          = []
+      bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    }
   }
 
   validation {

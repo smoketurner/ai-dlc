@@ -7,11 +7,13 @@ members = [
     "ai-dlc",
     "architect",
     "artifact-tool",
+    "comment-classifier",
     "common",
     "critic",
     "dashboard",
     "drift-detector",
     "entry-adapter",
+    "eval-aggregator",
     "eval-runner",
     "event-projector",
     "few-shot-miner",
@@ -555,6 +557,27 @@ wheels = [
 ]
 
 [[package]]
+name = "comment-classifier"
+version = "0.0.0"
+source = { editable = "lambdas/comment_classifier" }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "common" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.29.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "botocore", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
+]
+
+[[package]]
 name = "common"
 version = "0.0.0"
 source = { editable = "packages/common" }
@@ -789,6 +812,27 @@ requires-dist = [
     { name = "common", editable = "packages/common" },
     { name = "pydantic", specifier = "==2.13.3" },
     { name = "uuid-utils", specifier = "==0.14.1" },
+]
+
+[[package]]
+name = "eval-aggregator"
+version = "0.0.0"
+source = { editable = "lambdas/eval_aggregator" }
+dependencies = [
+    { name = "aws-lambda-powertools" },
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "common" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.29.0" },
+    { name = "boto3", specifier = "==1.43.2" },
+    { name = "botocore", specifier = "==1.43.2" },
+    { name = "common", editable = "packages/common" },
+    { name = "pydantic", specifier = "==2.13.3" },
 ]
 
 [[package]]

@@ -34,6 +34,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.door import DoorClass
+from common.events import Payload
 from common.triage import WorkflowKind
 
 CommentCategory = Literal[
@@ -160,12 +161,16 @@ class EfficiencyMetrics(_Frozen):
     comments_by_category: dict[CommentCategory, int] = Field(default_factory=dict)
 
 
-class DriftSignal(_Frozen):
+class DriftSignal(Payload):
     """Emitted when rolling efficiency drops against baseline.
 
     Threshold (commitment C4): ``delta_pct >= 20`` and ``sample_size >= 10``.
     The Proposer subscribes to this event and is restricted (commitment
     C5) to opening PRs against prompts and ``MEMORY.md`` only.
+
+    Inherits from :class:`common.events.Payload` so it slots into the
+    ``EventEnvelope[DriftSignal]`` envelope as the payload of
+    ``EVAL.DRIFT_DETECTED``.
     """
 
     target_repo: Annotated[str, Field(min_length=3, max_length=128)]

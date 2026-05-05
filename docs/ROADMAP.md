@@ -379,7 +379,7 @@ Six landings, each independently shippable:
 - [x] Two new event types: `ISSUE.TRIAGED`, `ISSUE.ASK_POSTED` in `common/events.py` + JSON schemas under `terraform/shared/schemas/`. **5 new event tests**.
 - [ ] GitHub webhook subscriptions: `issues.assigned` (trigger) and `issue_comment.created` on issues (resume the *ask* path). Existing `triage_dispatcher` Lambda already accepts webhooks; needs to expand its trigger filter and rewire its classifier.
 - [ ] `lambdas/triage_dispatcher/` — replace the existing Bedrock-Converse classifier with a thin shim that invokes the triage runtime; one component, one responsibility. Defers because the runtime ARN is set by Terraform.
-- [ ] Terraform: register `triage` in `var.agents`; add ECR repo + CI matrix entry; wire runtime resource and gateway target ACL. **Live-AWS apply gate.**
+- [x] Terraform: registered `triage` in `var.agents` (`targets = []` — agent talks to S3 directly via runtime IAM, no gateway tools needed); added to registry's `repositories` + `agentcore_pull_repositories`; added to dev composition's `local.agent_image_tags` and `module.agents.agents`; added to `images-build.yml` matrix. `terraform validate` clean. **Live-AWS apply on next push.**
 - [ ] ASL: new `Triage` state at the top; `Choice` on `decision.action` + `decision.workflow_kind`; new ItemProcessors for `bug_fix`, `upgrade`, `docs` workflows. The *ask* branch uses `.waitForTaskToken` resolved by the issue-comment webhook. **Live-AWS apply gate.**
 - [ ] First pass ships `bug_fix` / `upgrade` / `docs` as no-spec variants of the existing pipeline; richer per-phase agent ensembles can come later.
 
@@ -392,16 +392,15 @@ Six landings, each independently shippable:
 - [x] Reviewer persona (`agents/reviewer/src/reviewer/prompts.py`): "Door re-audit" added to the failure-mode hunt list — same 10 categories, focused on the content-only check the path classifier can't perform.
 - [ ] Webhook: subscribe to `pull_request.ready_for_review`; record `marked_ready_at` + `marked_ready_by` in `PRTelemetry`. (Moved to 12d alongside the rest of the PR webhook subscriptions.)
 
-### 12d — Production efficiency eval 🟡 (telemetry capture landed; classifier + aggregator + proposer rewire pending)
+### 12d — Production efficiency eval 🟡 (3 Lambdas landed code-side; proposer rewire + Terraform pending)
 
 Phase 9b detects regressions on the synthetic eval-set (10 cases, nightly). Phase 12d adds a complementary signal: real PR comments on real merged PRs. Same proposer, different signal source.
 
 - [x] `lambdas/pr_telemetry/` — webhook handler for `pull_request` (opened, closed, ready_for_review), `pull_request_review` (submitted), `pull_request_review_comment` (created), and `issue_comment` on PRs (created). Recognises platform PRs by the `_run_id: <uuid>_` marker the Implementer writes in the PR body footer; ignores third-party PRs in the same repo. Increments per-PR counters atomically (`requested_changes_count`, `review_count`, `comment_count_human`, `comment_count_bot`); records `marked_ready_at`/`marked_ready_by` on `ready_for_review`; flips `merged` + records `merged_at`/`closed_at` on close. **11 unit tests** under moto-backed DDB.
-- [ ] `lambdas/comment_classifier/` — Haiku-driven categorisation of each review comment into the 10 `CommentCategory` values; structured output validated as `ClassifiedComment`.
-- [ ] `lambdas/eval_aggregator/` (or scheduled service) — rolls telemetry + classified comments into `EfficiencyMetrics` per `(repo, agent, prompt_variant)`; emits `DriftSignal` per the C4 thresholds (≥20% delta, ≥10 PRs).
-- [ ] Proposer: subscribes to `EVAL.DRIFT_DETECTED` (in addition to its existing eval-regression alerts); reads recent low-efficiency PRs + comment categories; opens PRs against `docs/MEMORY.md` or agent prompts (existing `Proposal` validator already restricts target files).
+- [x] `lambdas/comment_classifier/` — Bedrock Haiku Converse-API call categorises one review comment into the 10 `CommentCategory` values; falls back to `unclear` on Bedrock failure or unparseable JSON; persists `ClassifiedComment` JSON to `s3://artifacts/evals/classified_comments/{date}/{pr_slug}/{comment_id}.json`. **11 unit tests** with mocked Bedrock + moto S3.
+- [x] `lambdas/eval_aggregator/` — scheduled aggregator. Pure-function `aggregate.py` rolls `PRTelemetry` rows into per-bucket `EfficiencyMetrics` (commitment C6 grain: `(target_repo, agent_owner, prompt_variant)`); applies the C1 friction-score weights; respects the C1 ONE-WAY-PR carve-out from `merge_as_is_rate`. Drift detection applies the C4 rule (≥20% friction-score delta vs 30-day baseline AND ≥10 PRs). On drift, emits `EVAL.DRIFT_DETECTED` events to the platform bus. **19 unit tests** on the pure-function aggregator. New event type added to `EventType` literal + JSON schema in `terraform/shared/schemas/EVAL_DRIFT_DETECTED.json`. `DriftSignal` lifted to inherit from `common.events.Payload` so it slots into `EventEnvelope[DriftSignal]`.
+- [ ] Proposer: subscribe to `EVAL.DRIFT_DETECTED` (in addition to its existing eval-regression alerts); read recent low-efficiency PRs + comment categories; open PRs against `docs/MEMORY.md` or agent prompts (existing `Proposal` validator already restricts target files).
 - [ ] Dashboard: per-bucket "efficiency over time" view (extends the existing run-detail / metrics surface).
-- [ ] ONE-WAY PRs excluded from `merge_as_is_rate`; reported separately as `one_way_merge_rate`. Comments on them still feed drift detection (an Architect that keeps misclassifying door class shows up as recurring `design` comments).
 - [ ] Terraform: new DDB telemetry table; new Lambda module (or extension to `improvement`) for the three Lambdas; webhook subscription on the dashboard ALB → pr_telemetry. **Live-AWS apply gate.**
 
 ### 12e — Persona refinements 🟡 (taxonomy rename to `critical/important/suggestion/nitpick` deferred — see note)

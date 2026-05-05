@@ -14,6 +14,7 @@ variable "repositories" {
     "reviewer",
     "tester",
     "proposer",
+    "triage",
     "dashboard",
   ]
 }
@@ -21,7 +22,7 @@ variable "repositories" {
 variable "agentcore_pull_repositories" {
   description = "Subset of repositories that AgentCore Runtime is allowed to pull."
   type        = set(string)
-  default     = ["architect", "critic", "implementer", "reviewer", "tester", "proposer"]
+  default     = ["architect", "critic", "implementer", "reviewer", "tester", "proposer", "triage"]
 }
 
 variable "untagged_image_retention_days" {

@@ -48,6 +48,7 @@ EventType = Literal[
     "TEST_REPORT.READY",
     "RUN.COMPLETED",
     "RUN.FAILED",
+    "EVAL.DRIFT_DETECTED",
 ]
 
 ReviewVerdict = Literal["approve", "request_changes", "comment"]
@@ -111,7 +112,9 @@ class IssueTriaged(Payload):
 
     project_slug: str
     target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
-    issue_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    issue_url: Annotated[
+        str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
+    ]
     issue_number: Annotated[int, Field(ge=1)]
     action: Literal["proceed", "ask", "defer", "decline"]
     workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] | None = None
@@ -131,9 +134,13 @@ class IssueAskPosted(Payload):
 
     project_slug: str
     target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
-    issue_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    issue_url: Annotated[
+        str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
+    ]
     issue_number: Annotated[int, Field(ge=1)]
-    comment_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    comment_url: Annotated[
+        str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
+    ]
     question_count: Annotated[int, Field(ge=1, le=8)]
     session_id: str
 

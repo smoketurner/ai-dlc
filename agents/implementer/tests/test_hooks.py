@@ -83,7 +83,7 @@ async def test_validate_finish_report_denies_invalid_payload() -> None:
     # blocked status with no blocked_reason — should fail Pydantic validation
     args = {"summary": "x", "status": "blocked"}
     result = await validate_finish_report(hook_input(args), None, stub_context())
-    output = result["hookSpecificOutput"]
+    output = cast("dict[str, Any]", result["hookSpecificOutput"])
     assert output["permissionDecision"] == "deny"
     assert "validation failed" in output["permissionDecisionReason"].lower()
 
@@ -98,7 +98,7 @@ async def test_validate_finish_report_denies_spec_dump() -> None:
         "status": "done",
     }
     result = await validate_finish_report(hook_input(args), None, stub_context())
-    output = result["hookSpecificOutput"]
+    output = cast("dict[str, Any]", result["hookSpecificOutput"])
     assert output["permissionDecision"] == "deny"
     assert "spec" in output["permissionDecisionReason"].lower()
 
@@ -110,7 +110,7 @@ async def test_validate_finish_report_denies_tasks_md_leak() -> None:
         "status": "done",
     }
     result = await validate_finish_report(hook_input(args), None, stub_context())
-    output = result["hookSpecificOutput"]
+    output = cast("dict[str, Any]", result["hookSpecificOutput"])
     assert output["permissionDecision"] == "deny"
 
 
@@ -148,7 +148,8 @@ async def test_validate_finish_report_allows_design_in_normal_text() -> None:
 async def test_deny_dangerous_bash_blocks_known_patterns(command: str) -> None:
     result = await deny_dangerous_bash(bash_input(command), None, stub_context())
     assert "hookSpecificOutput" in result
-    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    output = cast("dict[str, Any]", result["hookSpecificOutput"])
+    assert output["permissionDecision"] == "deny"
 
 
 @pytest.mark.asyncio
@@ -197,7 +198,8 @@ async def test_deny_dangerous_bash_only_fires_on_bash_tool() -> None:
 async def test_deny_sensitive_writes_blocks_secret_paths(path: str) -> None:
     result = await deny_sensitive_writes(write_input(path), None, stub_context())
     assert "hookSpecificOutput" in result
-    assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+    output = cast("dict[str, Any]", result["hookSpecificOutput"])
+    assert output["permissionDecision"] == "deny"
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,19 @@
+[project]
+name = "comment-classifier"
+version = "0.0.0"
+description = "Comment-classifier Lambda — categorises GitHub PR review comments via Haiku for the production efficiency eval."
+requires-python = ">=3.13,<3.15"
+dependencies = [
+    "aws-lambda-powertools==3.29.0",
+    "boto3==1.43.2",
+    "botocore==1.43.2",
+    "common",
+    "pydantic==2.13.3",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.11"]
+build-backend = "uv_build"

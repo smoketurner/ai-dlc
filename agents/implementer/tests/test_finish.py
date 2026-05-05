@@ -92,7 +92,7 @@ def test_finish_report_extra_fields_forbidden() -> None:
 
 def test_test_result_status_constrained() -> None:
     with pytest.raises(ValidationError):
-        TestResult(name="t", status="error")  # type: ignore[arg-type]
+        TestResult(name="t", status="error")  # ty: ignore[invalid-argument-type]
 
 
 def test_finish_sink_stores_last_report() -> None:

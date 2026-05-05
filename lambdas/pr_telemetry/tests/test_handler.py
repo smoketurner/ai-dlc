@@ -16,6 +16,8 @@ from pr_telemetry.handler import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from mypy_boto3_dynamodb.client import DynamoDBClient
 
 PR_URL = "https://github.com/owner/name/pull/42"
@@ -35,7 +37,7 @@ def lambda_context() -> LambdaContext:
 
 
 @pytest.fixture
-def telemetry_table(monkeypatch: pytest.MonkeyPatch) -> DynamoDBClient:
+def telemetry_table(monkeypatch: pytest.MonkeyPatch) -> Iterator[DynamoDBClient]:
     """Spin up a moto DDB table named in the AIDLC_PR_TELEMETRY_TABLE env."""
     name = "ai-dlc-pr-telemetry"
     monkeypatch.setenv("AIDLC_PR_TELEMETRY_TABLE", name)
@@ -116,10 +118,7 @@ def get_state(client: DynamoDBClient, table: str) -> dict[str, Any]:
 
 
 def test_parse_run_id_finds_marker() -> None:
-    body = (
-        "## summary\n\nDid the work.\n\n---\n"
-        f"_run_id: {RUN_ID}_  ·  _correlation_id: x_"
-    )
+    body = f"## summary\n\nDid the work.\n\n---\n_run_id: {RUN_ID}_  ·  _correlation_id: x_"
     assert parse_run_id(body) == RUN_ID
 
 

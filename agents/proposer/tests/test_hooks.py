@@ -28,7 +28,7 @@ class StubBeforeInvocation:
 
 
 def fire_call(tracker: ProposerCallTracker, name: str) -> None:
-    tracker.track(StubBeforeToolCall(tool_use={"name": name}))  # type: ignore[arg-type]
+    tracker.track(StubBeforeToolCall(tool_use={"name": name}))  # ty: ignore[invalid-argument-type]
 
 
 def make_memory_md_proposal() -> Proposal:
@@ -62,7 +62,7 @@ def test_tracker_records_tool_calls() -> None:
 def test_tracker_resets_on_new_invocation() -> None:
     _, tracker = build_hooks_with_tracker()
     fire_call(tracker, "read_memory_md")
-    tracker.reset(StubBeforeInvocation())  # type: ignore[arg-type]
+    tracker.reset(StubBeforeInvocation())  # ty: ignore[invalid-argument-type]
     assert tracker.called == set()
 
 

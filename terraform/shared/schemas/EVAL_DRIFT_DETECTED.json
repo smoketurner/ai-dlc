@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "EVAL.DRIFT_DETECTED",
+  "description": "Production efficiency drift detected against the 30-day baseline.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "type",
+    "timestamp",
+    "run_id",
+    "correlation_id",
+    "actor_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "enum": ["1.0"] },
+    "event_id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["EVAL.DRIFT_DETECTED"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "causation_id": { "type": ["string", "null"], "format": "uuid" },
+    "actor_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_repo",
+        "agent_owner",
+        "prompt_variant",
+        "detected_at",
+        "rolling_window_score",
+        "baseline_score",
+        "delta_pct",
+        "sample_size",
+        "dominant_category"
+      ],
+      "properties": {
+        "target_repo": { "type": "string", "minLength": 3, "maxLength": 128 },
+        "agent_owner": {
+          "type": "string",
+          "enum": ["architect", "critic", "implementer", "reviewer", "tester", "proposer", "triage"]
+        },
+        "prompt_variant": { "type": "string", "minLength": 1, "maxLength": 8 },
+        "detected_at": { "type": "string", "format": "date-time" },
+        "rolling_window_score": { "type": "number", "minimum": 0.0 },
+        "baseline_score": { "type": "number", "minimum": 0.0 },
+        "delta_pct": { "type": "number", "minimum": 0.0 },
+        "sample_size": { "type": "integer", "minimum": 10 },
+        "dominant_category": {
+          "type": "string",
+          "enum": [
+            "nit", "bug", "design", "missing_test", "security",
+            "performance", "documentation", "convention", "scope", "unclear"
+          ]
+        }
+      }
+    }
+  }
+}
