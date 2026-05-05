@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING
 import boto3
 import httpx
 import jwt
+import structlog
+from botocore.exceptions import ClientError
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
@@ -175,9 +179,11 @@ def app_headers() -> dict[str, str]:
 def user_oauth_token_for_requestor_sub(requestor_sub: str) -> str | None:
     """Fetch the requestor's GitHub OAuth token from the Token Vault.
 
-    Returns ``None`` when the user hasn't authorized the App or the
-    session is otherwise unavailable — the caller falls back to the
-    installation-token path.
+    Returns ``None`` when the user hasn't authorized the App, the session
+    is otherwise unavailable, or the call surfaces an IAM/network failure.
+    User-OBO is best-effort — the caller always has the App installation
+    token to fall back to, so an unexpected error here shouldn't blow up
+    the whole run.
     """
     client = agentcore_client()
     try:
@@ -193,6 +199,13 @@ def user_oauth_token_for_requestor_sub(requestor_sub: str) -> str | None:
             scopes=[],
         )
     except client.exceptions.ResourceNotFoundException:
+        return None
+    except ClientError as exc:
+        logger.warning(
+            "user-OBO failed; falling back to installation token",
+            requestor_sub=requestor_sub,
+            error_code=exc.response.get("Error", {}).get("Code"),
+        )
         return None
     access_token = resource_response.get("accessToken")
     return access_token if access_token else None

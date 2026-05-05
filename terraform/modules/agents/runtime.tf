@@ -175,6 +175,19 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
+  # AgentCore Identity uses Forward-Access Session to read its own
+  # internal credential-vault secret (the user's cached GitHub OAuth
+  # token, keyed by Cognito sub). Without this perm, GetResourceOauth2Token
+  # raises AccessDeniedException at the secretsmanager layer.
+  dynamic "statement" {
+    for_each = contains(each.value.targets, "repo_helper") && var.github_app_secret_name != null ? [1] : []
+    content {
+      sid       = "ReadAgentCoreIdentitySecret"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = ["arn:${local.aws_partition}:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
+    }
+  }
+
   # Implementer-only: read the GitHub App credentials secret so the
   # container can mint installation tokens for in-container git operations.
   dynamic "statement" {
