@@ -181,8 +181,7 @@ def load_comments(*, start: datetime) -> dict[BucketKey, dict[CommentCategory, i
     threads the mapping by re-loading telemetry once and indexing it.
     """
     by_pr: dict[str, BucketKey] = {
-        row.pr_url: bucket_key(row)
-        for row in load_telemetry(start=start, end=datetime.now(tz=UTC))
+        row.pr_url: bucket_key(row) for row in load_telemetry(start=start, end=datetime.now(tz=UTC))
     }
     counts: dict[BucketKey, dict[CommentCategory, int]] = {}
     bucket = artifacts_bucket()

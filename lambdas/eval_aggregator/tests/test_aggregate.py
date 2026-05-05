@@ -146,9 +146,7 @@ def test_aggregate_groups_by_bucket() -> None:
 
 
 def test_drift_detected_below_sample_size() -> None:
-    assert (
-        drift_detected(rolling_score=10.0, baseline_score=5.0, sample_size=5) is False
-    )
+    assert drift_detected(rolling_score=10.0, baseline_score=5.0, sample_size=5) is False
 
 
 def test_drift_detected_below_threshold() -> None:
