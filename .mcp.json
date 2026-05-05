@@ -19,6 +19,15 @@
         "AWS_PROFILE": "aidlc-admin",
         "AWS_REGION": "us-east-1"
       }
+    },
+    "strands-agents": {
+      "command": "uvx",
+      "args": ["strands-agents-mcp-server"],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "INFO"
+      },
+      "disabled": false,
+      "autoApprove": ["search_docs", "fetch_doc"]
     }
   }
 }
