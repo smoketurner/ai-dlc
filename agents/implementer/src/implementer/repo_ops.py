@@ -145,12 +145,21 @@ def run_git(*args: str, cwd: Path | None = None) -> str:
 
 
 def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
-    """Clone the project repo into the container workspace."""
+    """Clone (or reset) the project repo in the container workspace.
+
+    AgentCore Runtime reuses the microVM filesystem across invocations
+    that share a ``runtime_session_id``. On reuse the working tree may
+    carry leftover branches, uncommitted edits, or the wrong HEAD from
+    a prior run, so we always reset back to the configured base branch
+    and update the access token before handing the repo to Claude Code.
+    """
     target = repo_path()
+    url = f"https://x-access-token:{session.access_token}@github.com/{session.target_repo}.git"
     if target.exists():
+        reset_existing_clone(target, url=url, branch=branch)
+        configure_git_author(session)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    url = f"https://x-access-token:{session.access_token}@github.com/{session.target_repo}.git"
     subprocess.run(  # noqa: S603 - args are well-formed
         [GIT_BIN, "clone", "--depth", "1", "--branch", branch, url, str(target)],
         check=True,
@@ -158,6 +167,22 @@ def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
         text=True,
     )
     configure_git_author(session)
+
+
+def reset_existing_clone(target: Path, *, url: str, branch: str) -> None:
+    """Bring a reused workspace back to a clean ``branch`` checkout.
+
+    Refreshes ``origin``'s URL (the access token is freshly minted each
+    invocation), fetches the latest base branch, hard-resets HEAD onto
+    it, and removes any untracked files. Idempotent.
+    """
+    run_git("remote", "set-url", "origin", url, cwd=target)
+    run_git("fetch", "--depth", "1", "origin", branch, cwd=target)
+    # Detach HEAD before resetting so any old task branch can be safely
+    # force-recreated by ``create_branch`` later.
+    run_git("checkout", "--detach", f"origin/{branch}", cwd=target)
+    run_git("reset", "--hard", f"origin/{branch}", cwd=target)
+    run_git("clean", "-fdx", cwd=target)
 
 
 def configure_git_author(session: RepoSession) -> None:
@@ -183,8 +208,12 @@ def task_branch_name(task_id: str, spec_slug: str) -> str:
 
 
 def create_branch(branch: str) -> None:
-    """Create + check out a fresh branch off the current HEAD."""
-    run_git("checkout", "-b", branch)
+    """Create + check out a fresh branch off the current HEAD.
+
+    Uses ``-B`` (capital) so a leftover branch of the same name from a
+    prior session is force-recreated rather than failing with exit 128.
+    """
+    run_git("checkout", "-B", branch)
 
 
 def commit_changes(message: str) -> str:
