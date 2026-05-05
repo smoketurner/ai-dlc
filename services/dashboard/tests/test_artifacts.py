@@ -108,9 +108,7 @@ def test_extract_summary_picks_first_paragraph_after_header() -> None:
 
 def test_parse_critique_md_renders_html_without_raw_html_passthrough() -> None:
     body = (
-        "# Title\n\n"
-        "> Issues: **0** high · **0** medium · **0** low\n\n"
-        "<script>alert(1)</script>\n"
+        "# Title\n\n> Issues: **0** high · **0** medium · **0** low\n\n<script>alert(1)</script>\n"
     )
 
     critique = parse_critique_md(body)

@@ -37,7 +37,9 @@ class TriageRequest(_Frozen):
 
     repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
     issue_number: Annotated[int, Field(ge=1)]
-    issue_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    issue_url: Annotated[
+        str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
+    ]
     title: Annotated[str, Field(min_length=1, max_length=1024)]
     body: Annotated[str, Field(max_length=65_536)] = ""
     labels: list[Annotated[str, Field(min_length=1, max_length=64)]] = []
