@@ -126,7 +126,10 @@ def app_jwt() -> str:
     payload = {
         "iat": int(now) - 60,  # account for clock skew
         "exp": int(now) + JWT_TTL_SECONDS,
-        "iss": creds.app_id,
+        # pyjwt 2.10+ rejects non-string ``iss``; GitHub's spec says App ID
+        # (integer-shaped), but the JWT claim itself must be serialised as
+        # a string.
+        "iss": str(creds.app_id),
     }
     token = jwt.encode(payload, creds.private_key_pem(), algorithm="RS256")
     jwt_cache["jwt"] = (token, now + JWT_TTL_SECONDS - JWT_REFRESH_MARGIN)
