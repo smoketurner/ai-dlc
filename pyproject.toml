@@ -20,6 +20,7 @@ dev = [
     "moto[all]>=5.1",
     "pip-audit>=2.10",
     "boto3-stubs[bedrock-agentcore,cloudwatch,dynamodb,events,lambda,s3,secretsmanager,sns,sqs,stepfunctions]==1.43.2",
+    "httpx==0.28.1",
 ]
 
 [tool.ruff]

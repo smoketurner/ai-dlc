@@ -34,6 +34,7 @@ source = { virtual = "." }
 [package.dev-dependencies]
 dev = [
     { name = "boto3-stubs", extra = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sns", "sqs", "stepfunctions"] },
+    { name = "httpx" },
     { name = "moto", extra = ["all"] },
     { name = "pip-audit" },
     { name = "pytest" },
@@ -48,6 +49,7 @@ dev = [
 [package.metadata.requires-dev]
 dev = [
     { name = "boto3-stubs", extras = ["bedrock-agentcore", "cloudwatch", "dynamodb", "events", "lambda", "s3", "secretsmanager", "sns", "sqs", "stepfunctions"], specifier = "==1.43.2" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "moto", extras = ["all"], specifier = ">=5.1" },
     { name = "pip-audit", specifier = ">=2.10" },
     { name = "pytest", specifier = ">=8.4" },
