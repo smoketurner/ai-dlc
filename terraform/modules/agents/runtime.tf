@@ -175,6 +175,17 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
+  # Implementer-only: read the GitHub App credentials secret so the
+  # container can mint installation tokens for in-container git operations.
+  dynamic "statement" {
+    for_each = each.key == "implementer" && var.github_app_secret_name != null ? [1] : []
+    content {
+      sid       = "ReadGithubAppSecret"
+      actions   = ["secretsmanager:GetSecretValue"]
+      resources = [data.aws_secretsmanager_secret.github_app[0].arn]
+    }
+  }
+
   statement {
     sid = "Logs"
     # AgentCore Runtime creates ``/aws/bedrock-agentcore/runtimes/{id}-{qualifier}``
@@ -252,17 +263,19 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       # ``NoCredentialsError``.
       AWS_REGION = local.aws_region
       AIDLC_ENV  = var.env
-      # Defer to the modern aws-opentelemetry-distro logging handler.
-      # AgentCore injects this set to "true" by default, which activates a
-      # deprecated SDK handler and emits a startup warning about duplicate
-      # logs. Setting it to "false" lets opentelemetry-instrumentation-logging
-      # install its own handler and silences the warning.
-      OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED = "false"
-      AIDLC_ARTIFACTS_BUCKET                           = var.artifacts_bucket
-      AIDLC_MEMORY_MD_BUCKET                           = var.memory_md_bucket
-      AIDLC_MEMORY_ID                                  = aws_bedrockagentcore_memory.this.id
-      AIDLC_AGENT_GATEWAY_URL                          = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
-      AIDLC_BEDROCK_MODEL_ID                           = var.agents[each.key].bedrock_model_id
+      # NOTE: do NOT set ``OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=false``.
+      # AgentCore relies on the bedrock-agentcore SDK's bundled (deprecated)
+      # LoggingHandler to forward structlog/stdlib log output through the
+      # OTEL pipeline into CloudWatch. Disabling it silences the deprecation
+      # warning at startup but also drops every application log line —
+      # ``opentelemetry-instrumentation-logging`` only handles trace
+      # correlation, not log forwarding. Live with the warning until AWS
+      # ships their replacement handler.
+      AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
+      AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
+      AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
+      AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
+      AIDLC_BEDROCK_MODEL_ID  = var.agents[each.key].bedrock_model_id
     },
     contains(var.agents[each.key].targets, "repo_helper") ? {
       AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
@@ -270,6 +283,13 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     contains(var.agents[each.key].targets, "repo_helper") && var.github_app_secret_name != null ? {
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.agent[each.key].name
+    } : {},
+    # Implementer-only: it does git operations directly inside its container
+    # (clone / commit / push), so it needs the App's installation token —
+    # minted from the App private key in Secrets Manager. Other agents
+    # delegate git ops to the repo_helper Lambda and don't need this.
+    each.key == "implementer" && var.github_app_secret_name != null ? {
+      AIDLC_GITHUB_APP_SECRET_ARN = data.aws_secretsmanager_secret.github_app[0].arn
     } : {},
   )
 

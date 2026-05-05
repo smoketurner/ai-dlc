@@ -31,7 +31,7 @@ import boto3
 import httpx
 
 from implementer.agentcore_auth import (
-    installation_token_fallback,
+    installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
 )
 
@@ -103,7 +103,7 @@ def make_session(*, target_repo: str, requestor_sub: str | None) -> RepoSession:
             )
     return RepoSession(
         target_repo=target_repo,
-        access_token=installation_token_fallback(),
+        access_token=installation_token_for_repo(target_repo),
         author_login=BOT_LOGIN_FALLBACK,
         author_email=BOT_EMAIL_FALLBACK,
         on_behalf_of_user=False,

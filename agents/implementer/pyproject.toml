@@ -11,6 +11,7 @@ dependencies = [
     "common",
     "httpx==0.28.1",
     "pydantic==2.13.3",
+    "pyjwt[crypto]==2.12.1",
     "structlog==25.5.0",
 ]
 

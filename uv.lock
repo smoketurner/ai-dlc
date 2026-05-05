@@ -1027,6 +1027,7 @@ dependencies = [
     { name = "common" },
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "structlog" },
 ]
 
@@ -1039,6 +1040,7 @@ requires-dist = [
     { name = "common", editable = "packages/common" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "pydantic", specifier = "==2.13.3" },
+    { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
     { name = "structlog", specifier = "==25.5.0" },
 ]
 
