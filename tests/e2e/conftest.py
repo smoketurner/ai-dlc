@@ -1,8 +1,9 @@
 """Shared fixtures for e2e smoke tests."""
 
 import os
+from collections.abc import Generator
 
-import httpx  # ty: ignore[unresolved-import]  # added in T-003
+import httpx
 import pytest
 
 
@@ -25,7 +26,7 @@ def auth_headers(base_url: str) -> dict[str, str]:
 
 
 @pytest.fixture(scope="session")
-def http_client(base_url: str, auth_headers: dict[str, str]) -> httpx.Client:
+def http_client(base_url: str, auth_headers: dict[str, str]) -> Generator[httpx.Client]:
     """Synchronous httpx client pre-configured with base URL and auth headers."""
     with httpx.Client(base_url=base_url, headers=auth_headers, timeout=30.0) as client:
         yield client
