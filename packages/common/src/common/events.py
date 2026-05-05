@@ -35,6 +35,8 @@ from common.ids import CorrelationId, EventId, RunId, new_event_id
 
 EventType = Literal[
     "REQUEST.RECEIVED",
+    "ISSUE.TRIAGED",
+    "ISSUE.ASK_POSTED",
     "SPEC.READY",
     "SPEC.APPROVED",
     "SPEC.REJECTED",
@@ -96,6 +98,44 @@ class RequestReceived(Payload):
         ]
         | None
     ) = None
+
+
+class IssueTriaged(Payload):
+    """The Triage agent has classified a tagged GitHub issue.
+
+    Step Functions branches on :attr:`action` (and :attr:`workflow_kind`
+    when ``action == "proceed"``). The full :class:`common.triage.TriageDecision`
+    object is stored at :attr:`decision_s3_key`; the dashboard renders
+    the decision history per repo.
+    """
+
+    project_slug: str
+    target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
+    issue_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    issue_number: Annotated[int, Field(ge=1)]
+    action: Literal["proceed", "ask", "defer", "decline"]
+    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] | None = None
+    decision_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
+    rationale: Annotated[str, Field(min_length=1, max_length=2048)]
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0
+    session_id: str
+
+
+class IssueAskPosted(Payload):
+    """The Triage agent posted a clarifying question on an issue.
+
+    Emitted alongside ISSUE.TRIAGED when ``action == "ask"``. Provides
+    the comment URL (for the dashboard) and the count of questions
+    (for metrics on triage thrash).
+    """
+
+    project_slug: str
+    target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
+    issue_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    issue_number: Annotated[int, Field(ge=1)]
+    comment_url: Annotated[str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")]
+    question_count: Annotated[int, Field(ge=1, le=8)]
+    session_id: str
 
 
 class SpecReady(Payload):
@@ -252,6 +292,8 @@ class RunFailed(Payload):
 
 type AnyPayload = (
     RequestReceived
+    | IssueTriaged
+    | IssueAskPosted
     | SpecReady
     | SpecApproved
     | SpecRejected

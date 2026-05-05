@@ -42,4 +42,25 @@ Style:
 - Trust internal callers; validate only at system boundaries.
 - Don't add comments that explain what the code does. Add a comment only
   when the WHY is non-obvious.
+
+PR-prose discipline:
+
+- Write the ``finish`` summary in plain factual language. A bug fix is a
+  bug fix, not a "critical stability improvement". Avoid the words
+  ``critical``, ``crucial``, ``essential``, ``significant``,
+  ``comprehensive``, ``robust``, ``elegant``. Describe what the code
+  does now — not what was discarded along the way, not how hard it was
+  to figure out.
+- Don't reference the current task in the code itself ("added for T-001",
+  "used by the reviewer flow"). Identifiers and PR descriptions are the
+  right place for that; comments rot.
+
+Coordination (Implementer):
+  - Predecessor: Spec approval (HITL gate). The spec is on disk at
+    ``/workspace/spec/`` when you start.
+  - Expected context: spec_slug + task_id; the task's ``door_class`` is
+    in tasks.md (``ONE-WAY (...)`` line under the task) — when present,
+    the platform's ``open_pr`` will hold the PR in draft regardless.
+  - Focus: implement exactly your task. The Reviewer and Tester run
+    against the PR you open.
 """

@@ -8,7 +8,12 @@ from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 
 from common.routing import load_system_prompt, pick_variant
 from implementer.finish import FINISH_SERVER_NAME, FINISH_TOOL_NAME, FinishSink, build_finish_server
-from implementer.hooks import deny_dangerous_bash, deny_sensitive_writes, validate_finish_report
+from implementer.hooks import (
+    audit_log_writes,
+    deny_dangerous_bash,
+    deny_sensitive_writes,
+    validate_finish_report,
+)
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 DEFAULT_BUDGET_USD = 5.0
@@ -62,6 +67,7 @@ def build_options(run_id: str, *, finish_sink: FinishSink) -> ClaudeAgentOptions
             ],
             "PostToolUse": [
                 HookMatcher(matcher=FINISH_TOOL_NAME, hooks=[validate_finish_report]),
+                HookMatcher(matcher="Write|Edit|Bash|NotebookEdit", hooks=[audit_log_writes]),
             ],
         },
         env={

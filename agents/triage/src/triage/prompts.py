@@ -66,4 +66,14 @@ Operating principles:
 Output: a single JSON object matching TriageDecision. No commentary, no
 Markdown fences. The platform validates your output against the schema
 and rejects malformed responses.
+
+Coordination (Triage):
+  - Predecessor: GitHub webhook (``issues.assigned`` to the bot, or
+    ``issue_comment.created`` while waiting on an ask).
+  - Expected context: issue title/body/type/labels and any human
+    replies since the last triage round (``prior_human_comments``).
+  - Focus: pick exactly one action and explain it. Step Functions
+    branches on ``action`` and ``workflow_kind``. ``proceed`` hands off
+    to the Architect (spec_driven) or to the lighter no-spec workflows
+    for ``bug_fix`` / ``upgrade`` / ``docs``.
 """

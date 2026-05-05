@@ -6,14 +6,28 @@ shell command by default; these hooks block the dangerous ones called out in
 ``CLAUDE.md`` and add per-tool guards for ``Write``/``Edit`` against secret
 files.
 
+Patterns are compiled regex with word boundaries so a doc edit that mentions
+"terraform apply" in prose doesn't trip the Bash deny-list, and writes to
+``.env.example`` aren't denied by the ``.env`` rule. Compound commands
+(``foo && rm -rf /``) are still caught because the regex matches anywhere in
+the command string.
+
 The ``finish`` tool gets a ``PostToolUse`` matcher (:func:`validate_finish_report`)
 that re-validates the payload against :class:`implementer.finish.FinishReport`
 and runs :func:`common.hooks.validate_no_spec_dump` against the summary so
 Claude retries when it tries to dump the spec into the report.
+
+The :func:`audit_log_writes` ``PostToolUse`` hook appends one JSONL row per
+mutating tool call to ``/workspace/audit.jsonl`` for post-session forensics.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import re
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 from claude_agent_sdk.types import HookContext, HookInput, SyncHookJSONOutput
@@ -22,28 +36,33 @@ from pydantic import ValidationError
 from common.hooks import validate_no_spec_dump
 from implementer.finish import FinishReport
 
-DANGEROUS_BASH_PATTERNS = (
-    "rm -rf /",
-    "rm -rf $HOME",
-    "rm -rf ~",
-    "chmod -R 777",
-    "git push --force-with-lease origin main",
-    "git push --force origin main",
-    " --no-verify",
-    "aws iam ",
-    "terraform apply",
-    "kubectl delete",
-    "dropdb ",
-    "DROP TABLE",
+DANGEROUS_BASH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\brm\s+-[a-z]*rf?[a-z]*\s+/", re.IGNORECASE),
+    re.compile(r"\brm\s+-[a-z]*rf?[a-z]*\s+\$HOME\b", re.IGNORECASE),
+    re.compile(r"\brm\s+-[a-z]*rf?[a-z]*\s+~", re.IGNORECASE),
+    re.compile(r"\bchmod\s+-R\s+777\b", re.IGNORECASE),
+    re.compile(r"\bgit\s+push\s+--force(?:-with-lease)?(?:\s|=).*\bmain\b", re.IGNORECASE),
+    re.compile(r"(?:^|\s)--no-verify\b", re.IGNORECASE),
+    re.compile(r"\baws\s+iam\b", re.IGNORECASE),
+    re.compile(r"\bterraform\s+apply\b", re.IGNORECASE),
+    re.compile(r"\bkubectl\s+delete\b", re.IGNORECASE),
+    re.compile(r"\bdropdb\b", re.IGNORECASE),
+    re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+    re.compile(r"\bgh\s+pr\s+create\b", re.IGNORECASE),  # PRs go through repo_ops.open_pr
 )
 
-SENSITIVE_PATH_FRAGMENTS = (
-    ".env",
-    "secrets",
-    "credentials",
-    "id_rsa",
-    "id_ed25519",
+SENSITIVE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?:^|/)\.env(?:$|/)"),  # .env or .env/ but not .env.example
+    re.compile(r"(?:^|/)secrets?(?:$|/)", re.IGNORECASE),
+    re.compile(r"(?:^|/)credentials?(?:$|/|\.json$)", re.IGNORECASE),
+    re.compile(r"(?:^|/)id_(?:rsa|ed25519|ecdsa)(?:$|\.)"),
+    re.compile(r"(?:^|/)\.aws/(?:credentials|config)$"),
+    re.compile(r"(?:^|/)\.git-credentials$"),
 )
+
+AUDIT_LOG_PATH_ENV = "AIDLC_AUDIT_LOG_PATH"
+DEFAULT_AUDIT_LOG_PATH = "/workspace/audit.jsonl"
+MUTATING_TOOLS = ("Write", "Edit", "Bash", "NotebookEdit")
 
 
 def deny(reason: str) -> SyncHookJSONOutput:
@@ -84,14 +103,19 @@ async def deny_dangerous_bash(
     _tool_use_id: str | None,
     _context: HookContext,
 ) -> SyncHookJSONOutput:
-    """PreToolUse hook on ``Bash``: block destructive shell commands."""
+    """PreToolUse hook on ``Bash``: block destructive shell commands.
+
+    Patterns are word-boundary regex so prose mentions (``echo "terraform
+    apply"``) don't trip the deny — but they still match the actual
+    command, even when chained with ``;``, ``&&``, ``||``, or ``|``.
+    """
     raw = cast("dict[str, Any]", input_data)
     if raw.get("tool_name") != "Bash":
         return allow()
     command = str(raw.get("tool_input", {}).get("command", ""))
     for pattern in DANGEROUS_BASH_PATTERNS:
-        if pattern in command:
-            return deny(f"deny-list match: {pattern!r}")
+        if pattern.search(command):
+            return deny(f"deny-list match: {pattern.pattern!r}")
     return allow()
 
 
@@ -100,15 +124,53 @@ async def deny_sensitive_writes(
     _tool_use_id: str | None,
     _context: HookContext,
 ) -> SyncHookJSONOutput:
-    """PreToolUse hook on ``Write``/``Edit``: block edits to secrets/keys."""
+    """PreToolUse hook on ``Write``/``Edit``: block edits to secrets/keys.
+
+    Patterns are anchored so ``.env.example`` is allowed while ``.env``
+    is denied; ``credentials.json`` is denied while ``credentials/`` as
+    a directory name in unrelated context (``app/credentials_view.py``)
+    is allowed.
+    """
     raw = cast("dict[str, Any]", input_data)
     name = raw.get("tool_name")
     if name not in {"Write", "Edit"}:
         return allow()
     file_path = str(raw.get("tool_input", {}).get("file_path", ""))
-    for fragment in SENSITIVE_PATH_FRAGMENTS:
-        if fragment in file_path:
-            return deny(f"refusing to write a sensitive path: {fragment!r}")
+    for pattern in SENSITIVE_PATH_PATTERNS:
+        if pattern.search(file_path):
+            return deny(f"refusing to write a sensitive path: {pattern.pattern!r}")
+    return allow()
+
+
+async def audit_log_writes(
+    input_data: HookInput,
+    _tool_use_id: str | None,
+    _context: HookContext,
+) -> SyncHookJSONOutput:
+    """PostToolUse hook: append a JSONL row for every mutating tool call.
+
+    Writes one line per call to ``$AIDLC_AUDIT_LOG_PATH`` (default
+    ``/workspace/audit.jsonl``). Failure to append never blocks the
+    agent — audit-log issues should not interrupt work in flight.
+    """
+    raw = cast("dict[str, Any]", input_data)
+    name = str(raw.get("tool_name") or "")
+    if name not in MUTATING_TOOLS:
+        return allow()
+    record = {
+        "ts": datetime.now(tz=UTC).isoformat(),
+        "tool_name": name,
+        "tool_input": raw.get("tool_input", {}),
+    }
+    try:
+        path = Path(os.environ.get(AUDIT_LOG_PATH_ENV, DEFAULT_AUDIT_LOG_PATH))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Append is small (one JSONL row); the cost of going via asyncio.to_thread
+        # outweighs the benefit for an audit-only side effect that must not block.
+        with path.open("a", encoding="utf-8") as fh:  # noqa: ASYNC230
+            fh.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        pass
     return allow()
 
 

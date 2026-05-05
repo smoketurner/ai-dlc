@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from common.events import (
     CritiqueReady,
     EventEnvelope,
+    IssueAskPosted,
+    IssueTriaged,
     RequestReceived,
     ReviewReady,
     RunCompleted,
@@ -170,6 +172,95 @@ def test_test_report_ready_round_trip() -> None:
     parsed = EventEnvelope[TestReportReady].model_validate_json(env.model_dump_json())
     assert parsed.payload.gap_count == 2
     assert parsed.payload.suggested_test_count == 4
+
+
+def test_issue_triaged_proceed_validates() -> None:
+    payload = IssueTriaged(
+        project_slug="demo",
+        target_repo="owner/name",
+        issue_url="https://github.com/owner/name/issues/42",
+        issue_number=42,
+        action="proceed",
+        workflow_kind="spec_driven",
+        decision_s3_key="runs/r1/triage.json",
+        rationale="Issue has clear acceptance criteria; routing to spec_driven.",
+        confidence=0.92,
+        session_id="r1-triage",
+    )
+    env = EventEnvelope[IssueTriaged](
+        type="ISSUE.TRIAGED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="triage",
+        payload=payload,
+    )
+    parsed = EventEnvelope[IssueTriaged].model_validate_json(env.model_dump_json())
+    assert parsed.payload.action == "proceed"
+    assert parsed.payload.workflow_kind == "spec_driven"
+
+
+def test_issue_triaged_decline_no_workflow_kind() -> None:
+    payload = IssueTriaged(
+        project_slug="demo",
+        target_repo="owner/name",
+        issue_url="https://github.com/owner/name/issues/9",
+        issue_number=9,
+        action="decline",
+        decision_s3_key="runs/r2/triage.json",
+        rationale="Duplicate of #1.",
+        session_id="r2-triage",
+    )
+    assert payload.workflow_kind is None
+
+
+def test_issue_triaged_rejects_invalid_action() -> None:
+    with pytest.raises(ValidationError):
+        IssueTriaged.model_validate(
+            {
+                "project_slug": "x",
+                "target_repo": "owner/name",
+                "issue_url": "https://github.com/owner/name/issues/1",
+                "issue_number": 1,
+                "action": "yolo",
+                "decision_s3_key": "runs/r/triage.json",
+                "rationale": "x",
+                "session_id": "x",
+            },
+        )
+
+
+def test_issue_ask_posted_validates() -> None:
+    payload = IssueAskPosted(
+        project_slug="demo",
+        target_repo="owner/name",
+        issue_url="https://github.com/owner/name/issues/42",
+        issue_number=42,
+        comment_url="https://github.com/owner/name/issues/42#issuecomment-1",
+        question_count=2,
+        session_id="r1-triage",
+    )
+    env = EventEnvelope[IssueAskPosted](
+        type="ISSUE.ASK_POSTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="triage",
+        payload=payload,
+    )
+    parsed = EventEnvelope[IssueAskPosted].model_validate_json(env.model_dump_json())
+    assert parsed.payload.question_count == 2
+
+
+def test_issue_ask_posted_rejects_zero_questions() -> None:
+    with pytest.raises(ValidationError):
+        IssueAskPosted(
+            project_slug="x",
+            target_repo="owner/name",
+            issue_url="https://github.com/owner/name/issues/1",
+            issue_number=1,
+            comment_url="https://github.com/owner/name/issues/1#issuecomment-1",
+            question_count=0,
+            session_id="x",
+        )
 
 
 def test_negative_severity_rejected() -> None:

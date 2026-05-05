@@ -371,16 +371,16 @@ Six landings, each independently shippable:
 - [x] `agents/architect/src/architect/spec.py` — `Task` gains `door: DoorAssessment` (default `two_way`) and `depends_on: list[str]`; `render_tasks` surfaces ONE-WAY door class and dependencies.
 - [x] 50 new unit tests (22 door / 11 triage / 12 eval / 5 architect); ruff and ty clean; full suite green.
 
-### 12b — Triage agent + ASL branching + issue-comment HITL 🟡
+### 12b — Triage agent + ASL branching + issue-comment HITL 🟡 (code-side complete; Terraform + ASL + dispatcher rewire deferred to live-AWS apply)
 
-- [x] `agents/triage/` skeleton — `pyproject.toml` (workspace member), `src/triage/{__init__.py, agent.py, prompts.py, decision.py}`. Strands + Haiku 4.5; `Agent.structured_output(TriageDecision, …)`. `compose_message(payload)` builds the user prompt from a `TriageInput`. `decision.py` re-exports `TriageDecision` from `common.triage` for a stable agent-scoped import path. **5 unit tests** in `tests/test_agent.py` covering message composition variants and the structured-output wiring with a mocked agent.
+- [x] `agents/triage/` skeleton — `pyproject.toml` (workspace member), `src/triage/{__init__.py, agent.py, prompts.py, decision.py}`. Strands + Haiku 4.5; `Agent.structured_output(TriageDecision, …)`. `compose_message(payload)` builds the user prompt from a `TriageInput`. `decision.py` re-exports `TriageDecision` from `common.triage` for a stable agent-scoped import path. **5 unit tests**.
 - [x] `packages/common/src/common/runtime.py` — `TriageInput` (issue context: url, number, title, body, type, labels, prior triage rounds, prior human comments) and `TriageResult` (flattened `action` + `workflow_kind` + `decision_s3_key` for Step Functions Choice branching).
-- [ ] `agents/triage/{app.py, Dockerfile}` — BedrockAgentCoreApp HTTP shell + container build. (Next 12b slice.)
-- [ ] GitHub webhook subscriptions: `issues.assigned` (trigger) and `issue_comment.created` on issues (resume the *ask* path).
-- [ ] `lambdas/triage_dispatcher/` — replace the existing Bedrock-Converse classifier with a thin shim that invokes the triage runtime; one component, one responsibility.
-- [ ] Terraform: register `triage` in `var.agents`; add ECR repo + CI matrix entry; wire runtime resource.
-- [ ] ASL: new `Triage` state at the top; `Choice` on `decision.action` + `decision.workflow_kind`; new ItemProcessors for `bug_fix`, `upgrade`, `docs` workflows. The *ask* branch uses `.waitForTaskToken` resolved by the issue-comment webhook.
-- [ ] Two new event types: `ISSUE.TRIAGED`, `ISSUE.ASK_POSTED`. Schemas in `terraform/shared/schemas/`.
+- [x] `agents/triage/{app.py, Dockerfile}` — `BedrockAgentCoreApp` entrypoint validates `TriageInput`, calls `triage_issue`, uploads the decision JSON to `s3://{artifacts_bucket}/runs/{run_id}/triage.json`, returns `TriageResult`. Multi-stage uv ARM64 Dockerfile mirrors the Critic pattern.
+- [x] Two new event types: `ISSUE.TRIAGED`, `ISSUE.ASK_POSTED` in `common/events.py` + JSON schemas under `terraform/shared/schemas/`. **5 new event tests**.
+- [ ] GitHub webhook subscriptions: `issues.assigned` (trigger) and `issue_comment.created` on issues (resume the *ask* path). Existing `triage_dispatcher` Lambda already accepts webhooks; needs to expand its trigger filter and rewire its classifier.
+- [ ] `lambdas/triage_dispatcher/` — replace the existing Bedrock-Converse classifier with a thin shim that invokes the triage runtime; one component, one responsibility. Defers because the runtime ARN is set by Terraform.
+- [ ] Terraform: register `triage` in `var.agents`; add ECR repo + CI matrix entry; wire runtime resource and gateway target ACL. **Live-AWS apply gate.**
+- [ ] ASL: new `Triage` state at the top; `Choice` on `decision.action` + `decision.workflow_kind`; new ItemProcessors for `bug_fix`, `upgrade`, `docs` workflows. The *ask* branch uses `.waitForTaskToken` resolved by the issue-comment webhook. **Live-AWS apply gate.**
 - [ ] First pass ships `bug_fix` / `upgrade` / `docs` as no-spec variants of the existing pipeline; richer per-phase agent ensembles can come later.
 
 ### 12c — One-way door enforcement ✅ (12 unit tests; ready_for_review webhook moves to 12d)
@@ -392,35 +392,37 @@ Six landings, each independently shippable:
 - [x] Reviewer persona (`agents/reviewer/src/reviewer/prompts.py`): "Door re-audit" added to the failure-mode hunt list — same 10 categories, focused on the content-only check the path classifier can't perform.
 - [ ] Webhook: subscribe to `pull_request.ready_for_review`; record `marked_ready_at` + `marked_ready_by` in `PRTelemetry`. (Moved to 12d alongside the rest of the PR webhook subscriptions.)
 
-### 12d — Production efficiency eval ⬜
+### 12d — Production efficiency eval 🟡 (telemetry capture landed; classifier + aggregator + proposer rewire pending)
 
 Phase 9b detects regressions on the synthetic eval-set (10 cases, nightly). Phase 12d adds a complementary signal: real PR comments on real merged PRs. Same proposer, different signal source.
 
-- [ ] `lambdas/pr_telemetry/` — webhook handler for `pull_request`, `pull_request_review`, `pull_request_review_comment`, and `issue_comment` on PRs. Writes `PRTelemetry` rows to a new DDB table keyed by `(pr_url, observed_at)`.
+- [x] `lambdas/pr_telemetry/` — webhook handler for `pull_request` (opened, closed, ready_for_review), `pull_request_review` (submitted), `pull_request_review_comment` (created), and `issue_comment` on PRs (created). Recognises platform PRs by the `_run_id: <uuid>_` marker the Implementer writes in the PR body footer; ignores third-party PRs in the same repo. Increments per-PR counters atomically (`requested_changes_count`, `review_count`, `comment_count_human`, `comment_count_bot`); records `marked_ready_at`/`marked_ready_by` on `ready_for_review`; flips `merged` + records `merged_at`/`closed_at` on close. **11 unit tests** under moto-backed DDB.
 - [ ] `lambdas/comment_classifier/` — Haiku-driven categorisation of each review comment into the 10 `CommentCategory` values; structured output validated as `ClassifiedComment`.
 - [ ] `lambdas/eval_aggregator/` (or scheduled service) — rolls telemetry + classified comments into `EfficiencyMetrics` per `(repo, agent, prompt_variant)`; emits `DriftSignal` per the C4 thresholds (≥20% delta, ≥10 PRs).
 - [ ] Proposer: subscribes to `EVAL.DRIFT_DETECTED` (in addition to its existing eval-regression alerts); reads recent low-efficiency PRs + comment categories; opens PRs against `docs/MEMORY.md` or agent prompts (existing `Proposal` validator already restricts target files).
 - [ ] Dashboard: per-bucket "efficiency over time" view (extends the existing run-detail / metrics surface).
 - [ ] ONE-WAY PRs excluded from `merge_as_is_rate`; reported separately as `one_way_merge_rate`. Comments on them still feed drift detection (an Architect that keeps misclassifying door class shows up as recurring `design` comments).
+- [ ] Terraform: new DDB telemetry table; new Lambda module (or extension to `improvement`) for the three Lambdas; webhook subscription on the dashboard ALB → pr_telemetry. **Live-AWS apply gate.**
 
-### 12e — Persona refinements ⬜
+### 12e — Persona refinements 🟡 (taxonomy rename to `critical/important/suggestion/nitpick` deferred — see note)
 
 Per the comparison with `bug-ops/claude-plugins/rust-code` agent personas (lifted generically — none of the Rust-specific bits).
 
-- [ ] Critic: 8-dimension framework (assumption audit, counterexample hunt, scalability stress, failure-mode analysis, alternative hypotheses, completeness check, dependency risk, second-order effects). Severity rule: *a finding that does not threaten the task goal cannot be `critical`*.
-- [ ] Reviewer + Tester output: severity taxonomy `critical / important / suggestion / nitpick`, with `nitpick` explicitly non-blocking. Dashboard auto-collapses non-blocking severities.
-- [ ] All agents: coordination-footer table in their system prompt (typical predecessors, expected context, focus).
-- [ ] `packages/common/src/common/personas/` — shared persona snippets composed by each agent's `prompts.py` (git etiquette, severity definitions, `MEMORY.md` discipline, PR-prose vocabulary ban).
+- [x] Critic 8-dimension framework — operating principle #7 in `agents/critic/src/critic/prompts.py`: assumption audit, counterexample hunt, scalability stress, failure-mode analysis, alternative hypotheses, completeness check, dependency risk, second-order effects. Plus principle #8 (severity rule): *a finding that does not threaten the task goal cannot be `high`*.
+- [x] Reviewer + Tester severity discipline — operating principle #8 added to both prompts. The wire-format taxonomy stays `high / medium / low` (changing the Pydantic literal would cascade into `CriticResult`, `ReviewerResult`, `TesterResult`, `CritiqueReady`, `ReviewReady`, `TestReportReady`, JSON schemas, dashboard counters). The behavioural intent — `low` is suggestions/nits, the human reviewer can ignore — is enforced via the prompt update; full rename to `critical/important/suggestion/nitpick` is parked as its own contract-migration slice.
+- [x] Coordination footer on all seven agent prompts (Architect, Critic, Implementer, Proposer, Reviewer, Tester, Triage) — predecessor / expected context / focus.
+- [x] `packages/common/src/common/personas/` — shared persona snippets (`DOOR_TAXONOMY`, `MEMORY_MD_DISCIPLINE`, `PR_PROSE_VOCABULARY_BAN`, `coordination_footer`). **5 unit tests**.
 
-### 12f — Security & supply-chain hardening ⬜
+### 12f — Security & supply-chain hardening 🟡 (UserPromptSubmit MEMORY.md pre-injection deferred)
 
-Lifted from Trail of Bits' `claude-code-config` patterns where they apply. Mostly orthogonal to the autonomous flow but worth landing in the same arc.
+Lifted from Trail of Bits' `claude-code-config` patterns where they apply.
 
-- [ ] Operator's `~/.claude/settings.json`: read-block `~/.aws/**`, `~/.git-credentials`, `~/.docker/config.json`, `~/.kube/**`; PreToolUse compound-command regex for `rm -rf` and `git push --force` (with proper handling of `;`, `&&`, `||`, `|`); `enableAllProjectMcpServers: false`.
-- [ ] `pyproject.toml`: pin transitive deps to `==`; document `--require-hashes` install path; verify `pip-audit` is in CI.
-- [ ] PR-prose vocabulary ban (`avoid: critical, crucial, essential, significant, comprehensive, robust, elegant`) added to Implementer prompt and Proposer prompt.
-- [ ] Implementer hooks (`hooks.py`): tighten the deny-list with word-boundary regex (current bare-substring patterns risk false positives); add a UserPromptSubmit-equivalent that pre-injects `MEMORY.md` so reading it is non-optional.
-- [ ] Audit-log PostToolUse hook (analog of `hooks/log-gam.sh`): JSONL append of mutating operations for post-session forensics.
+- [x] Operator's `~/.claude/settings.json` template provided at `docs/operator/claude-settings.json` + `docs/operator/README.md`: read-block `~/.aws/**`, `~/.git-credentials`, `~/.docker/config.json`, `~/.kube/**`, `~/.ssh/**`, `~/.gnupg/**`; PreToolUse compound-command regex for `rm -rf` and `git push origin (main|master)` (with proper handling of `;`, `&&`, `||`, `|`); `enableAllProjectMcpServers: false`. Operator merges by hand into their existing settings.
+- [x] PR-prose vocabulary ban added to Implementer prompt and Proposer prompt — banned words: `critical`, `crucial`, `essential`, `significant`, `comprehensive`, `robust`, `elegant`.
+- [x] Implementer hooks tightened (`agents/implementer/src/implementer/hooks.py`): bare-substring deny-list replaced with compiled regex with word boundaries — `\bterraform\s+apply\b` no longer denies a write to a doc that happens to contain the path-string `terraform/apply.tf`; `.env.example` is now writable while `.env` is denied. New entry: `gh pr create` is denied (PRs always go through `repo_ops.open_pr` so the path-classifier safety net runs).
+- [x] Audit-log PostToolUse hook — `audit_log_writes` appends one JSONL row per mutating tool call (`Write`, `Edit`, `Bash`, `NotebookEdit`) to `$AIDLC_AUDIT_LOG_PATH` (default `/workspace/audit.jsonl`). Audit-log failures never block the agent. **33 new unit tests** covering parameterised positive / negative cases for every deny pattern + audit-log lifecycle.
+- [ ] `pyproject.toml`: verify all transitive deps pinned to `==`; document `uv pip install --require-hashes` install path. (`pip-audit` already runs in CI per Phase 0.)
+- [ ] Implementer `UserPromptSubmit` analog that pre-injects `MEMORY.md` so reading it is non-optional. (Deferred — needs Claude Agent SDK `UserPromptSubmit` support landing or a workaround via a tool-call gate.)
 
 **Out of scope (Phase 12+):**
 - Stacked PRs (PRs in a sequence opening simultaneously with `depends on #X` markers). Sequential merging is the v1 default.

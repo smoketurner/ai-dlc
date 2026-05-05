@@ -1,0 +1,40 @@
+{
+  "//": "Operator-side hardening for ~/.claude/settings.json. Apply selectively — these layer on top of any existing settings; merge by hand rather than replacing the file wholesale.",
+  "//": "Adapted from https://github.com/trailofbits/claude-code-config — specifically the Bash compound-command guards and the credential read-deny set. Tailored to the ai-dlc operator profile (AWS-heavy, GitHub PRs).",
+
+  "enableAllProjectMcpServers": false,
+
+  "permissions": {
+    "deny": [
+      "Read(~/.aws/**)",
+      "Read(~/.git-credentials)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/**)",
+      "Read(~/.ssh/**)",
+      "Read(~/.gnupg/**)",
+      "Bash(curl http://*)",
+      "Bash(curl https://*|sh)",
+      "Bash(wget http://*)",
+      "Bash(wget https://*|sh)"
+    ]
+  },
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CMD=$(jq -r '.tool_input.command'); if echo \"$CMD\" | grep -qiE '(^|;[[:space:]]*|&&[[:space:]]*|[|][|][[:space:]]*|[|][[:space:]]*)rm[[:space:]]' && echo \"$CMD\" | grep -qiE '(^|[[:space:]])-[a-zA-Z]*[rR]|--recursive' && echo \"$CMD\" | grep -qiE '(^|[[:space:]])-[a-zA-Z]*[fF]|--force'; then echo 'BLOCKED: use trash instead of rm -rf' >&2; exit 2; fi"
+          },
+          {
+            "type": "command",
+            "command": "CMD=$(jq -r '.tool_input.command'); if echo \"$CMD\" | grep -qE 'git[[:space:]]+push.*(main|master)'; then echo 'BLOCKED: use feature branches, not direct push to main' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

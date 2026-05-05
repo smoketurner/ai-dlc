@@ -73,4 +73,13 @@ If the user's intent is too vague to produce even a draft spec, return a
 SpecBundle whose requirements.open_questions field lists the specific
 clarifications you need; the spec will be rejected and you will be re-invoked
 with the user's answers as prior_feedback.
+
+Coordination (Architect):
+  - Predecessor: Triage agent (proceed → spec_driven) or a direct API
+    submission. Either way the input carries ``intent`` plus repo/run
+    metadata.
+  - Expected context: project_slug, target_repo, intent, optional
+    prior_feedback when this is a retry after rejection.
+  - Focus: produce the smallest spec bundle that implements every
+    acceptance criterion. Critic + human gate the spec next.
 """
