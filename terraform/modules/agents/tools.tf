@@ -39,7 +39,7 @@ module "tool_lambda" {
     var.github_app_secret_name == null ? {} : {
       AIDLC_GITHUB_APP_SECRET_ARN      = data.aws_secretsmanager_secret.github_app[0].arn
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
-      AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.repo_helper[0].name
+      AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.platform[0].name
     },
     ) : {
     AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket

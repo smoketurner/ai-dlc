@@ -112,9 +112,14 @@ output "agentcore_memory_id" {
   value       = module.agents.memory_id
 }
 
-output "agent_workload_identity_arns" {
-  description = "Map of agent name → workload identity ARN."
-  value       = module.agents.workload_identity_arns
+output "platform_workload_arn" {
+  description = "Shared AgentCore workload identity ARN used by dashboard, agents, and repo_helper."
+  value       = module.agents.platform_workload_arn
+}
+
+output "platform_workload_name" {
+  description = "Shared AgentCore workload identity name."
+  value       = module.agents.platform_workload_name
 }
 
 output "agent_gateway_urls" {

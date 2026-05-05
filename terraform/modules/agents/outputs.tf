@@ -8,12 +8,22 @@ output "memory_arn" {
   value       = aws_bedrockagentcore_memory.this.arn
 }
 
-output "workload_identity_arns" {
-  description = "Map of agent name → workload identity ARN."
-  value = {
-    for k, v in aws_bedrockagentcore_workload_identity.agent :
-    k => v.workload_identity_arn
-  }
+output "platform_workload_name" {
+  description = "Shared AgentCore workload identity name. Empty when github_app_secret_name isn't configured."
+  value = (
+    length(aws_bedrockagentcore_workload_identity.platform) > 0
+    ? aws_bedrockagentcore_workload_identity.platform[0].name
+    : ""
+  )
+}
+
+output "platform_workload_arn" {
+  description = "Shared AgentCore workload identity ARN."
+  value = (
+    length(aws_bedrockagentcore_workload_identity.platform) > 0
+    ? aws_bedrockagentcore_workload_identity.platform[0].workload_identity_arn
+    : ""
+  )
 }
 
 output "gateway_urls" {
@@ -76,10 +86,10 @@ output "github_app_secret_arn" {
 }
 
 output "dashboard_workload_name" {
-  description = "AgentCore workload identity name for the dashboard's /auth/github flow. Empty when github_app_secret_name isn't configured."
+  description = "Backward-compatible alias for ``platform_workload_name`` — the dashboard, agents, and repo_helper all share one workload identity now."
   value = (
-    length(aws_bedrockagentcore_workload_identity.dashboard) > 0
-    ? aws_bedrockagentcore_workload_identity.dashboard[0].name
+    length(aws_bedrockagentcore_workload_identity.platform) > 0
+    ? aws_bedrockagentcore_workload_identity.platform[0].name
     : ""
   )
 }

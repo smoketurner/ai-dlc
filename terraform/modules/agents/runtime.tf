@@ -329,7 +329,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     } : {},
     contains(var.agents[each.key].targets, "repo_helper") && var.github_app_secret_name != null ? {
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
-      AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.agent[each.key].name
+      AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.platform[0].name
     } : {},
     # Implementer-only: it does git operations directly inside its container
     # (clone / commit / push), so it needs the App's installation token —
