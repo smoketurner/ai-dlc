@@ -220,6 +220,7 @@
               "task_id": "{% $states.input.task_id %}",
               "requestor_sub": "{% $states.input.requestor_sub %}",
               "target_repo": "{% $states.input.target_repo %}",
+              "eval_mode": "{% $states.input.eval_mode %}",
               "result": "{% $states.result %}"
             },
             "Next": "InvokeReviewer"
@@ -258,6 +259,7 @@
               "spec_s3_prefix": "{% $states.input.spec_s3_prefix %}",
               "task_id": "{% $states.input.task_id %}",
               "requestor_sub": "{% $states.input.requestor_sub %}",
+              "eval_mode": "{% $states.input.eval_mode %}",
               "result": "{% $states.input.result %}",
               "review": "{% $states.result %}"
             },
@@ -295,6 +297,7 @@
               "project_slug": "{% $states.input.project_slug %}",
               "spec_slug": "{% $states.input.spec_slug %}",
               "task_id": "{% $states.input.task_id %}",
+              "eval_mode": "{% $states.input.eval_mode %}",
               "result": "{% $states.input.result %}",
               "review": "{% $states.input.review %}",
               "test_report": "{% $states.result %}"
