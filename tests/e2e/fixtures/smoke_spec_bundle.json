@@ -1,0 +1,51 @@
+{
+  "spec_slug": "smoke-test-fixture",
+  "feature_name": "Smoke Test Fixture Feature",
+  "requirements": {
+    "summary": "A minimal spec bundle used as a deterministic fixture for end-to-end smoke tests.",
+    "user_stories": [
+      {
+        "id": "R-001",
+        "role": "developer",
+        "capability": "run a smoke test against a pre-canned fixture",
+        "outcome": "I can verify the spec materialization pipeline without calling an LLM"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "requirement_id": "R-001",
+        "given": "a valid SpecBundle fixture is loaded",
+        "when": "the materialization function is invoked",
+        "then": "requirements.md, design.md, and tasks.md are written to the output directory"
+      }
+    ],
+    "out_of_scope": [],
+    "open_questions": []
+  },
+  "design": {
+    "approach": "Use a pre-canned JSON fixture to bypass LLM calls and drive the materialization pipeline deterministically in tests.",
+    "components": [
+      {
+        "name": "SpecBundle Fixture",
+        "purpose": "Provides a minimal valid SpecBundle as static JSON for smoke tests.",
+        "location": "tests/e2e/fixtures/smoke_spec_bundle.json"
+      }
+    ],
+    "data_model": "No new persistent data models. Uses the existing SpecBundle Pydantic schema.",
+    "sequence": "1. Test loads fixture JSON.\n2. Test parses it into a SpecBundle.\n3. Materialization writes Markdown files.\n4. Test asserts files exist and contain expected headers.",
+    "failure_modes": [],
+    "trade_offs": [],
+    "proposed_adrs": [],
+    "references": []
+  },
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Create pre-canned SpecBundle fixture JSON",
+      "implements": ["AC-001"],
+      "touches": ["tests/e2e/__init__.py", "tests/e2e/fixtures/smoke_spec_bundle.json"],
+      "done_when": "tests/e2e/fixtures/smoke_spec_bundle.json exists, contains a minimal valid SpecBundle, and passes schema validation when loaded in a unit test."
+    }
+  ]
+}
