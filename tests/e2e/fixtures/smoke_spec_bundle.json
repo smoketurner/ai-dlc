@@ -1,0 +1,51 @@
+{
+  "spec_slug": "smoke-test-fixture",
+  "feature_name": "Smoke Test Fixture Feature",
+  "requirements": {
+    "summary": "Minimal smoke-test fixture spec used to validate the materialization pipeline.",
+    "user_stories": [
+      {
+        "id": "R-001",
+        "role": "developer",
+        "capability": "run a smoke test against the spec materialization pipeline",
+        "outcome": "I can catch regressions before they reach production"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "id": "AC-001",
+        "requirement_id": "R-001",
+        "given": "the fixture is loaded",
+        "when": "materialization runs",
+        "then": "three Markdown files are produced and each is non-empty"
+      }
+    ],
+    "out_of_scope": [],
+    "open_questions": []
+  },
+  "design": {
+    "approach": "Use a pre-canned fixture to bypass LLM dependency and keep the test fast and deterministic.",
+    "components": [
+      {
+        "name": "Smoke Fixture",
+        "purpose": "Provides deterministic SpecBundle input for the e2e smoke test",
+        "location": "tests/e2e/fixtures/smoke_spec_bundle.json"
+      }
+    ],
+    "data_model": "No persistent data model. Input is the SpecBundle; output is three Markdown files.",
+    "sequence": "1. Load fixture JSON\n2. Validate against SpecBundle schema\n3. Materialize into tmp_path\n4. Assert files exist and contain expected headers",
+    "failure_modes": [],
+    "trade_offs": [],
+    "proposed_adrs": [],
+    "references": []
+  },
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Validate smoke test fixture materializes correctly",
+      "implements": ["AC-001"],
+      "touches": ["tests/e2e/test_spec_materialization_smoke.py"],
+      "done_when": "All three Markdown files are produced and each is non-empty."
+    }
+  ]
+}
