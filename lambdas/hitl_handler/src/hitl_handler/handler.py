@@ -59,6 +59,14 @@ class RequestApprovalInput(BaseOp):
     pr_url: str | None = None
     summary: str = Field(max_length=4096)
     eval_mode: bool = False
+    # Spec gate: S3 key for the Critic's full critique markdown (rendered
+    # in the dashboard). Task gates: aggregate counts the Reviewer + Tester
+    # produced. All optional — REQUEST_APPROVAL is shared across gates and
+    # only the originating gate populates the relevant subset.
+    critique_s3_key: str | None = Field(default=None, max_length=512)
+    review_verdict: str | None = Field(default=None, max_length=64)
+    review_comment_count: int | None = Field(default=None, ge=0)
+    test_gap_count: int | None = Field(default=None, ge=0)
 
 
 class DecideInput(BaseOp):
