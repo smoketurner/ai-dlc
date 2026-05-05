@@ -4,7 +4,7 @@
 
 Ordered, atomic units. Each task is one PR. Each task links to at least one acceptance criterion in `requirements.md`.
 
-- [ ] **T-001** — {short imperative title}
+- [x] **T-001** — {short imperative title}
   - **Implements:** AC-R-001-a
   - **Touches:** `path/to/file.py`, `path/to/other.tf`
   - **Done when:** {observable outcome that the reviewer checks}
