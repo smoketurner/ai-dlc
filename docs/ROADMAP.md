@@ -371,23 +371,26 @@ Six landings, each independently shippable:
 - [x] `agents/architect/src/architect/spec.py` — `Task` gains `door: DoorAssessment` (default `two_way`) and `depends_on: list[str]`; `render_tasks` surfaces ONE-WAY door class and dependencies.
 - [x] 50 new unit tests (22 door / 11 triage / 12 eval / 5 architect); ruff and ty clean; full suite green.
 
-### 12b — Triage agent + ASL branching + issue-comment HITL ⬜
+### 12b — Triage agent + ASL branching + issue-comment HITL 🟡
 
-- [ ] `agents/triage/` — Strands + Haiku 4.5; `Agent.structured_output(TriageDecision, …)`. Reads issue body, type, labels, prior triage context, and the repo's `MEMORY.md`. Re-exports `TriageDecision` from `common.triage` for stable imports.
+- [x] `agents/triage/` skeleton — `pyproject.toml` (workspace member), `src/triage/{__init__.py, agent.py, prompts.py, decision.py}`. Strands + Haiku 4.5; `Agent.structured_output(TriageDecision, …)`. `compose_message(payload)` builds the user prompt from a `TriageInput`. `decision.py` re-exports `TriageDecision` from `common.triage` for a stable agent-scoped import path. **5 unit tests** in `tests/test_agent.py` covering message composition variants and the structured-output wiring with a mocked agent.
+- [x] `packages/common/src/common/runtime.py` — `TriageInput` (issue context: url, number, title, body, type, labels, prior triage rounds, prior human comments) and `TriageResult` (flattened `action` + `workflow_kind` + `decision_s3_key` for Step Functions Choice branching).
+- [ ] `agents/triage/{app.py, Dockerfile}` — BedrockAgentCoreApp HTTP shell + container build. (Next 12b slice.)
 - [ ] GitHub webhook subscriptions: `issues.assigned` (trigger) and `issue_comment.created` on issues (resume the *ask* path).
 - [ ] `lambdas/triage_dispatcher/` — replace the existing Bedrock-Converse classifier with a thin shim that invokes the triage runtime; one component, one responsibility.
+- [ ] Terraform: register `triage` in `var.agents`; add ECR repo + CI matrix entry; wire runtime resource.
 - [ ] ASL: new `Triage` state at the top; `Choice` on `decision.action` + `decision.workflow_kind`; new ItemProcessors for `bug_fix`, `upgrade`, `docs` workflows. The *ask* branch uses `.waitForTaskToken` resolved by the issue-comment webhook.
 - [ ] Two new event types: `ISSUE.TRIAGED`, `ISSUE.ASK_POSTED`. Schemas in `terraform/shared/schemas/`.
 - [ ] First pass ships `bug_fix` / `upgrade` / `docs` as no-spec variants of the existing pipeline; richer per-phase agent ensembles can come later.
 
-### 12c — One-way door enforcement ⬜
+### 12c — One-way door enforcement ✅ (12 unit tests; ready_for_review webhook moves to 12d)
 
-- [ ] Architect persona: emits `door` per task — hard rule that any of the 10 categories triggers `door_class="one_way"` with at least one category and a rationale.
-- [ ] Critic persona gains a "door audit" dimension; can upgrade `two_way → one_way` when irreversibility is mislabeled.
-- [ ] `agents/implementer/src/implementer/hooks.py` — new PreToolUse hook on `open_pr`: if any path passed to the tool matches `common.door.classify_paths`, deny unless the call uses draft mode.
-- [ ] Implementer prompt + `repo_helper.open_pr`: ONE-WAY tasks invoke `gh pr create --draft`; the bot's first comment on the PR explains why it's held in draft and what unblocks merge.
-- [ ] Webhook: subscribe to `pull_request.ready_for_review`; record `marked_ready_at` + `marked_ready_by` in `PRTelemetry`.
-- [ ] Reviewer persona re-checks the actual diff against `classify_paths` and architect's stated `door_class`; can upgrade if Architect missed something.
+- [x] `agents/implementer/src/implementer/repo_ops.py` — `open_pr` gains a `draft: bool = False` parameter; classifies the actual diff via `common.door.classify_paths` and forces draft mode when any one-way path is touched. New `changed_paths(base)` runs `git diff --name-only origin/{base}...HEAD`. Logs a warning when the override engages. (The original plan called for a Claude SDK PreToolUse hook on `open_pr`, but Claude doesn't call `open_pr` as an MCP tool — the Python harness does after the agent finishes; enforcement therefore lives in the harness function itself.)
+- [x] Architect persona (`agents/architect/src/architect/prompts.py`): new operating principle #8 — emit `door` per task with the ten one-way categories enumerated, and the rule that `one_way` requires both `categories` and a one-sentence `rationale`. Default stays `two_way`.
+- [x] Critic persona (`agents/critic/src/critic/prompts.py`): "Door audit" added to the failure-mode hunt list — file `high`-severity issue when a task is marked `two_way` but its scope falls into one of the ten categories. Calls out content-only categories (`public_api_break`, `major_dependency_bump`, `public_deletion`) as the agents' responsibility since the path classifier can't catch them.
+- [x] Implementer's explanatory PR comment (`repo_ops.draft_explanation`, `comment_on_pr`): when the draft override engages, posts a follow-up comment listing the detected categories and instructing the maintainer to mark the PR "Ready for review" before merge.
+- [x] Reviewer persona (`agents/reviewer/src/reviewer/prompts.py`): "Door re-audit" added to the failure-mode hunt list — same 10 categories, focused on the content-only check the path classifier can't perform.
+- [ ] Webhook: subscribe to `pull_request.ready_for_review`; record `marked_ready_at` + `marked_ready_by` in `PRTelemetry`. (Moved to 12d alongside the rest of the PR webhook subscriptions.)
 
 ### 12d — Production efficiency eval ⬜
 

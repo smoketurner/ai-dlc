@@ -1,0 +1,21 @@
+[project]
+name = "triage"
+version = "0.0.0"
+description = "ai-dlc Triage agent — classifies a GitHub issue and routes it into a workflow phase or asks for clarification."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "aws-opentelemetry-distro==0.17.0",
+    "bedrock-agentcore==1.8.0",
+    "boto3==1.43.2",
+    "common",
+    "pydantic==2.13.3",
+    "strands-agents==1.38.0",
+    "structlog==25.5.0",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.11"]
+build-backend = "uv_build"

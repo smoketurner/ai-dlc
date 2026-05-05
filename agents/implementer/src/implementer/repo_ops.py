@@ -29,11 +29,15 @@ from typing import TYPE_CHECKING
 
 import boto3
 import httpx
+import structlog
 
+from common.door import classify_paths
 from implementer.agentcore_auth import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
 )
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -234,19 +238,95 @@ def push_branch(branch: str) -> None:
     run_git("push", "--set-upstream", "origin", branch)
 
 
-def open_pr(session: RepoSession, *, branch: str, base: str, title: str, body: str) -> str:
-    """Open a PR via the GitHub REST API; return the PR HTML URL."""
-    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls"
-    headers = {
+def changed_paths(*, base: str) -> list[str]:
+    """Return paths changed on HEAD vs ``base`` (e.g. ``main``).
+
+    Uses the ``base...HEAD`` triple-dot diff so deletions, additions, and
+    modifications are all reported. The branch must be checked out and
+    ``base`` must already be fetched (``reset_existing_clone`` and
+    ``clone_repo`` both fetch ``origin/<base>`` for us).
+    """
+    output = run_git("diff", "--name-only", f"origin/{base}...HEAD")
+    return [line for line in output.splitlines() if line]
+
+
+def github_headers(token: str) -> dict[str, str]:
+    """Standard GitHub REST headers for one bearer token."""
+    return {
         "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {session.access_token}",
+        "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    payload = {"title": title, "body": body, "head": branch, "base": base}
+
+
+def comment_on_pr(session: RepoSession, *, pr_number: int, body: str) -> None:
+    """Post an issue-comment on a PR (PRs share the issues comment endpoint)."""
+    url = f"{GITHUB_API}/repos/{session.target_repo}/issues/{pr_number}/comments"
     with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-        resp = client.post(url, headers=headers, json=payload)
+        resp = client.post(url, headers=github_headers(session.access_token), json={"body": body})
         resp.raise_for_status()
-        return resp.json()["html_url"]
+
+
+def draft_explanation(categories: list[str]) -> str:
+    """Body of the explanatory comment posted when draft mode is forced."""
+    bullets = "\n".join(f"- `{c}`" for c in categories)
+    return (
+        "This PR is held in draft because the diff touches changes that the "
+        "platform classifies as **one-way doors** (changes that are hard to "
+        "reverse without significant cost):\n\n"
+        f"{bullets}\n\n"
+        'A maintainer should review the diff and mark the PR "Ready for '
+        'review" before merging. See `packages/common/src/common/door.py` for '
+        "the full taxonomy."
+    )
+
+
+def open_pr(
+    session: RepoSession,
+    *,
+    branch: str,
+    base: str,
+    title: str,
+    body: str,
+    draft: bool = False,
+) -> str:
+    """Open a PR via the GitHub REST API; return the PR HTML URL.
+
+    Forces draft mode when the diff touches any path matching the
+    one-way door rules in :func:`common.door.classify_paths` — defense
+    in depth on top of the Architect's stated ``door_class``. When the
+    override engages, also posts an explanatory first comment on the PR
+    so the maintainer knows why it landed in draft.
+    """
+    forced_categories = classify_paths(changed_paths(base=base))
+    is_draft = draft or bool(forced_categories)
+    override_engaged = bool(forced_categories) and not draft
+    if override_engaged:
+        logger.warning(
+            "open_pr forcing draft mode",
+            target_repo=session.target_repo,
+            branch=branch,
+            categories=forced_categories,
+        )
+    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls"
+    payload = {
+        "title": title,
+        "body": body,
+        "head": branch,
+        "base": base,
+        "draft": is_draft,
+    }
+    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
+        resp = client.post(url, headers=github_headers(session.access_token), json=payload)
+        resp.raise_for_status()
+        pr = resp.json()
+    if override_engaged:
+        comment_on_pr(
+            session,
+            pr_number=int(pr["number"]),
+            body=draft_explanation(list(forced_categories)),
+        )
+    return str(pr["html_url"])
 
 
 def short_diff_summary() -> str:

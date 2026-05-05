@@ -209,6 +209,54 @@ class TesterResult(_Frozen):
     session_id: str
 
 
+class TriageInput(_Frozen):
+    """Input passed to the Triage agent's ``/invocations`` endpoint.
+
+    Built by the GitHub-issue webhook handler when the bot is assigned
+    to an issue (and re-built when the issue receives a new comment
+    while triage is awaiting an answer). The agent reads this payload,
+    decides whether to ``proceed`` / ``ask`` / ``defer`` / ``decline``,
+    and returns a :class:`TriageResult` carrying the structured decision.
+    """
+
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
+    issue_url: Annotated[str, Field(min_length=1, max_length=512)]
+    issue_number: Annotated[int, Field(ge=1)]
+    issue_title: Annotated[str, Field(min_length=1, max_length=512)]
+    issue_body: Annotated[str, Field(max_length=8192)]
+    issue_type: Literal["Bug", "Feature", "Task", "Other"] | None = None
+    issue_labels: Annotated[list[str], Field(max_length=32)] = Field(default_factory=list)
+    prior_triage_count: Annotated[int, Field(ge=0, le=16)] = 0
+    prior_human_comments: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=2048)]],
+        Field(max_length=16),
+    ] = Field(default_factory=list)
+    run_id: str
+    correlation_id: str
+    actor_id: str = "system"
+    requestor_sub: str | None = None
+
+
+class TriageResult(_Frozen):
+    """Result the Triage agent returns. Becomes the ISSUE.TRIAGED payload.
+
+    ``decision_s3_key`` points at the full :class:`common.triage.TriageDecision`
+    JSON in S3; the flattened fields below are what the Step Functions
+    ``Choice`` state branches on without having to fetch the artifact.
+    ``workflow_kind`` is set only when ``action == "proceed"``;
+    ``missing_information_count`` is non-zero only when ``action == "ask"``.
+    """
+
+    decision_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
+    action: Literal["proceed", "ask", "defer", "decline"]
+    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] | None = None
+    rationale: Annotated[str, Field(min_length=1, max_length=2048)]
+    missing_information_count: Annotated[int, Field(ge=0, le=8)] = 0
+    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0
+    session_id: str
+
+
 class ProposerInput(_Frozen):
     """Input passed to the Proposer's ``/invocations`` endpoint.
 

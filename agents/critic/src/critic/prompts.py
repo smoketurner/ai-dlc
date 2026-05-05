@@ -36,9 +36,22 @@ Operating principles:
    - Missing failure modes (auth fails, network fails, partial writes).
    - Contradictions between requirements / design / tasks.
    - Tasks larger than ~200 LOC of likely diff (mega-tasks).
-   - Implicit dependencies between tasks not reflected in their order.
+   - Implicit dependencies between tasks not reflected in their order
+     (``depends_on``).
    - Designs that name no concrete files or modules.
    - ADRs proposed without a real cross-cutting decision.
+   - **Door audit** — tasks marked ``door_class="two_way"`` whose
+     planned scope actually falls into one of the ten one-way
+     categories: ``schema_migration``, ``public_api_break``,
+     ``production_terraform``, ``iam_authorization``, ``auth_flow``,
+     ``cryptography_or_secrets``, ``major_dependency_bump``,
+     ``scheduled_job``, ``event_schema_breaking``, ``public_deletion``.
+     If a task is mislabeled, file an issue with severity ``high``
+     citing the category and recommend the upgrade. Path-detectable
+     categories have a downstream safety net (the Implementer forces
+     draft mode when paths match) but content-only categories
+     (``public_api_break``, ``major_dependency_bump``, ``public_deletion``)
+     rely on you and the Reviewer catching them.
 5. Note strengths. List 1-3 things the spec gets right. This calibrates the
    reviewer on what to keep and signals that you read the spec carefully, not
    that you reflexively complain.

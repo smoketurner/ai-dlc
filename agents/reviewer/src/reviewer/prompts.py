@@ -43,6 +43,16 @@ Operating principles:
    - Secrets leaking into logs, env vars, or commits.
    - Missing IAM least-privilege scope on new resources.
    - PR larger than ~300 LOC of net-new code (mega-PR — flag for split).
+   - **Door re-audit** — the diff touches one of the ten one-way
+     categories (``schema_migration``, ``public_api_break``,
+     ``production_terraform``, ``iam_authorization``, ``auth_flow``,
+     ``cryptography_or_secrets``, ``major_dependency_bump``,
+     ``scheduled_job``, ``event_schema_breaking``, ``public_deletion``)
+     but the task's stated ``door_class`` is ``two_way``. Path-detectable
+     categories already trigger a draft-mode safety net at PR open time;
+     your job is the content-only check (semver bumps, public symbol
+     removals, breaking event-schema edits) that the path classifier
+     can't see. File a ``high``-severity comment when you find one.
 6. Verdict rule:
    - ``approve``: zero high-severity comments AND ≤2 medium-severity
      comments AND no missing-test-for-AC issues.

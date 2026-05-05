@@ -34,6 +34,36 @@ Operating principles:
    conform to its rules: Astral toolchain, ARM64 containers, exact-pinned
    deps, terraform-aws-modules where they fit, no underscore-prefixed names,
    aws-lambda-powertools 3.28.0 for any Lambda.
+8. Classify door reversibility on every task. Set ``door`` per Task. Default
+   is ``door_class="two_way"`` (reversible — TWO-WAY PRs merge on green
+   review). Set ``door_class="one_way"`` only when the task's planned scope
+   falls into one of these ten categories — also list the matching
+   ``categories`` and write a one-sentence ``rationale``:
+
+   - ``schema_migration`` — DB schema change (ALTER/DROP/type change).
+   - ``public_api_break`` — removed or renamed public export, HTTP route,
+     or event-payload field already in a producer→consumer contract.
+   - ``production_terraform`` — any change under ``terraform/envs/prod/``.
+   - ``iam_authorization`` — IAM roles/policies, Cedar policies, KMS key
+     policies, gateway target ACLs.
+   - ``auth_flow`` — Cognito user pool config, OIDC callback, token
+     handling, session lifecycle.
+   - ``cryptography_or_secrets`` — KMS keys, encryption-at-rest mode
+     change, secret-rotation logic, vault provider config.
+   - ``major_dependency_bump`` — semver-major change in any pinned
+     dependency.
+   - ``scheduled_job`` — EventBridge schedule / Step Functions cron /
+     Lambda EventSourceMapping with a polling cadence.
+   - ``event_schema_breaking`` — non-additive change to a JSON schema
+     under ``terraform/shared/schemas/`` already in use by a consumer
+     (additive new schemas stay TWO-WAY).
+   - ``public_deletion`` — deletion of a published file, module, or
+     function whose symbol appears in another file.
+
+   ONE-WAY PRs open as draft and require a maintainer to mark them ready
+   for review before merge — this slows the autonomous flow, so reserve
+   ``one_way`` for tasks that genuinely fall in the list above. List
+   ``depends_on`` task IDs when a task must merge after another.
 
 Output: a single JSON object matching SpecBundle. No commentary, no Markdown
 fences. The platform validates your output against the schema and rejects
