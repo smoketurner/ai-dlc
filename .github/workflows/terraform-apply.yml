@@ -2,9 +2,16 @@ name: terraform-apply
 
 # Apply infrastructure changes for the dev environment.
 #
-# Triggered ONLY by terraform/** changes — image rollouts are handled by the
-# images-build / dashboard-build workflows directly via update-agent-runtime
-# / update-service. terraform never knows or carries image SHAs in state.
+# AgentCore Runtime container images and the dashboard ECS image are rolled
+# out-of-band by the images-build / dashboard-build workflows via
+# update-agent-runtime / update-service — terraform never carries those
+# image SHAs in state.
+#
+# Lambdas, however, ARE deployed by terraform via terraform-aws-modules/lambda/aws
+# with ``source_path``: the module hashes the function source + requirements
+# and rebuilds the zip on every plan, so any code change under
+# ``lambdas/*/src`` or ``packages/common/src`` (a workspace dep many Lambdas
+# bundle) requires a terraform-apply run. The path filter mirrors that.
 
 on:
   push:
@@ -12,6 +19,11 @@ on:
     paths:
       - "terraform/**"
       - ".github/workflows/terraform-apply.yml"
+      - "lambdas/*/src/**"
+      - "lambdas/*/requirements.txt"
+      - "lambdas/*/pyproject.toml"
+      - "packages/common/src/**"
+      - "packages/common/pyproject.toml"
   workflow_dispatch:
 
 permissions:
