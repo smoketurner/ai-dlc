@@ -17,6 +17,7 @@ from architect.spec import (
     render_requirements,
     render_tasks,
 )
+from common.door import DoorAssessment
 
 
 def make_spec(*, with_optional: bool = False) -> SpecBundle:
@@ -149,3 +150,83 @@ def test_spec_is_frozen() -> None:
     spec = make_spec()
     with pytest.raises(ValidationError):
         spec.spec_slug = "different"  # type: ignore[misc]  # frozen=True forbids assignment
+
+
+def test_task_default_door_is_two_way() -> None:
+    task = Task(id="T-001", title="x", implements=["AC-R-001-a"], done_when="x")
+    assert task.door.door_class == "two_way"
+    assert task.depends_on == []
+
+
+def test_task_with_one_way_door_validates() -> None:
+    task = Task(
+        id="T-002",
+        title="Migrate users table",
+        implements=["AC-R-001-a"],
+        done_when="users.email column dropped",
+        door=DoorAssessment(
+            door_class="one_way",
+            categories=["schema_migration"],
+            rationale="drops users.email; not reversible without a backup restore",
+        ),
+    )
+    assert task.door.door_class == "one_way"
+
+
+def test_task_depends_on_self_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Task(
+            id="T-003",
+            title="x",
+            implements=["AC-R-001-a"],
+            done_when="x",
+            depends_on=["T-003"],
+        )
+
+
+def test_task_depends_on_other_task() -> None:
+    task = Task(
+        id="T-004",
+        title="x",
+        implements=["AC-R-001-a"],
+        done_when="x",
+        depends_on=["T-001", "T-002"],
+    )
+    assert task.depends_on == ["T-001", "T-002"]
+
+
+def test_render_tasks_omits_door_for_two_way() -> None:
+    out = render_tasks(make_spec())
+    assert "**Door:**" not in out
+
+
+def test_render_tasks_surfaces_one_way_door() -> None:
+    spec = make_spec()
+    one_way_task = Task(
+        id="T-002",
+        title="Migrate users table",
+        implements=["AC-R-001-a"],
+        done_when="users.email column dropped",
+        door=DoorAssessment(
+            door_class="one_way",
+            categories=["schema_migration"],
+            rationale="drops users.email; needs backup",
+        ),
+    )
+    spec_with_one_way = spec.model_copy(update={"tasks": [*spec.tasks, one_way_task]})
+    out = render_tasks(spec_with_one_way)
+    assert "**Door:** ONE-WAY (schema_migration) — drops users.email; needs backup" in out
+
+
+def test_render_tasks_surfaces_depends_on() -> None:
+    spec = make_spec()
+    follow_up = Task(
+        id="T-002",
+        title="Document the endpoint",
+        implements=["AC-R-001-a"],
+        done_when="docs page mentions /healthz",
+        depends_on=["T-001"],
+    )
+    spec_with_dep = spec.model_copy(update={"tasks": [*spec.tasks, follow_up]})
+    out = render_tasks(spec_with_dep)
+    assert "**Depends on:** T-001" in out

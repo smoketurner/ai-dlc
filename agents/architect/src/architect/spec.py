@@ -13,9 +13,11 @@ when the spec is approved.
 from __future__ import annotations
 
 import re
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+
+from common.door import DoorAssessment
 
 
 def _none_to_empty_list[T](v: list[T] | None) -> list[T]:
@@ -92,13 +94,30 @@ class Design(_Frozen):
 
 
 class Task(_Frozen):
-    """One row in ``tasks.md``."""
+    """One row in ``tasks.md``.
+
+    Each task becomes one PR. ``door`` carries the architect's call on
+    reversibility — ``one_way`` tasks open as draft PRs and require a
+    human to mark ready before merge. ``depends_on`` lists task IDs that
+    must merge first; the Map state in Step Functions sequences PRs
+    accordingly.
+    """
 
     id: Annotated[str, Field(pattern=TASK_ID_PATTERN.pattern)]
     title: Annotated[str, Field(min_length=1, max_length=256)]
     implements: Annotated[list[str], Field(min_length=1, max_length=16)]
     touches: _OptionalStrList = Field(default_factory=list)
     done_when: Annotated[str, Field(min_length=1, max_length=1024)]
+    door: DoorAssessment = Field(default_factory=DoorAssessment)
+    depends_on: Annotated[list[str], Field(max_length=16)] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def depends_on_excludes_self(self) -> Self:
+        """A task must not depend on itself."""
+        if self.id in self.depends_on:
+            msg = f"task {self.id!r} cannot list itself in depends_on"
+            raise ValueError(msg)
+        return self
 
 
 class SpecBundle(_Frozen):
@@ -200,6 +219,11 @@ def render_tasks(spec: SpecBundle) -> str:
         lines.append(f"  - **Implements:** {implements}")
         if task.touches:
             lines.append(f"  - **Touches:** {', '.join(f'`{p}`' for p in task.touches)}")
+        if task.depends_on:
+            lines.append(f"  - **Depends on:** {', '.join(task.depends_on)}")
+        if task.door.door_class == "one_way":
+            categories = ", ".join(task.door.categories)
+            lines.append(f"  - **Door:** ONE-WAY ({categories}) — {task.door.rationale}")
         lines.append(f"  - **Done when:** {task.done_when}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"

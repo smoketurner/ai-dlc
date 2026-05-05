@@ -30,6 +30,8 @@ REQUEST.RECEIVED
 - **Agents** (6): Architect / Critic / Reviewer / Tester / Proposer (Strands) and Implementer (Claude Agent SDK). Architect + Critic + Proposer use Opus 4.7; Implementer + Reviewer use Sonnet 4.6; Tester + memory consolidation use Haiku 4.5.
 - **Events** (11 types): `REQUEST.RECEIVED`, `SPEC.{READY,APPROVED,REJECTED}`, `CRITIQUE.READY`, `TASK.{READY,APPROVED,REJECTED}`, `REVIEW.READY`, `TEST_REPORT.READY`, `RUN.{COMPLETED,FAILED}`.
 
+> **Phase 12 extends this with an autonomous, GitHub-issue-driven entry path.** A new Triage agent inspects an issue assigned to the bot and decides whether to *proceed* (routing into one of four workflow phases — `spec_driven`, `bug_fix`, `upgrade`, `docs`), *ask* for clarification by commenting on the issue, *defer*, or *decline*. The diagram above describes the `spec_driven` phase; the others land in 12b. The HITL gates collapse: per-task PR approval moves from Step Functions to GitHub itself — TWO-WAY PRs merge on green review, ONE-WAY PRs open as draft and require a human to mark them ready. See Phase 12.
+
 ---
 
 ## Phase 0 — Repo scaffolding ✅
@@ -328,6 +330,100 @@ each agent that touches GitHub fetches the user's token via
 - [x] `terraform/modules/dashboard/data.tf` + `ecs.tf` + `variables.tf` — task IAM gains `bedrock-agentcore:GetWorkloadAccessTokenForUserId` / `GetResourceOauth2Token` / `CompleteResourceTokenAuth`; container env carries `AIDLC_DASHBOARD_WORKLOAD_NAME` + `AIDLC_GITHUB_OAUTH_PROVIDER_NAME`.
 - [x] `terraform/envs/dev/main.tf` — wires `module.agents.dashboard_workload_name` + `module.agents.github_oauth_provider_name` into the dashboard module.
 - [ ] Live smoke: install the GitHub App on a real repo, sign into the dashboard, click "Connect GitHub", complete authorization on github.com, submit a run, observe the Implementer commit + Reviewer/Tester PR comments attributed to the user.
+
+---
+
+## Phase 12 — Autonomous, issue-driven flow 🟡
+
+The platform's first eleven phases assume a human kicks off each run via the dashboard's `POST /v1/runs`. Phase 12 makes it self-driving: a tagged GitHub issue is the trigger; the system decides whether to proceed, ask, defer, or decline; PRs are the human review surface (no separate dashboard approval step for routine work); and production PR feedback closes the loop back into prompt and `MEMORY.md` updates.
+
+```
+GitHub issue assigned to @aidlc-bot
+  → Triage agent (Haiku 4.5)
+      ├─ proceed → ASL Choice on workflow_kind
+      │             ├─ spec_driven → existing Architect → Critic → Map(impl/review/test) flow
+      │             ├─ bug_fix     → reproduce → fix → test
+      │             ├─ upgrade     → scan → bump → test
+      │             └─ docs        → single-agent edit
+      ├─ ask     → comment questions on issue, wait for reply, re-triage
+      ├─ defer   → comment, leave for human, stop
+      └─ decline → comment + close
+  → Implementer opens PR
+      ├─ TWO_WAY  → ready for review; merge on green review
+      └─ ONE_WAY  → draft; human marks ready before merge
+  → GitHub webhooks
+      → pr_telemetry  → comment_classifier  → eval_aggregator
+                                                  └─ drift detected
+                                                       → Proposer (PRs against prompts / MEMORY.md)
+```
+
+**Door taxonomy** (committed list — see `packages/common/src/common/door.py`): the ten ONE-WAY categories are `schema_migration`, `public_api_break`, `production_terraform`, `iam_authorization`, `auth_flow`, `cryptography_or_secrets`, `major_dependency_bump`, `scheduled_job`, `event_schema_breaking`, `public_deletion`. Detection is layered: Architect emits `door` per task; Critic and Reviewer can upgrade; a PreToolUse hook on `open_pr` enforces a path-based hard floor; ONE-WAY PRs open as `gh pr create --draft`.
+
+**GitHub primitives, no new tags**: trigger = issue assigned to `@aidlc-bot`. Issue Type (Bug / Feature / Task) hints `workflow_kind`. Existing labels are read as informational context. Unassigning the bot stops in-flight work cleanly.
+
+Six landings, each independently shippable:
+
+### 12a — Typed contracts ✅
+
+- [x] `packages/common/src/common/door.py` — `DoorClass`, 10-category `OneWayCategory`, `DoorAssessment` (with cross-field validation), `classify_paths()` for the 7 path-detectable categories.
+- [x] `packages/common/src/common/triage.py` — `WorkflowKind`, `TriageAction`, `MissingInformation`, `TriageDecision` with consistency validators across `action × workflow_kind × missing_information`.
+- [x] `packages/common/src/common/eval.py` — `CommentCategory` (10), `AgentOwner`, `COMMENT_WEIGHT` table, `ClassifiedComment`, `PRTelemetry`, `EfficiencyMetrics`, `DriftSignal`.
+- [x] `agents/architect/src/architect/spec.py` — `Task` gains `door: DoorAssessment` (default `two_way`) and `depends_on: list[str]`; `render_tasks` surfaces ONE-WAY door class and dependencies.
+- [x] 50 new unit tests (22 door / 11 triage / 12 eval / 5 architect); ruff and ty clean; full suite green.
+
+### 12b — Triage agent + ASL branching + issue-comment HITL ⬜
+
+- [ ] `agents/triage/` — Strands + Haiku 4.5; `Agent.structured_output(TriageDecision, …)`. Reads issue body, type, labels, prior triage context, and the repo's `MEMORY.md`. Re-exports `TriageDecision` from `common.triage` for stable imports.
+- [ ] GitHub webhook subscriptions: `issues.assigned` (trigger) and `issue_comment.created` on issues (resume the *ask* path).
+- [ ] `lambdas/triage_dispatcher/` — replace the existing Bedrock-Converse classifier with a thin shim that invokes the triage runtime; one component, one responsibility.
+- [ ] ASL: new `Triage` state at the top; `Choice` on `decision.action` + `decision.workflow_kind`; new ItemProcessors for `bug_fix`, `upgrade`, `docs` workflows. The *ask* branch uses `.waitForTaskToken` resolved by the issue-comment webhook.
+- [ ] Two new event types: `ISSUE.TRIAGED`, `ISSUE.ASK_POSTED`. Schemas in `terraform/shared/schemas/`.
+- [ ] First pass ships `bug_fix` / `upgrade` / `docs` as no-spec variants of the existing pipeline; richer per-phase agent ensembles can come later.
+
+### 12c — One-way door enforcement ⬜
+
+- [ ] Architect persona: emits `door` per task — hard rule that any of the 10 categories triggers `door_class="one_way"` with at least one category and a rationale.
+- [ ] Critic persona gains a "door audit" dimension; can upgrade `two_way → one_way` when irreversibility is mislabeled.
+- [ ] `agents/implementer/src/implementer/hooks.py` — new PreToolUse hook on `open_pr`: if any path passed to the tool matches `common.door.classify_paths`, deny unless the call uses draft mode.
+- [ ] Implementer prompt + `repo_helper.open_pr`: ONE-WAY tasks invoke `gh pr create --draft`; the bot's first comment on the PR explains why it's held in draft and what unblocks merge.
+- [ ] Webhook: subscribe to `pull_request.ready_for_review`; record `marked_ready_at` + `marked_ready_by` in `PRTelemetry`.
+- [ ] Reviewer persona re-checks the actual diff against `classify_paths` and architect's stated `door_class`; can upgrade if Architect missed something.
+
+### 12d — Production efficiency eval ⬜
+
+Phase 9b detects regressions on the synthetic eval-set (10 cases, nightly). Phase 12d adds a complementary signal: real PR comments on real merged PRs. Same proposer, different signal source.
+
+- [ ] `lambdas/pr_telemetry/` — webhook handler for `pull_request`, `pull_request_review`, `pull_request_review_comment`, and `issue_comment` on PRs. Writes `PRTelemetry` rows to a new DDB table keyed by `(pr_url, observed_at)`.
+- [ ] `lambdas/comment_classifier/` — Haiku-driven categorisation of each review comment into the 10 `CommentCategory` values; structured output validated as `ClassifiedComment`.
+- [ ] `lambdas/eval_aggregator/` (or scheduled service) — rolls telemetry + classified comments into `EfficiencyMetrics` per `(repo, agent, prompt_variant)`; emits `DriftSignal` per the C4 thresholds (≥20% delta, ≥10 PRs).
+- [ ] Proposer: subscribes to `EVAL.DRIFT_DETECTED` (in addition to its existing eval-regression alerts); reads recent low-efficiency PRs + comment categories; opens PRs against `docs/MEMORY.md` or agent prompts (existing `Proposal` validator already restricts target files).
+- [ ] Dashboard: per-bucket "efficiency over time" view (extends the existing run-detail / metrics surface).
+- [ ] ONE-WAY PRs excluded from `merge_as_is_rate`; reported separately as `one_way_merge_rate`. Comments on them still feed drift detection (an Architect that keeps misclassifying door class shows up as recurring `design` comments).
+
+### 12e — Persona refinements ⬜
+
+Per the comparison with `bug-ops/claude-plugins/rust-code` agent personas (lifted generically — none of the Rust-specific bits).
+
+- [ ] Critic: 8-dimension framework (assumption audit, counterexample hunt, scalability stress, failure-mode analysis, alternative hypotheses, completeness check, dependency risk, second-order effects). Severity rule: *a finding that does not threaten the task goal cannot be `critical`*.
+- [ ] Reviewer + Tester output: severity taxonomy `critical / important / suggestion / nitpick`, with `nitpick` explicitly non-blocking. Dashboard auto-collapses non-blocking severities.
+- [ ] All agents: coordination-footer table in their system prompt (typical predecessors, expected context, focus).
+- [ ] `packages/common/src/common/personas/` — shared persona snippets composed by each agent's `prompts.py` (git etiquette, severity definitions, `MEMORY.md` discipline, PR-prose vocabulary ban).
+
+### 12f — Security & supply-chain hardening ⬜
+
+Lifted from Trail of Bits' `claude-code-config` patterns where they apply. Mostly orthogonal to the autonomous flow but worth landing in the same arc.
+
+- [ ] Operator's `~/.claude/settings.json`: read-block `~/.aws/**`, `~/.git-credentials`, `~/.docker/config.json`, `~/.kube/**`; PreToolUse compound-command regex for `rm -rf` and `git push --force` (with proper handling of `;`, `&&`, `||`, `|`); `enableAllProjectMcpServers: false`.
+- [ ] `pyproject.toml`: pin transitive deps to `==`; document `--require-hashes` install path; verify `pip-audit` is in CI.
+- [ ] PR-prose vocabulary ban (`avoid: critical, crucial, essential, significant, comprehensive, robust, elegant`) added to Implementer prompt and Proposer prompt.
+- [ ] Implementer hooks (`hooks.py`): tighten the deny-list with word-boundary regex (current bare-substring patterns risk false positives); add a UserPromptSubmit-equivalent that pre-injects `MEMORY.md` so reading it is non-optional.
+- [ ] Audit-log PostToolUse hook (analog of `hooks/log-gam.sh`): JSONL append of mutating operations for post-session forensics.
+
+**Out of scope (Phase 12+):**
+- Stacked PRs (PRs in a sequence opening simultaneously with `depends on #X` markers). Sequential merging is the v1 default.
+- Auto-merge for TWO-WAY PRs on green review without any human looking. v1 still posts the PR; humans can choose to enable repo-level auto-merge if they want.
+- Triage agent training data / fine-tuning. v1 is prompt-driven against Haiku 4.5.
+- Multi-tenant memory namespace migration tooling (the contract is multi-tenant from day one via `target_repo`; no migration is needed for fresh deployments).
 
 ---
 
