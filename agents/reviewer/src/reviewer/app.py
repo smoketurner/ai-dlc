@@ -27,7 +27,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.runtime import ReviewerInput, ReviewerResult
-from common.task_token import send_task_failure, send_task_success
+from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from reviewer.agent import review_pr
 from reviewer.review import Review, render_review, severity_counts
 from reviewer.tools import write_review
@@ -59,16 +59,17 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        review = review_pr(
-            project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
-            task_id=payload.task_id,
-            pr_url=payload.pr_url,
-            diff_summary=payload.diff_summary,
-            run_id=payload.run_id,
-        )
-        upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
-        post_pr_comment(payload=payload, review=review)
+        with heartbeat_loop(payload.task_token):
+            review = review_pr(
+                project_slug=payload.project_slug,
+                spec_slug=payload.spec_slug,
+                task_id=payload.task_id,
+                pr_url=payload.pr_url,
+                diff_summary=payload.diff_summary,
+                run_id=payload.run_id,
+            )
+            upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
+            post_pr_comment(payload=payload, review=review)
     except BaseException as exc:
         if payload.task_token is not None:
             send_task_failure(task_token=payload.task_token, exc=exc)

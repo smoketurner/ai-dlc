@@ -13,7 +13,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.runtime import ImplementerInput
-from common.task_token import send_task_failure, send_task_success
+from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from implementer.client import execute_task
 
 logger = structlog.get_logger()
@@ -44,7 +44,8 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         async_token=payload.task_token is not None,
     )
     try:
-        result = await execute_task(payload)
+        with heartbeat_loop(payload.task_token):
+            result = await execute_task(payload)
     except BaseException as exc:
         if payload.task_token is not None:
             send_task_failure(task_token=payload.task_token, exc=exc)

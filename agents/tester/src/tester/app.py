@@ -26,7 +26,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.runtime import TesterInput, TesterResult
-from common.task_token import send_task_failure, send_task_success
+from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from tester.agent import analyze_gaps
 from tester.report import Report, gap_count, render_report, suggestion_count
 from tester.tools import write_report
@@ -57,16 +57,17 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        report = analyze_gaps(
-            project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
-            task_id=payload.task_id,
-            pr_url=payload.pr_url,
-            diff_summary=payload.diff_summary,
-            run_id=payload.run_id,
-        )
-        upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
-        post_pr_comment(payload=payload, report=report)
+        with heartbeat_loop(payload.task_token):
+            report = analyze_gaps(
+                project_slug=payload.project_slug,
+                spec_slug=payload.spec_slug,
+                task_id=payload.task_id,
+                pr_url=payload.pr_url,
+                diff_summary=payload.diff_summary,
+                run_id=payload.run_id,
+            )
+            upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
+            post_pr_comment(payload=payload, report=report)
     except BaseException as exc:
         if payload.task_token is not None:
             send_task_failure(task_token=payload.task_token, exc=exc)
