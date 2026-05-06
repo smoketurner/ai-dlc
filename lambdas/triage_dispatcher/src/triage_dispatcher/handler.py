@@ -2,17 +2,28 @@
 
 Invocation paths:
 
-* GitHub webhook (issues.opened, issues.labeled, issue_comment.created with
-  ``/aidlc go``) → dashboard webhook handler → this Lambda's sync invoke.
-* EventBridge schedule (5-min cron backstop) → list ``aidlc:ready`` issues
-  per registered repo → this Lambda's sync invoke per matching issue.
+* GitHub webhook (``issues.opened``, ``issues.assigned``,
+  ``issues.labeled``, ``issue_comment.created`` with ``/aidlc go``) →
+  dashboard webhook handler → this Lambda's sync invoke.
+* EventBridge schedule (5-min cron backstop) → list ``aidlc:ready``
+  issues per registered repo → this Lambda's sync invoke per matching
+  issue.
 
-For each invocation: invoke Bedrock Haiku with the one-way-door rubric,
-parse a :class:`TriageVerdict`, then either emit ``REQUEST.RECEIVED`` (go),
-or post a comment + label change (defer / decline) via ``repo_helper``.
+For each invocation: invoke the dedicated :mod:`triage` agent runtime
+(Strands + Haiku 4.5) with a typed :class:`TriageInput`, parse the
+returned :class:`TriageDecision`, then act on the four-way action
+verdict — ``proceed`` (emit ``REQUEST.RECEIVED``), ``ask`` (post the
+agent's clarifying questions and wait for a human reply),
+``defer`` / ``decline`` (comment + label the issue and stop).
 
-The Lambda is intentionally not invoked by Step Functions and isn't part
-of the SDLC state machine — Triage runs *before* a run exists.
+The Lambda is intentionally not invoked by Step Functions and isn't
+part of the SDLC state machine — Triage runs *before* a run exists.
+
+The previous implementation embedded the classifier inline as a
+Bedrock Converse call with a hand-written system prompt; that
+classifier was replaced by the dedicated triage runtime so the
+classification logic lives in one place (``agents/triage``) and is
+unit-testable with the same harness as every other Strands agent.
 """
 
 from __future__ import annotations
@@ -20,22 +31,24 @@ from __future__ import annotations
 import json
 import os
 from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import boto3
 from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from botocore.exceptions import ClientError
 from pydantic import ValidationError
 
 from common.events import EventEnvelope, RequestReceived
 from common.ids import new_correlation_id, new_event_id, new_run_id
-from triage_dispatcher.bedrock import classify
-from triage_dispatcher.models import OneWayDoor, TriageRequest, TriageVerdict
-from triage_dispatcher.prompts import SYSTEM_PROMPT, render_user_message
+from common.runtime import TriageInput, TriageResult
+from common.triage import TriageDecision
+from triage_dispatcher.models import TriageRequest
 
 if TYPE_CHECKING:
     from mypy_boto3_events.client import EventBridgeClient
     from mypy_boto3_lambda.client import LambdaClient
+    from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="triage_dispatcher")
 
@@ -43,6 +56,15 @@ READY_LABEL = "aidlc:ready"
 IN_PROGRESS_LABEL = "aidlc:in-progress"
 DEFERRED_LABEL = "aidlc:deferred"
 DECLINED_LABEL = "aidlc:declined"
+AWAITING_RESPONSE_LABEL = "aidlc:awaiting-response"
+
+# Issue-Type → workflow_kind hint passed through to the agent. The agent
+# can override based on body content; this is just the prior.
+ISSUE_TYPE_TO_HINT: dict[str, str] = {
+    "Bug": "Bug",
+    "Feature": "Feature",
+    "Task": "Task",
+}
 
 
 @cache
@@ -57,6 +79,18 @@ def lambda_client() -> LambdaClient:
     return boto3.client("lambda", region_name=os.environ["AWS_REGION"])
 
 
+@cache
+def runtime_client() -> Any:
+    """Process-cached bedrock-agentcore data-plane client."""
+    return boto3.client("bedrock-agentcore", region_name=os.environ["AWS_REGION"])
+
+
+@cache
+def s3_client() -> S3Client:
+    """Process-cached S3 client (reads the agent's persisted decision JSON)."""
+    return boto3.client("s3")
+
+
 def bus_name() -> str:
     """Platform EventBridge bus name."""
     return os.environ["AIDLC_BUS_NAME"]
@@ -65,6 +99,16 @@ def bus_name() -> str:
 def repo_helper_function() -> str:
     """ARN or name of the repo_helper Lambda this dispatcher invokes."""
     return os.environ["AIDLC_REPO_HELPER_FUNCTION_NAME"]
+
+
+def triage_runtime_arn() -> str:
+    """ARN of the triage AgentCore Runtime."""
+    return os.environ["AIDLC_TRIAGE_RUNTIME_ARN"]
+
+
+def artifacts_bucket() -> str:
+    """S3 bucket holding the triage decision JSON."""
+    return os.environ["AIDLC_ARTIFACTS_BUCKET"]
 
 
 @logger.inject_lambda_context(log_event=False)
@@ -81,58 +125,134 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
         extra={"repo": req.repo, "issue": req.issue_number, "labels": req.labels},
     )
 
-    user_message = render_user_message(
-        repo=req.repo,
-        issue_number=req.issue_number,
-        title=req.title,
-        body=req.body,
-        labels=req.labels,
-    )
+    run_id = str(new_run_id())
+    correlation_id = str(new_correlation_id())
+    payload = build_triage_input(req, run_id=run_id, correlation_id=correlation_id)
 
     try:
-        verdict = classify(system_prompt=SYSTEM_PROMPT, user_message=user_message)
-    except ValueError as exc:
-        logger.exception("classification failed", extra={"reason": str(exc)})
-        return {"ok": False, "error": "classification_failed"}
+        decision = invoke_triage_runtime(payload, run_id=run_id)
+    except (ClientError, ValidationError, json.JSONDecodeError, KeyError) as exc:
+        logger.exception("runtime invocation failed", extra={"reason": str(exc)})
+        return {"ok": False, "error": "triage_runtime_failed"}
 
-    return apply(req, verdict)
+    return apply(req, decision, run_id=run_id, correlation_id=correlation_id)
 
 
-def apply(req: TriageRequest, verdict: TriageVerdict) -> dict[str, Any]:
-    """Carry out the verdict: emit a run, comment + label, or both."""
-    if verdict.decision == "go":
-        run_id = emit_request_received(req, verdict)
-        comment_body = format_go_comment(verdict, run_id)
-        post_comment(req, comment_body)
-        relabel(req, add=[IN_PROGRESS_LABEL], remove=[READY_LABEL])
+def build_triage_input(
+    req: TriageRequest,
+    *,
+    run_id: str,
+    correlation_id: str,
+) -> TriageInput:
+    """Translate the dispatcher's webhook input into the agent's contract."""
+    issue_type = cast(
+        'Literal["Bug", "Feature", "Task", "Other"] | None',
+        ISSUE_TYPE_TO_HINT.get(req.issue_type or ""),
+    )
+    return TriageInput(
+        project_slug=project_slug_from_repo(req.repo),
+        target_repo=req.repo,
+        issue_url=req.issue_url,
+        issue_number=req.issue_number,
+        issue_title=req.title,
+        issue_body=req.body,
+        issue_type=issue_type,
+        issue_labels=list(req.labels),
+        prior_triage_count=req.prior_triage_count,
+        prior_human_comments=list(req.prior_human_comments),
+        run_id=run_id,
+        correlation_id=correlation_id,
+        requestor_sub=req.requestor_sub,
+    )
+
+
+def invoke_triage_runtime(payload: TriageInput, *, run_id: str) -> TriageDecision:
+    """Synchronously invoke the triage agent and return the parsed decision.
+
+    The agent returns a flattened :class:`TriageResult`; the full
+    :class:`TriageDecision` (including the ``ask`` action's clarifying
+    questions) is persisted to S3 at ``decision_s3_key``. We fetch it
+    from S3 because the agent's response shape only carries the counts
+    and flat fields the Step Functions Choice state needs to branch on.
+    """
+    response = runtime_client().invoke_agent_runtime(
+        agentRuntimeArn=triage_runtime_arn(),
+        runtimeSessionId=runtime_session_id(run_id),
+        contentType="application/json",
+        accept="application/json",
+        payload=json.dumps(payload.model_dump(mode="json")).encode("utf-8"),
+    )
+    body = response["response"].read()
+    raw = json.loads(body)
+    result = TriageResult.model_validate(raw)
+    return read_decision(result.decision_s3_key)
+
+
+def read_decision(s3_key: str) -> TriageDecision:
+    """Read the agent's persisted ``TriageDecision`` JSON from S3."""
+    obj = s3_client().get_object(Bucket=artifacts_bucket(), Key=s3_key)
+    return TriageDecision.model_validate_json(obj["Body"].read())
+
+
+def runtime_session_id(run_id: str) -> str:
+    """Build a 33+ character runtime session id from the run id."""
+    return f"triage-session-{run_id}"
+
+
+def apply(
+    req: TriageRequest,
+    decision: TriageDecision,
+    *,
+    run_id: str,
+    correlation_id: str,
+) -> dict[str, Any]:
+    """Carry out the verdict — emit a run, comment + label, or both."""
+    if decision.action == "proceed":
+        emit_request_received(req, decision, run_id=run_id, correlation_id=correlation_id)
+        post_comment(req, format_proceed_comment(decision, run_id))
+        relabel(req, add=[IN_PROGRESS_LABEL])
         return {
             "ok": True,
-            "decision": "go",
+            "decision": "proceed",
             "run_id": run_id,
-            "one_way_doors": len(verdict.one_way_doors),
+            "workflow_kind": decision.workflow_kind,
         }
-    if verdict.decision == "defer":
-        post_comment(req, format_defer_comment(verdict))
-        relabel(req, add=[DEFERRED_LABEL], remove=[READY_LABEL])
+    if decision.action == "ask":
+        post_comment(req, format_ask_comment(decision))
+        relabel(req, add=[AWAITING_RESPONSE_LABEL])
+        return {
+            "ok": True,
+            "decision": "ask",
+            "question_count": len(decision.missing_information),
+        }
+    if decision.action == "defer":
+        post_comment(req, format_defer_comment(decision))
+        relabel(req, add=[DEFERRED_LABEL])
         return {"ok": True, "decision": "defer"}
-    post_comment(req, format_decline_comment(verdict))
-    relabel(req, add=[DECLINED_LABEL], remove=[READY_LABEL])
+    post_comment(req, format_decline_comment(decision))
+    relabel(req, add=[DECLINED_LABEL])
     return {"ok": True, "decision": "decline"}
 
 
-def emit_request_received(req: TriageRequest, verdict: TriageVerdict) -> str:
-    """Publish ``REQUEST.RECEIVED`` for a ``go`` verdict and return the run_id."""
-    run_id = str(new_run_id())
-    correlation_id = str(new_correlation_id())
+def emit_request_received(
+    req: TriageRequest,
+    decision: TriageDecision,
+    *,
+    run_id: str,
+    correlation_id: str,
+) -> None:
+    """Publish ``REQUEST.RECEIVED`` for a ``proceed`` verdict."""
     envelope = EventEnvelope[RequestReceived](
         event_id=new_event_id(),
         type="REQUEST.RECEIVED",
         run_id=run_id,  # ty: ignore[invalid-argument-type]
         correlation_id=correlation_id,  # ty: ignore[invalid-argument-type]
         actor_id="triage",
+        # The agent's structured rationale stays in S3; intent is the
+        # issue title (downstream agents can fetch the decision JSON).
         payload=RequestReceived(
             project_slug=project_slug_from_repo(req.repo),
-            intent=verdict.intent or req.title,
+            intent=req.title,
             requestor=req.user or "triage",
             requestor_sub=req.requestor_sub,
             target_repo=req.repo,
@@ -151,9 +271,8 @@ def emit_request_received(req: TriageRequest, verdict: TriageVerdict) -> str:
     )
     logger.info(
         "request received emitted",
-        extra={"run_id": run_id, "issue_url": req.issue_url},
+        extra={"run_id": run_id, "issue_url": req.issue_url, "kind": decision.workflow_kind},
     )
-    return run_id
 
 
 def project_slug_from_repo(repo: str) -> str:
@@ -174,16 +293,13 @@ def post_comment(req: TriageRequest, body: str) -> None:
     )
 
 
-def relabel(req: TriageRequest, *, add: list[str], remove: list[str]) -> None:
-    """Add labels and best-effort remove others (remove is informational only).
+def relabel(req: TriageRequest, *, add: list[str]) -> None:
+    """Add labels via ``repo_helper.label_issue``.
 
-    The label_issue op is additive; for v1 we only *add* outcome labels and
-    leave the trigger label in place. The trigger filter on the webhook +
-    cron checks that the outcome labels aren't present, which is sufficient
-    for idempotency without a remove call. ``remove`` is here as a forward
-    compatibility hint — wire it when we add ``unlabel_issue``.
+    The label_issue op is additive; outcome labels are left in place
+    after the run terminates so the next webhook delivery's filter
+    skips already-handled issues.
     """
-    del remove
     invoke_repo_helper(
         {
             "op": "label_issue",
@@ -211,48 +327,59 @@ def invoke_repo_helper(payload: dict[str, Any]) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def format_go_comment(verdict: TriageVerdict, run_id: str) -> str:
-    """Comment body for a ``go`` decision."""
+def format_proceed_comment(decision: TriageDecision, run_id: str) -> str:
+    """Comment body for a ``proceed`` decision."""
+    return "\n".join(
+        [
+            "Triage decision: **proceed**",
+            "",
+            f"Started run `{run_id}` (workflow: `{decision.workflow_kind}`).",
+            "",
+            decision.rationale,
+        ],
+    )
+
+
+def format_ask_comment(decision: TriageDecision) -> str:
+    """Comment body for an ``ask`` decision — list the questions inline."""
     parts = [
-        "🤖 Triage decision: **go**",
+        "Triage decision: **ask**",
         "",
-        f"Started run `{run_id}`. Reasoning:",
+        decision.rationale,
         "",
-        verdict.reasoning,
+        "I need a bit more information before I can act on this issue:",
+        "",
     ]
-    if verdict.one_way_doors:
+    for ix, item in enumerate(decision.missing_information, start=1):
+        parts.append(f"{ix}. **{item.question}**")
+        parts.append(f"   _Why:_ {item.why_needed}")
         parts.append("")
-        parts.append(format_one_way_doors_section(verdict.one_way_doors))
+    parts.append(
+        "Reply on this issue with the answers and I'll re-triage. The "
+        f"`{AWAITING_RESPONSE_LABEL}` label is on now; remove it to stop the loop.",
+    )
     return "\n".join(parts)
 
 
-def format_defer_comment(verdict: TriageVerdict) -> str:
+def format_defer_comment(decision: TriageDecision) -> str:
     """Comment body for a ``defer`` decision."""
     return "\n".join(
         [
-            "🤖 Triage decision: **defer**",
+            "Triage decision: **defer**",
             "",
-            verdict.reasoning,
+            decision.rationale,
             "",
-            "Re-add the `aidlc:ready` label once unblocked.",
+            f"Re-add the `{READY_LABEL}` label once unblocked.",
         ],
     )
 
 
-def format_decline_comment(verdict: TriageVerdict) -> str:
+def format_decline_comment(decision: TriageDecision) -> str:
     """Comment body for a ``decline`` decision."""
     return "\n".join(
         [
-            "🤖 Triage decision: **decline**",
+            "Triage decision: **decline**",
             "",
-            verdict.reasoning,
+            decision.rationale,
         ],
     )
-
-
-def format_one_way_doors_section(doors: list[OneWayDoor]) -> str:
-    """Render the one-way-door pre-flag block in the issue comment."""
-    lines = ["**One-way door pre-flags** (the architect will revisit these):", ""]
-    for door in doors:
-        lines.append(f"- _{door.category}_ — {door.summary}")
-    return "\n".join(lines)

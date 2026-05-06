@@ -1,24 +1,15 @@
-"""Pydantic models for the Triage Lambda input + Bedrock output."""
+"""Pydantic input model for the Triage dispatcher Lambda.
+
+The classifier output (formerly :class:`TriageVerdict`) was removed in
+favour of invoking the dedicated :mod:`triage` agent runtime — the
+dispatcher now consumes :class:`common.triage.TriageDecision` directly.
+"""
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
-
-Reversibility = Literal["one_way", "two_way"]
-Decision = Literal["go", "defer", "decline"]
-DecisionCategory = Literal[
-    "data_destructive",
-    "api_break",
-    "event_schema_break",
-    "iam_trust",
-    "security_boundary",
-    "vendor_lock_in",
-    "license",
-    "cost_floor",
-    "other",
-]
 
 
 class _Frozen(BaseModel):
@@ -45,31 +36,6 @@ class TriageRequest(_Frozen):
     labels: list[Annotated[str, Field(min_length=1, max_length=64)]] = []
     user: Annotated[str, Field(max_length=128)] = ""
     requestor_sub: Annotated[str, Field(min_length=1, max_length=128)] | None = None
-
-
-class OneWayDoor(_Frozen):
-    """A decision the Triage agent flags as hard to reverse."""
-
-    summary: Annotated[str, Field(min_length=1, max_length=256)]
-    category: DecisionCategory
-    justification: Annotated[str, Field(min_length=1, max_length=1024)]
-
-
-class TriageVerdict(_Frozen):
-    """Structured output the Bedrock model returns.
-
-    The verdict is one of three branches:
-
-    * ``go`` — the issue is actionable; emit ``REQUEST.RECEIVED`` and let the
-      pipeline run. ``intent`` is the architect-ready re-statement of the
-      issue (no fluff, no preamble).
-    * ``defer`` — the issue is in scope but blocked or not ready right now;
-      explain why in ``reasoning``.
-    * ``decline`` — the issue is out of scope, anti-goal, or duplicate;
-      explain in ``reasoning``.
-    """
-
-    decision: Decision
-    intent: Annotated[str, Field(max_length=4096)] = ""
-    reasoning: Annotated[str, Field(min_length=1, max_length=2048)]
-    one_way_doors: list[OneWayDoor] = []
+    issue_type: Annotated[str, Field(max_length=32)] | None = None
+    prior_human_comments: list[Annotated[str, Field(min_length=1, max_length=2048)]] = []
+    prior_triage_count: Annotated[int, Field(ge=0, le=16)] = 0

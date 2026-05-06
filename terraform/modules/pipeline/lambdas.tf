@@ -111,7 +111,7 @@ module "triage_dispatcher" {
   version = "~> 8.0"
 
   function_name = "${local.prefix}-triage-dispatcher"
-  description   = "GitHub issue → Bedrock classify → REQUEST.RECEIVED or comment+label."
+  description   = "GitHub issue → triage agent runtime → REQUEST.RECEIVED or comment+label."
   handler       = "triage_dispatcher.handler.handler"
   runtime       = "python3.13"
   architectures = ["arm64"]
@@ -129,7 +129,8 @@ module "triage_dispatcher" {
   environment_variables = {
     AIDLC_BUS_NAME                  = var.bus_name
     AIDLC_REPO_HELPER_FUNCTION_NAME = var.repo_helper_function_name
-    AIDLC_BEDROCK_MODEL_ID          = var.triage_bedrock_model_id
+    AIDLC_TRIAGE_RUNTIME_ARN        = var.triage_runtime_arn
+    AIDLC_ARTIFACTS_BUCKET          = var.artifacts_bucket
     POWERTOOLS_SERVICE_NAME         = "triage_dispatcher"
     POWERTOOLS_LOG_LEVEL            = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT     = "false"
@@ -149,21 +150,22 @@ module "triage_dispatcher" {
       actions   = ["lambda:InvokeFunction"]
       resources = [var.repo_helper_function_arn]
     }
-    bedrock_invoke = {
-      # Triage uses the Bedrock Converse API directly; both action names
-      # are listed because boto3 ``converse`` may surface as either at the
-      # IAM policy layer depending on SDK release.
-      effect = "Allow"
-      actions = [
-        "bedrock:InvokeModel",
-        "bedrock:InvokeModelWithResponseStream",
-        "bedrock:Converse",
-        "bedrock:ConverseStream",
-      ]
-      resources = [
-        "arn:aws:bedrock:*::foundation-model/*",
-        "arn:aws:bedrock:*:*:inference-profile/*",
-      ]
+    invoke_triage_runtime = {
+      # The triage agent runs as an AgentCore Runtime; the dispatcher
+      # invokes it synchronously and parses the returned TriageResult.
+      effect    = "Allow"
+      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
+      resources = compact([
+        var.triage_runtime_arn,
+        var.triage_runtime_arn != "" ? "${var.triage_runtime_arn}/runtime-endpoint/*" : "",
+      ])
+    }
+    read_triage_decision = {
+      # Read the agent's persisted TriageDecision JSON from the
+      # artifacts bucket so we can act on the ``ask`` path's questions.
+      effect    = "Allow"
+      actions   = ["s3:GetObject"]
+      resources = ["${var.artifacts_bucket_arn}/runs/*/triage.json"]
     }
   }
 

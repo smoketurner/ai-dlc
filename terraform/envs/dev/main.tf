@@ -188,6 +188,10 @@ module "pipeline" {
   repo_helper_function_name = element(split(":", module.agents.tool_lambda_arns["repo_helper"]), 6)
   repo_helper_function_arn  = module.agents.tool_lambda_arns["repo_helper"]
 
+  triage_runtime_arn   = lookup(module.agents.runtime_arns, "triage", "")
+  artifacts_bucket     = module.state.artifacts_bucket
+  artifacts_bucket_arn = module.state.artifacts_bucket_arn
+
   cognito_user_pool_arn = module.auth.user_pool_arn
   cognito_audience      = [module.auth.client_id]
   cognito_issuer_url    = module.auth.issuer_url

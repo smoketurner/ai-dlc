@@ -91,10 +91,27 @@ variable "repo_helper_function_arn" {
   type        = string
 }
 
-variable "triage_bedrock_model_id" {
-  description = "Bedrock model id Triage uses to classify issues. Defaults to Haiku 4.5."
+variable "triage_runtime_arn" {
+  description = <<-EOT
+    ARN of the triage AgentCore Runtime. The dispatcher invokes this
+    runtime synchronously per issue and parses the returned
+    :class:`TriageDecision`. Empty string when the triage agent's image
+    hasn't been pushed yet — in that case the runtime resource doesn't
+    exist and the dispatcher will return ``triage_runtime_failed`` on
+    invocation.
+  EOT
   type        = string
-  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  default     = ""
+}
+
+variable "artifacts_bucket" {
+  description = "S3 bucket name holding the triage agent's persisted decision JSON."
+  type        = string
+}
+
+variable "artifacts_bucket_arn" {
+  description = "S3 bucket ARN for the artifacts bucket."
+  type        = string
 }
 
 variable "cognito_user_pool_arn" {
