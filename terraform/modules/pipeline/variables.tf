@@ -129,6 +129,11 @@ variable "cognito_issuer_url" {
   type        = string
 }
 
+variable "common_layer_arn" {
+  description = "ARN of the shared Lambda layer carrying the `common` Python package."
+  type        = string
+}
+
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

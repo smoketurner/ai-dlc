@@ -19,6 +19,7 @@ module "entry_adapter" {
   timeout       = 10
   publish       = true
   tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/entry_adapter/src"
@@ -28,13 +29,13 @@ module "entry_adapter" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_BUS_NAME                = var.bus_name
-    AIDLC_IDEMPOTENCY_TABLE       = var.idempotency_table
-    AIDLC_IDEMPOTENCY_TTL         = "86400"
-    POWERTOOLS_SERVICE_NAME       = "entry_adapter"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    AIDLC_BUS_NAME               = var.bus_name
+    AIDLC_IDEMPOTENCY_TABLE      = var.idempotency_table
+    AIDLC_IDEMPOTENCY_TTL        = "86400"
+    POWERTOOLS_SERVICE_NAME      = "entry_adapter"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -83,11 +84,11 @@ module "hitl_handler" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_APPROVALS_TABLE         = var.approvals_table
-    POWERTOOLS_SERVICE_NAME       = "hitl_handler"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    AIDLC_APPROVALS_TABLE        = var.approvals_table
+    POWERTOOLS_SERVICE_NAME      = "hitl_handler"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -132,6 +133,7 @@ module "triage_dispatcher" {
   timeout       = 60
   publish       = true
   tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/triage_dispatcher/src"
@@ -230,10 +232,10 @@ module "runtime_invoker" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    POWERTOOLS_SERVICE_NAME       = "runtime_invoker"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    POWERTOOLS_SERVICE_NAME      = "runtime_invoker"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -274,6 +276,7 @@ module "event_projector" {
   timeout       = 30
   publish       = true
   tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/event_projector/src"
@@ -283,12 +286,12 @@ module "event_projector" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_RUNS_TABLE              = var.runs_table
-    AIDLC_MEMORY_ID               = var.memory_id
-    POWERTOOLS_SERVICE_NAME       = "event_projector"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    AIDLC_RUNS_TABLE             = var.runs_table
+    AIDLC_MEMORY_ID              = var.memory_id
+    POWERTOOLS_SERVICE_NAME      = "event_projector"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days

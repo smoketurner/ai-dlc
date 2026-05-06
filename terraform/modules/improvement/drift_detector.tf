@@ -35,12 +35,12 @@ module "drift_detector" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
-    AIDLC_ALERTS_TOPIC_ARN        = var.alerts_topic_arn
-    POWERTOOLS_SERVICE_NAME       = "drift_detector"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
+    AIDLC_ALERTS_TOPIC_ARN       = var.alerts_topic_arn
+    POWERTOOLS_SERVICE_NAME      = "drift_detector"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days

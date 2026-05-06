@@ -202,6 +202,8 @@ module "pipeline" {
   cognito_user_pool_arn = module.auth.user_pool_arn
   cognito_audience      = [module.auth.client_id]
   cognito_issuer_url    = module.auth.issuer_url
+
+  common_layer_arn = module.common_layer.lambda_layer_arn
 }
 
 module "dashboard" {
@@ -273,4 +275,6 @@ module "improvement" {
   proposer_enabled      = contains(keys(local.agent_image_tags), "proposer")
   proposer_target_repo  = "${var.github_owner}/${var.github_repo}"
   proposer_project_slug = var.project
+
+  common_layer_arn = module.common_layer.lambda_layer_arn
 }

@@ -56,6 +56,11 @@ variable "telemetry_model_id" {
   default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 }
 
+variable "common_layer_arn" {
+  description = "ARN of the shared Lambda layer carrying the `common` Python package."
+  type        = string
+}
+
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

@@ -18,6 +18,7 @@ module "telemetry" {
   timeout       = 60
   publish       = true
   tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/telemetry/src"
@@ -27,13 +28,13 @@ module "telemetry" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
-    AIDLC_RUNS_TABLE              = var.runs_table
-    AIDLC_TELEMETRY_MODEL_ID      = var.telemetry_model_id
-    POWERTOOLS_SERVICE_NAME       = "telemetry"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
+    AIDLC_RUNS_TABLE             = var.runs_table
+    AIDLC_TELEMETRY_MODEL_ID     = var.telemetry_model_id
+    POWERTOOLS_SERVICE_NAME      = "telemetry"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -88,12 +89,12 @@ module "few_shot_miner" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
-    AIDLC_RUNS_TABLE              = var.runs_table
-    POWERTOOLS_SERVICE_NAME       = "few_shot_miner"
-    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL          = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
+    AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
+    AIDLC_RUNS_TABLE             = var.runs_table
+    POWERTOOLS_SERVICE_NAME      = "few_shot_miner"
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL         = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT  = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
