@@ -19,6 +19,7 @@ module "common_layer" {
 
   layer_name               = "${var.project}-${var.env}-common"
   description              = "Shared ai-dlc Python runtime: common package + powertools + boto3."
+  runtime                  = "python3.13"
   compatible_runtimes      = ["python3.13"]
   compatible_architectures = ["arm64"]
 
