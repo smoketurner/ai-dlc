@@ -28,10 +28,9 @@ module "common_layer" {
       prefix_in_zip = "python/common"
     },
     {
-      path             = "${path.module}/../../../packages/common"
-      pip_requirements = "${path.module}/../../../packages/common/layer-requirements.txt"
+      path             = "${path.module}/../../../packages/common/layer"
+      pip_requirements = true
       prefix_in_zip    = "python"
-      patterns         = ["!.*"]
     },
   ]
   build_in_docker = true
