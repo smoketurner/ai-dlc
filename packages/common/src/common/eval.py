@@ -81,7 +81,7 @@ COMMENT_WEIGHT: dict[CommentCategory, int] = {
     "scope": 4,
     "unclear": 1,
 }
-"""Weights for the friction score (commitment C1).
+"""Per-category weights summed into the friction score.
 
 ``nit`` is deliberately zero — non-blocking nits should not look like
 quality regressions. ``security`` is heaviest because shipping insecure
@@ -164,9 +164,11 @@ class EfficiencyMetrics(_Frozen):
 class DriftSignal(Payload):
     """Emitted when rolling efficiency drops against baseline.
 
-    Threshold (commitment C4): ``delta_pct >= 20`` and ``sample_size >= 10``.
-    The Proposer subscribes to this event and is restricted (commitment
-    C5) to opening PRs against prompts and ``MEMORY.md`` only.
+    Threshold: ``delta_pct >= 20`` and ``sample_size >= 10`` (the
+    aggregator's ``DRIFT_DELTA_PCT`` / ``DRIFT_MIN_SAMPLE_SIZE``).
+    The Proposer subscribes to this event and is restricted by its
+    Pydantic validator to opening PRs against prompts and
+    ``docs/MEMORY.md`` only.
 
     Inherits from :class:`common.events.Payload` so it slots into the
     ``EventEnvelope[DriftSignal]`` envelope as the payload of

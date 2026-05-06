@@ -1,5 +1,5 @@
 ################################################################################
-# drift_detector — Phase 9b complement to the eval runner.
+# drift_detector — eval-runner complement.
 #
 # Reads recent eval results from S3, compares trailing-7d pass rate against
 # the trailing-30d baseline, persists a structured drift report, and emits

@@ -1,10 +1,7 @@
 """Strands tools the Critic uses to read the spec and write its critique.
 
 The critic runs in the AgentCore Runtime container with IAM credentials
-scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3
-here for Phase 10 simplicity; a later iteration can swap to MCP calls
-through the per-agent AgentCore Gateway, which already has artifact_tool
-registered as a target.
+scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3.
 
 Each operation has a plain Python function plus a Strands ``@tool`` wrapper
 with a ``_tool`` suffix.

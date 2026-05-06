@@ -1,9 +1,9 @@
 """Strands tools the Proposer uses to read recent quality signals.
 
 The Proposer reads from S3 only — eval results, drift reports, rejection
-records (from Phase 9a's telemetry Lambda), and the few-shot example
-bank (from Phase 9a's few_shot_miner). It never reads or writes the
-SDLC pipeline state directly.
+records (from the telemetry Lambda), and the few-shot example bank (from
+the few_shot_miner Lambda). It never reads or writes the SDLC pipeline
+state directly.
 
 Outputs from each tool are JSON-serialised summaries kept under ~16 KB so
 they fit comfortably in the model's context.

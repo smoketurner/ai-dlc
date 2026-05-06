@@ -1,9 +1,7 @@
 """Strands tools the Reviewer uses to read context and post review artifacts.
 
 The reviewer runs in the AgentCore Runtime container with IAM credentials
-scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3
-here for Phase 10 simplicity; the AgentCore Gateway has artifact_tool +
-repo_helper registered as targets and Phase 11 can swap to MCP transport.
+scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3.
 
 Each operation has a plain Python function plus a Strands ``@tool`` wrapper
 with a ``_tool`` suffix.

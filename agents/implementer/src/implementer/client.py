@@ -113,9 +113,9 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
 def resolve_target_repo(payload: ImplementerInput) -> str:
     """Pick the repo this run targets.
 
-    Step Functions / the dashboard always thread ``target_repo`` through
-    the agent input (Phase 11a), so the only failure mode is a
-    malformed input.
+    Step Functions and the dashboard always thread ``target_repo``
+    through the agent input, so the only failure mode is a malformed
+    input.
     """
     if payload.target_repo:
         return payload.target_repo

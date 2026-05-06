@@ -1,8 +1,7 @@
 """Strands tools the Tester uses to read context and post the report.
 
 The tester runs in the AgentCore Runtime container with IAM credentials
-scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3
-here for Phase 10 simplicity.
+scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3.
 """
 
 from __future__ import annotations

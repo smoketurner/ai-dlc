@@ -1,7 +1,8 @@
 """AgentCore Runtime entrypoint for the Proposer.
 
 The Proposer runs out of the main SDLC pipeline — invoked by an EventBridge
-schedule (weekly) and on regression detection from Phase 9b. The entrypoint:
+schedule (weekly) and on alerts from the eval-regression alarm. The
+entrypoint:
 
   1. Validates the input as :class:`ProposerInput`.
   2. Asks the Strands agent for a :class:`Proposal`.

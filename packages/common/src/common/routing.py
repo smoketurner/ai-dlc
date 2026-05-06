@@ -9,8 +9,8 @@ or the B variant.
 The choice is stable for the run: every per-task invocation of the same
 agent inside one run picks the same variant, so a multi-task run doesn't
 end up with a half-A / half-B mix. Variant tagging flows through the
-``actor_id`` field on every event the agent emits, so the eval matrix
-(Phase 9b) can compare A vs B outcomes.
+``actor_id`` field on every event the agent emits, so the eval runner
+can compare A vs B outcomes.
 
 When ``prompts_b`` doesn't exist for a given agent, :func:`load_system_prompt`
 silently falls back to the A module — so deploying B is a single PR

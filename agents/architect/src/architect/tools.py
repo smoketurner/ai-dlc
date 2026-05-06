@@ -1,11 +1,8 @@
 """Strands tools the Architect uses to read MEMORY.md and write spec docs.
 
 The architect runs in the AgentCore Runtime container, which has IAM
-credentials scoped to the artifacts + memory_md S3 buckets. Tools speak
-directly to S3 here for Phase 4 simplicity. A later iteration can swap
-these to MCP calls against the per-agent AgentCore Gateway, which already
-has the artifact_tool Lambda registered as a target — the surface stays
-the same; only the transport changes.
+credentials scoped to the artifacts + memory_md S3 buckets. Tools
+speak directly to S3.
 
 Each operation has a plain Python function (callable from anywhere, including
 ``app.py`` for deterministic post-agent uploads) plus a Strands ``@tool``

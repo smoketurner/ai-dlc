@@ -14,10 +14,10 @@ Examples land at:
 
     s3://artifacts/evals/few-shots/{kind}/{date}/{run_id}/{ix}.json
 
-The proposer (Phase 9c) reads these as a few-shot bank when proposing
-prompt updates. We do *not* mine rejected runs here — that's the
-telemetry agent's job; rejection records carry the labeling. Mining only
-clean runs keeps the example bank high-signal.
+The proposer reads these as a few-shot bank when proposing prompt
+updates. We do *not* mine rejected runs here — that's the telemetry
+agent's job; rejection records carry the labeling. Mining only clean
+runs keeps the example bank high-signal.
 """
 
 from __future__ import annotations

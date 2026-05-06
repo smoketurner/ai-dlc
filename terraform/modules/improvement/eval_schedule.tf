@@ -6,9 +6,9 @@
 # and fires when the trailing-week average drops more than `eval_drift_threshold`
 # below the trailing 30-day baseline.
 #
-# Auto-revert PR is intentionally left out of v1 — the alarm publishes to
-# the existing alerts SNS topic, a human evaluates, and (for now) the human
-# rolls back. Auto-revert is queued for the parking lot.
+# Auto-revert is intentionally not implemented — the alarm publishes to
+# the alerts SNS topic, a human evaluates, and the human rolls back. The
+# auto-revert idea is parked in the roadmap.
 ################################################################################
 
 resource "aws_cloudwatch_event_rule" "eval_schedule" {

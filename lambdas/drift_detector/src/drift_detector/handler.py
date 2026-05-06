@@ -12,11 +12,14 @@ and:
   * Sends a structured message to the alerts SNS topic when a regression
     fires, listing the cases that dropped and the week-over-week numbers.
 
-PR commenting on the offending change is intentionally NOT implemented in
-v1 — that needs a git_sha → PR resolver primitive (e.g., a new
-``resolve_pr`` op on repo_helper that wraps ``GET
-/repos/{owner}/{repo}/commits/{sha}/pulls``) and a way to thread the
-commit SHA through eval results. Tracked as a Phase 9b follow-up.
+PR commenting on the offending change is intentionally NOT implemented;
+that needs a git_sha → PR resolver primitive on ``repo_helper`` plus
+threading the commit SHA through eval results.
+
+@TODO: add ``repo_helper.resolve_pr`` (wraps
+``GET /repos/{owner}/{repo}/commits/{sha}/pulls``), thread commit SHA
+into eval result records, then post a PR comment from this handler when
+drift fires on a SHA we can resolve.
 """
 
 from __future__ import annotations

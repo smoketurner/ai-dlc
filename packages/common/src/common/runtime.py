@@ -261,7 +261,8 @@ class ProposerInput(_Frozen):
     """Input passed to the Proposer's ``/invocations`` endpoint.
 
     The Proposer runs out of the main SDLC pipeline — it's invoked by an
-    EventBridge schedule (weekly) and on regression detection from 9b.
+    EventBridge schedule (weekly) and on alerts from the eval-regression
+    drift detector.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]

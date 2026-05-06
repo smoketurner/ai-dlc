@@ -115,7 +115,7 @@ resource "aws_scheduler_schedule" "proposer_weekly" {
 # Lambda that fires the proposer when the drift_detector alarm goes off.
 # A small bridge — receives the SNS alarm message, invokes the proposer
 # runtime with trigger_reason="regression". Lives here (not in the
-# agents module) because the trigger is a 9c concern, not a fleet concern.
+# agents module) because the trigger is a proposer concern, not a fleet concern.
 
 module "proposer_trigger" {
   count = var.proposer_enabled ? 1 : 0

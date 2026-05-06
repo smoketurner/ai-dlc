@@ -4,10 +4,8 @@ The Reviewer produces a :class:`Review` whose Markdown rendering lands at:
 
   s3://{artifacts_bucket}/runs/{run_id}/tasks/{task_id}/review.md
 
-Each :class:`ReviewComment` would become a PR comment via
-``repo_helper.comment_pr`` once the helper Lambda's network calls land
-(Phase 6). For Phase 10 v1 the rendered Markdown is the canonical artifact
-and a single summary comment is attempted on the PR.
+The rendered Markdown is the canonical artifact; a single summary
+comment is attempted on the PR via ``repo_helper.comment_pr``.
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 ################################################################################
-# Phase 9a Lambdas — telemetry + few_shot_miner.
+# telemetry + few_shot_miner Lambdas.
 #
 # Both Lambdas write labeled records to s3://artifacts/evals/... — the
-# substrate the eval runner (9b) and improvement proposer (9c) read from.
+# substrate the eval runner and improvement proposer read from.
 ################################################################################
 
 module "telemetry" {

@@ -7,10 +7,9 @@ Two trigger sources, dispatched by event shape:
   forward the event to AgentCore Memory via ``CreateEvent`` so cross-session
   memory strategies can index it.
 
-* **DynamoDB Streams** (runs + approvals tables) — for now a no-op
-  passthrough; surfaces here so we can extend it without changing wiring
-  later. (Phase 5 ships the EventBridge half — DDB-stream consumers are
-  hooked up but inert.)
+* **DynamoDB Streams** (runs + approvals tables) — currently a no-op
+  passthrough; surfaces here so the wiring exists when a stream consumer
+  is needed.
 
 The projector is idempotent: every write uses the event_id as a sort-key
 suffix or a ``ConditionExpression`` that keeps repeats from clobbering
@@ -83,7 +82,7 @@ def handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_dynamodb_stream(event: dict[str, Any]) -> dict[str, Any]:
-    """Pass-through for now; reserved for downstream extension."""
+    """Pass-through; logs the batch size and returns success."""
     count = len(event.get("Records", []))
     logger.info("ddb stream batch", extra={"records": count})
     return {"ok": True, "records": count}

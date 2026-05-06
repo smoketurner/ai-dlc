@@ -4,9 +4,8 @@ Two operations dispatched on ``input.op``:
 
 * ``REQUEST_APPROVAL`` — Step Functions invokes via ``.waitForTaskToken``.
   We persist the ``task_token`` in the approvals table keyed by
-  ``(run_id, gate_kind, gate_ref)`` and (in production) post a comment on
-  the relevant GitHub PR. Phase 5 ships the persistence half — the GitHub
-  call is a stub until repo_helper is fully wired in Phase 6.
+  ``(run_id, gate_kind, gate_ref)`` and post a comment on the relevant
+  GitHub PR via ``repo_helper``.
 
 * ``DECIDE`` — Invoked by API Gateway's ``POST /v1/runs/{id}/decide`` (and
   the GitHub webhook entrypoint). Looks up the stored task_token by gate

@@ -26,7 +26,12 @@ if TYPE_CHECKING:
 
 
 BucketKey = tuple[str, AgentOwner, str]
-"""``(target_repo, agent_owner, prompt_variant)`` aggregation grain (commitment C6)."""
+"""``(target_repo, agent_owner, prompt_variant)`` aggregation grain.
+
+Per-repo so conventions don't bleed across projects, per-agent so the
+proposer can target a specific agent's prompt, per-prompt-variant so
+A/B comparisons compose at the same grain.
+"""
 
 
 def bucket_key(row: PRTelemetry) -> BucketKey:
@@ -147,8 +152,10 @@ def aggregate(
     return out
 
 
-DRIFT_DELTA_PCT = 20.0  # commitment C4
-DRIFT_MIN_SAMPLE_SIZE = 10  # commitment C4
+# Drift fires only when the rolling friction score is materially worse
+# than baseline AND the sample is large enough to trust.
+DRIFT_DELTA_PCT = 20.0
+DRIFT_MIN_SAMPLE_SIZE = 10
 
 
 def drift_detected(

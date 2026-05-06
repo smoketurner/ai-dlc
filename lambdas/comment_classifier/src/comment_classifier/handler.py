@@ -13,7 +13,7 @@ and returned in the response so the eval aggregator can stream it.
 
 Bedrock failures and unparseable responses fall back to ``unclear``.
 The classifier is advisory: a wrong label is recoverable on the next
-quarterly hand-label calibration cycle (commitment C2).
+hand-label calibration cycle.
 """
 
 from __future__ import annotations
