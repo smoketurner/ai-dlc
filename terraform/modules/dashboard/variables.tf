@@ -200,6 +200,12 @@ variable "dashboard_oauth_return_url" {
   default     = ""
 }
 
+variable "github_bot_login" {
+  description = "Login of the GitHub bot the platform runs as (e.g., 'aidlc-bot' or 'aidlc[bot]'). When set, an issues.assigned webhook routes to triage if the new assignee matches. Empty disables the assigned-trigger."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

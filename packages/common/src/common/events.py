@@ -99,6 +99,16 @@ class RequestReceived(Payload):
         ]
         | None
     ) = None
+    # Triage agent's workflow classification. Step Functions branches on
+    # this right after the run is recorded — ``spec_driven`` runs the
+    # full Architect/Critic/spec-gate flow; ``bug_fix`` / ``upgrade`` /
+    # ``docs`` skip the spec phase and run a synthetic 1-task spec the
+    # dispatcher generated from the issue context.
+    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] = "spec_driven"
+    # Slug of the synthetic spec the triage_dispatcher uploaded to S3
+    # for non-``spec_driven`` runs. ``None`` for ``spec_driven`` (the
+    # Architect produces the spec at runtime).
+    synthetic_spec_slug: Annotated[str, Field(min_length=1, max_length=128)] | None = None
 
 
 class IssueTriaged(Payload):

@@ -161,6 +161,14 @@ module "triage_dispatcher" {
         actions   = ["s3:GetObject"]
         resources = ["${var.artifacts_bucket_arn}/runs/*/triage.json"]
       }
+      write_synthetic_spec = {
+        # Upload the 1-task synthetic spec bundle for non-spec_driven
+        # workflow kinds (bug_fix / upgrade / docs). The state machine's
+        # synthetic-spec branch points the Implementer at this prefix.
+        effect    = "Allow"
+        actions   = ["s3:PutObject"]
+        resources = ["${var.artifacts_bucket_arn}/specs/*"]
+      }
     },
     var.triage_runtime_arn != "" ? {
       invoke_triage_runtime = {
@@ -369,13 +377,15 @@ resource "aws_cloudwatch_event_target" "start_sdlc" {
 
   input_transformer {
     input_paths = {
-      run_id         = "$.detail.run_id"
-      correlation_id = "$.detail.correlation_id"
-      actor_id       = "$.detail.actor_id"
-      project_slug   = "$.detail.payload.project_slug"
-      intent         = "$.detail.payload.intent"
-      requestor_sub  = "$.detail.payload.requestor_sub"
-      target_repo    = "$.detail.payload.target_repo"
+      run_id              = "$.detail.run_id"
+      correlation_id      = "$.detail.correlation_id"
+      actor_id            = "$.detail.actor_id"
+      project_slug        = "$.detail.payload.project_slug"
+      intent              = "$.detail.payload.intent"
+      requestor_sub       = "$.detail.payload.requestor_sub"
+      target_repo         = "$.detail.payload.target_repo"
+      workflow_kind       = "$.detail.payload.workflow_kind"
+      synthetic_spec_slug = "$.detail.payload.synthetic_spec_slug"
     }
     input_template = <<-JSON
       {
@@ -385,7 +395,9 @@ resource "aws_cloudwatch_event_target" "start_sdlc" {
         "project_slug": "<project_slug>",
         "intent": <intent>,
         "requestor_sub": <requestor_sub>,
-        "target_repo": <target_repo>
+        "target_repo": <target_repo>,
+        "workflow_kind": <workflow_kind>,
+        "synthetic_spec_slug": <synthetic_spec_slug>
       }
     JSON
   }

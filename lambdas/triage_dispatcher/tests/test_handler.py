@@ -140,11 +140,86 @@ def test_proceed_emits_request_received_and_comments(
     assert out["decision"] == "proceed"
     assert out["workflow_kind"] == "spec_driven"
     assert out["run_id"]
+    assert out["synthetic_spec_slug"] is None
 
     assert len(stub_lambda_invoke) == 2
     ops = [parse_invoke_payload(call)["op"] for call in stub_lambda_invoke]
     assert ops == ["comment_issue", "label_issue"]
     assert parse_invoke_payload(stub_lambda_invoke[1])["labels"] == [IN_PROGRESS_LABEL]
+
+
+def test_proceed_spec_driven_does_not_upload_synthetic_spec(
+    stub_decision: Callable[[TriageDecision], None],
+    stub_lambda_invoke: list[dict[str, Any]],
+) -> None:
+    stub_decision(
+        TriageDecision(
+            action="proceed",
+            workflow_kind="spec_driven",
+            rationale="Small additive feature; clear acceptance.",
+        ),
+    )
+
+    h.handler(base_request_payload(), ctx())
+
+    listing = boto3.client("s3").list_objects_v2(Bucket=ARTIFACTS, Prefix="specs/")
+    assert listing.get("KeyCount", 0) == 0
+
+
+def test_proceed_bug_fix_uploads_synthetic_spec(
+    stub_decision: Callable[[TriageDecision], None],
+    stub_lambda_invoke: list[dict[str, Any]],
+) -> None:
+    stub_decision(
+        TriageDecision(
+            action="proceed",
+            workflow_kind="bug_fix",
+            rationale="Bug has clear repro steps.",
+        ),
+    )
+
+    out = h.handler(base_request_payload(), ctx())
+
+    assert out["workflow_kind"] == "bug_fix"
+    slug = out["synthetic_spec_slug"]
+    assert slug == out["run_id"]
+
+    s3 = boto3.client("s3")
+    listing = s3.list_objects_v2(Bucket=ARTIFACTS, Prefix=f"specs/{slug}/")
+    keys = {item["Key"] for item in listing.get("Contents", [])}
+    assert keys == {
+        f"specs/{slug}/requirements.md",
+        f"specs/{slug}/design.md",
+        f"specs/{slug}/tasks.md",
+    }
+    tasks = s3.get_object(Bucket=ARTIFACTS, Key=f"specs/{slug}/tasks.md")["Body"].read().decode()
+    assert "**T-001**" in tasks
+    assert "**Implements:** AC-001" in tasks
+
+    ops = [parse_invoke_payload(call)["op"] for call in stub_lambda_invoke]
+    assert ops == ["comment_issue", "label_issue"]
+
+
+@pytest.mark.parametrize("kind", ["upgrade", "docs"])
+def test_proceed_other_kinds_upload_synthetic_spec(
+    kind: str,
+    stub_decision: Callable[[TriageDecision], None],
+    stub_lambda_invoke: list[dict[str, Any]],
+) -> None:
+    stub_decision(
+        TriageDecision(
+            action="proceed",
+            workflow_kind=kind,  # ty: ignore[invalid-argument-type]
+            rationale="Routine.",
+        ),
+    )
+
+    out = h.handler(base_request_payload(), ctx())
+
+    slug = out["synthetic_spec_slug"]
+    assert slug is not None
+    listing = boto3.client("s3").list_objects_v2(Bucket=ARTIFACTS, Prefix=f"specs/{slug}/")
+    assert listing.get("KeyCount") == 3
 
 
 def test_ask_posts_questions_and_labels_awaiting(

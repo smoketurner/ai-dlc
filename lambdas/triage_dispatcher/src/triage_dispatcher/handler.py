@@ -43,6 +43,7 @@ from common.events import EventEnvelope, RequestReceived
 from common.ids import new_correlation_id, new_event_id, new_run_id
 from common.runtime import TriageInput, TriageResult
 from common.triage import TriageDecision
+from triage_dispatcher import synthesize
 from triage_dispatcher.models import TriageRequest
 
 if TYPE_CHECKING:
@@ -208,7 +209,14 @@ def apply(
 ) -> dict[str, Any]:
     """Carry out the verdict — emit a run, comment + label, or both."""
     if decision.action == "proceed":
-        emit_request_received(req, decision, run_id=run_id, correlation_id=correlation_id)
+        synthetic_slug = maybe_upload_synthetic_spec(req, decision, run_id=run_id)
+        emit_request_received(
+            req,
+            decision,
+            run_id=run_id,
+            correlation_id=correlation_id,
+            synthetic_spec_slug=synthetic_slug,
+        )
         post_comment(req, format_proceed_comment(decision, run_id))
         relabel(req, add=[IN_PROGRESS_LABEL])
         return {
@@ -216,6 +224,7 @@ def apply(
             "decision": "proceed",
             "run_id": run_id,
             "workflow_kind": decision.workflow_kind,
+            "synthetic_spec_slug": synthetic_slug,
         }
     if decision.action == "ask":
         post_comment(req, format_ask_comment(decision))
@@ -240,8 +249,10 @@ def emit_request_received(
     *,
     run_id: str,
     correlation_id: str,
+    synthetic_spec_slug: str | None,
 ) -> None:
     """Publish ``REQUEST.RECEIVED`` for a ``proceed`` verdict."""
+    workflow_kind = decision.workflow_kind or "spec_driven"
     envelope = EventEnvelope[RequestReceived](
         event_id=new_event_id(),
         type="REQUEST.RECEIVED",
@@ -257,6 +268,8 @@ def emit_request_received(
             requestor_sub=req.requestor_sub,
             target_repo=req.repo,
             source_issue_url=req.issue_url,
+            workflow_kind=workflow_kind,
+            synthetic_spec_slug=synthetic_spec_slug,
         ),
     )
     events_client().put_events(
@@ -271,8 +284,46 @@ def emit_request_received(
     )
     logger.info(
         "request received emitted",
-        extra={"run_id": run_id, "issue_url": req.issue_url, "kind": decision.workflow_kind},
+        extra={"run_id": run_id, "issue_url": req.issue_url, "kind": workflow_kind},
     )
+
+
+def maybe_upload_synthetic_spec(
+    req: TriageRequest,
+    decision: TriageDecision,
+    *,
+    run_id: str,
+) -> str | None:
+    """Render + upload a 1-task synthetic spec for non-``spec_driven`` kinds.
+
+    Returns the spec slug when uploaded, or ``None`` for ``spec_driven``
+    (Architect produces the spec at runtime). The slug is the run id —
+    keeping the convention global means S3 keys never collide and the
+    ASL's ``LoadSyntheticSpec`` Pass state can derive the prefix
+    deterministically without round-tripping the slug through the event.
+    """
+    kind = decision.workflow_kind
+    if kind is None or kind == "spec_driven":
+        return None
+    slug = run_id
+    docs = {
+        "requirements": synthesize.render_requirements(
+            issue_title=req.title,
+            issue_body=req.body,
+            issue_url=req.issue_url,
+        ),
+        "design": synthesize.render_design(kind=kind, issue_url=req.issue_url),
+        "tasks": synthesize.render_tasks(kind=kind, issue_url=req.issue_url),
+    }
+    for name, body in docs.items():
+        s3_client().put_object(
+            Bucket=artifacts_bucket(),
+            Key=f"specs/{slug}/{name}.md",
+            Body=body.encode("utf-8"),
+            ContentType="text/markdown",
+        )
+    logger.info("synthetic spec uploaded", extra={"run_id": run_id, "kind": kind, "slug": slug})
+    return slug
 
 
 def project_slug_from_repo(repo: str) -> str:

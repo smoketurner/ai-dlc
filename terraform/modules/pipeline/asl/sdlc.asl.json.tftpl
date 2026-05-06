@@ -14,7 +14,9 @@
         "actor_id": "{% $states.input.actor_id %}",
         "eval_mode": "{% $exists($states.input.eval_mode) ? $states.input.eval_mode : false %}",
         "requestor_sub": "{% $exists($states.input.requestor_sub) ? $states.input.requestor_sub : null %}",
-        "target_repo": "{% $exists($states.input.target_repo) ? $states.input.target_repo : null %}"
+        "target_repo": "{% $exists($states.input.target_repo) ? $states.input.target_repo : null %}",
+        "workflow_kind": "{% $exists($states.input.workflow_kind) and $states.input.workflow_kind != null ? $states.input.workflow_kind : 'spec_driven' %}",
+        "synthetic_spec_slug": "{% $exists($states.input.synthetic_spec_slug) ? $states.input.synthetic_spec_slug : null %}"
       }
     },
     "PutInitialState": {
@@ -27,11 +29,58 @@
           "sk": { "S": "STATE" },
           "status": { "S": "RUNNING" },
           "project_slug": { "S": "{% $states.input.project_slug %}" },
-          "intent": { "S": "{% $states.input.intent %}" }
+          "intent": { "S": "{% $states.input.intent %}" },
+          "workflow_kind": { "S": "{% $states.input.workflow_kind %}" }
         }
       },
-      "Next": "InvokeArchitect",
+      "Next": "RouteByWorkflowKind",
       "Output": "{% $states.input %}"
+    },
+    "RouteByWorkflowKind": {
+      "Type": "Choice",
+      "Comment": "spec_driven runs through the full Architect → Critic → spec-gate → IterateTasks flow. The other kinds (bug_fix / upgrade / docs) skip the spec phase — the triage_dispatcher already wrote a synthetic 1-task spec to S3 and threaded the slug through the event payload.",
+      "Default": "InvokeArchitect",
+      "Choices": [
+        {
+          "Condition": "{% $states.input.workflow_kind != 'spec_driven' %}",
+          "Next": "LoadSyntheticSpec"
+        }
+      ]
+    },
+    "LoadSyntheticSpec": {
+      "Type": "Pass",
+      "Comment": "Build the same shape Architect's output would have produced, plus an empty critique. PublishSpecReady → MaybeAutoApproveSpec then auto-approves because one_way_task_count = 0 and high_severity_count = 0.",
+      "Output": {
+        "run_id": "{% $states.input.run_id %}",
+        "correlation_id": "{% $states.input.correlation_id %}",
+        "project_slug": "{% $states.input.project_slug %}",
+        "intent": "{% $states.input.intent %}",
+        "eval_mode": "{% $states.input.eval_mode %}",
+        "requestor_sub": "{% $states.input.requestor_sub %}",
+        "target_repo": "{% $states.input.target_repo %}",
+        "spec": {
+          "spec_slug": "{% $states.input.synthetic_spec_slug %}",
+          "spec_s3_prefix": "{% 'specs/' & $states.input.synthetic_spec_slug & '/' %}",
+          "requirements_summary": "{% $states.input.intent %}",
+          "design_summary": "{% 'synthetic ' & $states.input.workflow_kind & ' workflow' %}",
+          "task_count": 1,
+          "task_ids": ["T-001"],
+          "one_way_task_count": 0,
+          "proposed_adrs": [],
+          "session_id": "{% $states.input.run_id %}"
+        },
+        "critique": {
+          "spec_slug": "{% $states.input.synthetic_spec_slug %}",
+          "critique_s3_key": "",
+          "issue_count": 0,
+          "high_severity_count": 0,
+          "medium_severity_count": 0,
+          "low_severity_count": 0,
+          "summary": "{% 'synthetic ' & $states.input.workflow_kind & ' workflow — no Critic invoked' %}",
+          "session_id": "{% $states.input.run_id %}"
+        }
+      },
+      "Next": "PublishSpecReady"
     },
     "InvokeArchitect": {
       "Type": "Task",

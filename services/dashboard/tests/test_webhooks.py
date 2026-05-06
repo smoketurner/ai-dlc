@@ -25,6 +25,7 @@ from dashboard.routes.webhooks import (
 )
 
 SECRET = b"super-secret"
+BOT_LOGIN = "aidlc-bot"
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +35,7 @@ def patch_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     fake_settings = MagicMock()
     fake_settings.github_webhook_secret_id = "/aidlc/dev/github-webhook-secret"  # noqa: S105
+    fake_settings.github_bot_login = BOT_LOGIN
     monkeypatch.setattr("dashboard.routes.webhooks.settings", lambda: fake_settings)
 
     def fake_secrets() -> Any:
@@ -44,6 +46,15 @@ def patch_secret(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr("dashboard.routes.webhooks.secrets", fake_secrets)
     yield
     webhook_secret.cache_clear()
+
+
+@pytest.fixture
+def disable_bot_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Override the autouse fixture's bot login to test the disabled-trigger case."""
+    fake_settings = MagicMock()
+    fake_settings.github_webhook_secret_id = "/aidlc/dev/github-webhook-secret"  # noqa: S105
+    fake_settings.github_bot_login = ""
+    monkeypatch.setattr("dashboard.routes.webhooks.settings", lambda: fake_settings)
 
 
 def sign(body: bytes) -> str:
@@ -269,3 +280,94 @@ def test_parse_triage_routes_only_relevant_event_types() -> None:
     assert parse_triage("issues", issues_payload) is not None
     assert parse_triage("ping", {}) is None
     assert parse_triage("pull_request_review", {}) is None
+
+
+def assigned_payload(*, assignee_login: str, labels: list[str] | None = None) -> dict[str, Any]:
+    """Build an ``issues.assigned`` webhook payload for the given assignee."""
+    payload = issue_payload(action="assigned", labels=labels or [])
+    payload["assignee"] = {"login": assignee_login}
+    return payload
+
+
+def test_triage_from_issues_assigned_to_bot_triggers() -> None:
+    envelope = triage_from_issues(assigned_payload(assignee_login=BOT_LOGIN))
+
+    assert envelope is not None
+    assert envelope["repo"] == "o/r"
+    assert envelope["issue_number"] == 7
+
+
+def test_triage_from_issues_assigned_to_human_ignored() -> None:
+    assert triage_from_issues(assigned_payload(assignee_login="alice")) is None
+
+
+def test_triage_from_issues_assigned_disabled_when_bot_login_empty(
+    disable_bot_login: None,
+) -> None:
+    assert triage_from_issues(assigned_payload(assignee_login=BOT_LOGIN)) is None
+
+
+def test_triage_from_issues_assigned_skips_terminal_labels() -> None:
+    payload = assigned_payload(assignee_login=BOT_LOGIN, labels=["aidlc:in-progress"])
+    assert triage_from_issues(payload) is None
+
+
+def comment_payload(
+    *,
+    body: str,
+    labels: list[str],
+    user_login: str = "alice",
+    user_type: str | None = None,
+) -> dict[str, Any]:
+    """Build an ``issue_comment.created`` payload on a real (non-PR) issue."""
+    user: dict[str, Any] = {"login": user_login}
+    if user_type is not None:
+        user["type"] = user_type
+    return {
+        "action": "created",
+        "comment": {"body": body, "user": user},
+        "issue": {
+            "number": 7,
+            "html_url": "https://github.com/o/r/issues/7",
+            "title": "Add /version",
+            "body": "context",
+            "labels": [{"name": name} for name in labels],
+            "user": {"login": "alice"},
+        },
+        "repository": {"full_name": "o/r"},
+    }
+
+
+def test_triage_from_issue_comment_resumes_ask_loop_on_human_reply() -> None:
+    payload = comment_payload(
+        body="The status code on auth failure should be 401.",
+        labels=["aidlc:awaiting-response"],
+    )
+
+    envelope = triage_from_issue_comment(payload)
+
+    assert envelope is not None
+    assert envelope["prior_human_comments"] == ["The status code on auth failure should be 401."]
+    assert envelope["prior_triage_count"] == 1
+
+
+def test_triage_from_issue_comment_ask_loop_ignores_bot_replies() -> None:
+    payload = comment_payload(
+        body="anything",
+        labels=["aidlc:awaiting-response"],
+        user_login=BOT_LOGIN,
+        user_type="Bot",
+    )
+
+    assert triage_from_issue_comment(payload) is None
+
+
+def test_triage_from_issue_comment_aidlc_go_still_works_without_awaiting_label() -> None:
+    payload = comment_payload(body="/aidlc go please", labels=[])
+
+    envelope = triage_from_issue_comment(payload)
+
+    assert envelope is not None
+    # Fresh round, not a resume — no prior context attached.
+    assert "prior_human_comments" not in envelope
+    assert "prior_triage_count" not in envelope

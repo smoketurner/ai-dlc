@@ -62,6 +62,38 @@ def test_request_received_rejects_non_github_source_url() -> None:
         )
 
 
+def test_request_received_workflow_kind_defaults_to_spec_driven() -> None:
+    payload = RequestReceived(project_slug="demo", intent="x", requestor="alice")
+    assert payload.workflow_kind == "spec_driven"
+    assert payload.synthetic_spec_slug is None
+
+
+def test_request_received_carries_synthetic_spec_for_bug_fix() -> None:
+    payload = RequestReceived(
+        project_slug="demo",
+        intent="x",
+        requestor="triage",
+        workflow_kind="bug_fix",
+        synthetic_spec_slug="run-abc",
+    )
+    env = _env(payload)
+    parsed = EventEnvelope[RequestReceived].model_validate_json(env.model_dump_json())
+    assert parsed.payload.workflow_kind == "bug_fix"
+    assert parsed.payload.synthetic_spec_slug == "run-abc"
+
+
+def test_request_received_rejects_unknown_workflow_kind() -> None:
+    with pytest.raises(ValidationError):
+        RequestReceived.model_validate(
+            {
+                "project_slug": "demo",
+                "intent": "x",
+                "requestor": "alice",
+                "workflow_kind": "other",
+            },
+        )
+
+
 def test_unknown_field_rejected() -> None:
     with pytest.raises(ValidationError):
         RequestReceived.model_validate(

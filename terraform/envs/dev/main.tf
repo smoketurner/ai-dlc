@@ -245,6 +245,7 @@ module "dashboard" {
   dashboard_workload_name    = module.agents.dashboard_workload_name
   github_oauth_provider_name = module.agents.github_oauth_provider_name
   dashboard_oauth_return_url = module.agents.dashboard_oauth_return_url
+  github_bot_login           = var.github_bot_login
 }
 
 module "improvement" {

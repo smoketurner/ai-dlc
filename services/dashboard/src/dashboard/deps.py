@@ -38,6 +38,11 @@ class Settings(BaseModel):
     dashboard_workload_name: str
     github_oauth_provider_name: str
     dashboard_oauth_return_url: str
+    # Login of the GitHub bot the platform runs as. When set, an
+    # ``issues.assigned`` webhook routes to triage if the new assignee
+    # matches this login. Unset → assigned-trigger is disabled (only the
+    # label-based + ``/aidlc go`` triggers fire).
+    github_bot_login: str
 
 
 @cache
@@ -61,6 +66,7 @@ def settings() -> Settings:
         dashboard_workload_name=os.environ.get("AIDLC_DASHBOARD_WORKLOAD_NAME", ""),
         github_oauth_provider_name=os.environ.get("AIDLC_GITHUB_OAUTH_PROVIDER_NAME", ""),
         dashboard_oauth_return_url=os.environ.get("AIDLC_DASHBOARD_OAUTH_RETURN_URL", ""),
+        github_bot_login=os.environ.get("AIDLC_GITHUB_BOT_LOGIN", ""),
     )
 
 

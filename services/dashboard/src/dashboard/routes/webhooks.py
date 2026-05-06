@@ -13,8 +13,13 @@ the webhook secret stored in Secrets Manager, then dispatch on event type:
 * Triage (forwarded to the ``triage_dispatcher`` Lambda):
     * issues.opened with the ``aidlc:ready`` label
     * issues.labeled when the new label is ``aidlc:ready``
+    * issues.assigned when the bot login is the new assignee
     * issue_comment.created on a real issue (not a PR) with
       ``/aidlc go``                                          → triage
+    * issue_comment.created on an issue carrying
+      ``aidlc:awaiting-response`` (resumes the *ask* loop;
+      ``prior_human_comments`` + ``prior_triage_count`` are populated
+      from the issue thread so the agent has the conversation history).
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ REJECT_RE = re.compile(r"/aidlc\s+reject\s*(.*)", re.IGNORECASE)
 GO_RE = re.compile(r"/aidlc\s+go\b", re.IGNORECASE)
 
 READY_LABEL = "aidlc:ready"
+AWAITING_RESPONSE_LABEL = "aidlc:awaiting-response"
 TERMINAL_LABELS = frozenset({"aidlc:in-progress", "aidlc:deferred", "aidlc:declined"})
 
 
@@ -177,45 +183,94 @@ def parse_triage(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | N
 
 
 def triage_from_issues(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Parse an ``issues`` webhook (action=opened or labeled) for triage candidates."""
+    """Parse an ``issues`` webhook (action=opened/labeled/assigned) for triage candidates.
+
+    ``assigned`` is the autonomous trigger — when the configured bot login
+    is added as an assignee, we route the issue to triage just like the
+    label-based path. The bot login is configurable via
+    ``AIDLC_GITHUB_BOT_LOGIN``; if unset, the assigned trigger is disabled.
+    """
     action = payload.get("action")
-    if action not in {"opened", "labeled"}:
-        return None
     issue = payload.get("issue", {})
-    if not issue:
+    if not issue or not issues_action_is_trigger(action, payload):
         return None
     label_names = {label.get("name") for label in issue.get("labels", []) if label.get("name")}
-    if action == "labeled":
-        added = payload.get("label", {}).get("name")
-        if added != READY_LABEL:
-            return None
-    elif READY_LABEL not in label_names:
-        return None
     if label_names & TERMINAL_LABELS:
         return None
     return triage_envelope(payload.get("repository", {}), issue, list(label_names))
 
 
+def issues_action_is_trigger(action: str | None, payload: dict[str, Any]) -> bool:
+    """``True`` if this ``issues`` action should route to triage."""
+    issue = payload.get("issue", {})
+    label_names = {label.get("name") for label in issue.get("labels", []) if label.get("name")}
+    if action == "opened":
+        return READY_LABEL in label_names
+    if action == "labeled":
+        return payload.get("label", {}).get("name") == READY_LABEL
+    if action == "assigned":
+        bot_login = settings().github_bot_login
+        if not bot_login:
+            return False
+        return (payload.get("assignee") or {}).get("login", "") == bot_login
+    return False
+
+
 def triage_from_issue_comment(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Parse an ``issue_comment.created`` for ``/aidlc go`` on a real issue."""
+    """Parse an ``issue_comment.created`` for the two issue-side triage triggers.
+
+    Two paths:
+
+    * ``/aidlc go`` magic-string on a non-terminal issue starts a fresh
+      triage round (the historical entry-point).
+    * Any human comment on an issue carrying ``aidlc:awaiting-response``
+      resumes the *ask* loop — we populate ``prior_human_comments`` +
+      ``prior_triage_count`` from the GitHub payload so the triage agent
+      sees the full conversation history when re-classifying.
+    """
     if payload.get("action") != "created":
         return None
     issue = payload.get("issue", {})
     if issue.get("pull_request") is not None:
         return None
-    body = (payload.get("comment", {}).get("body") or "").strip()
-    if not GO_RE.search(body):
-        return None
     label_names = [label.get("name", "") for label in issue.get("labels", [])]
     if set(label_names) & TERMINAL_LABELS:
         return None
-    return triage_envelope(payload.get("repository", {}), issue, label_names)
+    body = (payload.get("comment", {}).get("body") or "").strip()
+    if AWAITING_RESPONSE_LABEL in label_names and is_human_comment(payload.get("comment", {})):
+        return triage_envelope(
+            payload.get("repository", {}),
+            issue,
+            label_names,
+            prior_human_comments=[body] if body else [],
+            prior_triage_count=count_prior_triage_rounds(label_names),
+        )
+    if GO_RE.search(body):
+        return triage_envelope(payload.get("repository", {}), issue, label_names)
+    return None
+
+
+def is_human_comment(comment: dict[str, Any]) -> bool:
+    """``True`` for human commenters; ``False`` for ``Bot`` users / aidlc bot."""
+    user = comment.get("user") or {}
+    if user.get("type") == "Bot":
+        return False
+    bot_login = settings().github_bot_login
+    return not (bot_login and user.get("login") == bot_login)
+
+
+def count_prior_triage_rounds(label_names: list[str]) -> int:
+    """Estimate prior triage rounds. v1: 1 if awaiting-response label is on, else 0."""
+    return 1 if AWAITING_RESPONSE_LABEL in label_names else 0
 
 
 def triage_envelope(
     repository: dict[str, Any],
     issue: dict[str, Any],
     labels: list[str],
+    *,
+    prior_human_comments: list[str] | None = None,
+    prior_triage_count: int = 0,
 ) -> dict[str, Any] | None:
     """Shape the GitHub payload into the Triage Lambda's input contract."""
     repo = repository.get("full_name")
@@ -224,7 +279,7 @@ def triage_envelope(
     title = issue.get("title")
     if not (repo and issue_url and isinstance(issue_number, int) and title):
         return None
-    return {
+    envelope: dict[str, Any] = {
         "repo": repo,
         "issue_number": issue_number,
         "issue_url": issue_url,
@@ -233,6 +288,11 @@ def triage_envelope(
         "labels": labels,
         "user": (issue.get("user") or {}).get("login", ""),
     }
+    if prior_human_comments:
+        envelope["prior_human_comments"] = prior_human_comments
+    if prior_triage_count:
+        envelope["prior_triage_count"] = prior_triage_count
+    return envelope
 
 
 def invoke_triage(payload: dict[str, Any]) -> None:

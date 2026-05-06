@@ -75,6 +75,17 @@ variable "github_app_secret_name" {
   nullable    = true
 }
 
+variable "github_bot_login" {
+  description = <<-EOT
+    Login of the GitHub bot the platform runs as. The dashboard webhook
+    handler routes ``issues.assigned`` to triage when the new assignee
+    matches this login. Empty disables that trigger; the label-based
+    (``aidlc:ready``) and ``/aidlc go``-comment paths still fire.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "aws_profile" {
   description = "AWS shared-credentials profile name. Defaults to the local SSO profile; CI sets this to \"\" so the provider falls through to env-var credentials supplied by OIDC."
   type        = string
