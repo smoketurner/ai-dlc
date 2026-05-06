@@ -15,8 +15,6 @@ Flow per invocation:
 
 from __future__ import annotations
 
-import os
-
 import structlog
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 
@@ -113,13 +111,15 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
 
 
 def resolve_target_repo(payload: ImplementerInput) -> str:
-    """Pick the repo this run targets — payload first, then env fallback."""
+    """Pick the repo this run targets.
+
+    Step Functions / the dashboard always thread ``target_repo`` through
+    the agent input (Phase 11a), so the only failure mode is a
+    malformed input.
+    """
     if payload.target_repo:
         return payload.target_repo
-    legacy = os.environ.get("AIDLC_GITHUB_REPO")
-    if legacy:
-        return legacy
-    msg = "no target_repo on input and no AIDLC_GITHUB_REPO env var set"
+    msg = "ImplementerInput.target_repo is required but missing"
     raise RuntimeError(msg)
 
 
