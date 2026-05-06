@@ -46,20 +46,19 @@ def build_agent(run_id: str) -> Agent:
     )
 
 
-def critique_spec(*, project_slug: str, spec_slug: str, intent: str, run_id: str) -> Critique:
+def critique_spec(
+    agent: Agent,
+    *,
+    project_slug: str,
+    spec_slug: str,
+    intent: str,
+) -> Critique:
     """Run the agent and return the validated Critique.
 
-    Args:
-        project_slug: Project the spec belongs to.
-        spec_slug: Slug of the spec to review.
-        intent: Original user intent that produced the spec.
-        run_id: Run UUID7 — drives prompt-variant selection.
-
-    Returns:
-        A validated :class:`Critique` ready for Markdown rendering.
+    Caller constructs the agent (via :func:`build_agent`) so the caller
+    can read usage metrics off it after this returns.
     """
     user_message = compose_message(project_slug=project_slug, spec_slug=spec_slug, intent=intent)
-    agent = build_agent(run_id)
     return agent.structured_output(Critique, user_message)
 
 

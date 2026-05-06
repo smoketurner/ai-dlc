@@ -159,17 +159,14 @@ def test_request_received_without_issue_url_skips_index() -> None:
     assert "gsi1sk" not in state
 
 
-def test_run_completed_captures_cost_and_tokens() -> None:
+def test_run_completed_sets_tasks_completed_only() -> None:
+    """RUN.COMPLETED no longer carries totals — accumulation owns those."""
     completed = envelope(
         type="RUN.COMPLETED",
         payload={
             "project_slug": "demo",
             "spec_slug": "add-healthz",
             "tasks_completed": 3,
-            "total_token_in": 12000,
-            "total_token_out": 4500,
-            "total_cost_usd": 0.42,
-            "total_duration_ms": 90_000,
         },
     )
     handler(eb_event(completed), ctx())
@@ -179,8 +176,74 @@ def test_run_completed_captures_cost_and_tokens() -> None:
     )["Item"]
     assert state["status"]["S"] == "RUN.COMPLETED"
     assert state["tasks_completed"]["N"] == "3"
-    assert state["total_token_in"]["N"] == "12000"
-    assert state["total_cost_usd"]["N"] == "0.42"
+
+
+def test_per_event_usage_accumulates_on_state_row() -> None:
+    """Each *.READY event with token/cost fields ADDs to running totals."""
+    spec_ready = envelope(
+        type="SPEC.READY",
+        event_id="01J0000000000000000000000B",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "token_in": 4_000,
+            "token_out": 1_500,
+            "cost_usd": 0.25,
+            "duration_ms": 30_000,
+            "task_count": 2,
+            "session_id": "run-1",
+        },
+    )
+    review_ready = envelope(
+        type="REVIEW.READY",
+        event_id="01J0000000000000000000000C",
+        payload={
+            "project_slug": "demo",
+            "task_id": "T-001",
+            "verdict": "approve",
+            "token_in": 1_000,
+            "token_out": 500,
+            "cost_usd": 0.05,
+            "duration_ms": 8_000,
+            "session_id": "run-1-T-001-reviewer",
+        },
+    )
+
+    handler(eb_event(spec_ready), ctx())
+    handler(eb_event(review_ready), ctx())
+
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["total_token_in"]["N"] == "5000"
+    assert state["total_token_out"]["N"] == "2000"
+    assert float(state["total_cost_usd"]["N"]) == pytest.approx(0.30)
+    assert state["total_duration_ms"]["N"] == "38000"
+
+
+def test_event_with_zero_usage_skips_add() -> None:
+    """Zero usage skips the ADD clause to avoid a no-op DDB write."""
+    spec_ready = envelope(
+        type="SPEC.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "token_in": 0,
+            "token_out": 0,
+            "cost_usd": 0.0,
+            "duration_ms": 0,
+            "task_count": 1,
+            "session_id": "run-1",
+        },
+    )
+    handler(eb_event(spec_ready), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert "total_token_in" not in state
+    assert "total_cost_usd" not in state
 
 
 def test_duplicate_event_id_silently_skipped() -> None:

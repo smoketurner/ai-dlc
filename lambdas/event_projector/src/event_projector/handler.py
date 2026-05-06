@@ -106,22 +106,26 @@ def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str,
 def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
     """Upsert the run's STATE row with current status + cumulative metrics.
 
-    The STATE row at sk=`STATE` is what the dashboard reads. We update it on
-    every event so the runs list stays current; on RUN.COMPLETED we capture
-    cost + token totals + tasks_completed for the dashboard panels.
+    The STATE row at sk=`STATE` is what the dashboard reads. We update it
+    on every event so the runs list stays current; usage counters
+    (``total_token_in``/``out``, ``total_cost_usd``, ``total_duration_ms``)
+    are accumulated via DynamoDB ``ADD`` whenever an agent ``*.READY``
+    event carries them. ``RUN.COMPLETED`` only sets ``tasks_completed``;
+    the totals are already canonical from accumulation.
     """
     payload = envelope.get("payload") or {}
-    expr_parts = ["#s = :status", "updated_at = :ts"]
+    set_parts = ["#s = :status", "updated_at = :ts"]
+    add_parts: list[str] = []
     names = {"#s": "status"}
     values = {
         ":status": {"S": event_type or "UNKNOWN"},
         ":ts": {"S": envelope.get("timestamp", "")},
     }
     if isinstance(payload.get("project_slug"), str) and payload["project_slug"]:
-        expr_parts.append("project_slug = if_not_exists(project_slug, :proj)")
+        set_parts.append("project_slug = if_not_exists(project_slug, :proj)")
         values[":proj"] = {"S": payload["project_slug"]}
     if isinstance(payload.get("spec_slug"), str) and payload["spec_slug"]:
-        expr_parts.append("spec_slug = :spec")
+        set_parts.append("spec_slug = :spec")
         values[":spec"] = {"S": payload["spec_slug"]}
     # REQUEST.RECEIVED for an issue-driven run carries source_issue_url.
     # Project the URL onto the gsi1 keys so the dashboard can look up
@@ -131,34 +135,61 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
         and isinstance(payload.get("source_issue_url"), str)
         and payload["source_issue_url"]
     ):
-        expr_parts.append("gsi1pk = if_not_exists(gsi1pk, :issue)")
-        expr_parts.append("gsi1sk = if_not_exists(gsi1sk, :runref)")
-        expr_parts.append("source_issue_url = if_not_exists(source_issue_url, :issue_url)")
+        set_parts.append("gsi1pk = if_not_exists(gsi1pk, :issue)")
+        set_parts.append("gsi1sk = if_not_exists(gsi1sk, :runref)")
+        set_parts.append("source_issue_url = if_not_exists(source_issue_url, :issue_url)")
         values[":issue"] = {"S": f"ISSUE#{payload['source_issue_url']}"}
         values[":runref"] = {"S": f"RUN#{run_id}"}
         values[":issue_url"] = {"S": payload["source_issue_url"]}
+    accumulate_usage(payload, add_parts=add_parts, values=values)
+    if event_type == "SPEC.READY" and isinstance(payload.get("task_count"), int):
+        set_parts.append("tasks_total = :tt")
+        values[":tt"] = {"N": str(payload["task_count"])}
     if event_type == "RUN.COMPLETED":
-        expr_parts.extend(
-            [
-                "tasks_completed = :tc",
-                "total_token_in = :ti",
-                "total_token_out = :to_",
-                "total_cost_usd = :cost",
-                "total_duration_ms = :dur",
-            ],
-        )
+        set_parts.append("tasks_completed = :tc")
         values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
-        values[":ti"] = {"N": str(int(payload.get("total_token_in", 0)))}
-        values[":to_"] = {"N": str(int(payload.get("total_token_out", 0)))}
-        values[":cost"] = {"N": str(float(payload.get("total_cost_usd", 0)))}
-        values[":dur"] = {"N": str(int(payload.get("total_duration_ms", 0)))}
+    expression = "SET " + ", ".join(set_parts)
+    if add_parts:
+        expression += " ADD " + ", ".join(add_parts)
     ddb().update_item(
         TableName=runs_table(),
         Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-        UpdateExpression="SET " + ", ".join(expr_parts),
+        UpdateExpression=expression,
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
     )
+
+
+def accumulate_usage(
+    payload: dict[str, Any],
+    *,
+    add_parts: list[str],
+    values: dict[str, dict[str, str]],
+) -> None:
+    """Append ADD clauses for any per-event usage fields the payload carries.
+
+    Agent ``*.READY`` payloads (SpecReady, CritiqueReady, TaskReady,
+    ReviewReady, TestReportReady) inherit from
+    :class:`common.events.UsagePayload`; values default to zero when an
+    agent hasn't been wired yet, and we skip the ADD for zero values to
+    avoid a no-op DDB write that still costs WCUs.
+    """
+    in_tokens = int(payload.get("token_in", 0) or 0)
+    out_tokens = int(payload.get("token_out", 0) or 0)
+    cost = float(payload.get("cost_usd", 0.0) or 0.0)
+    duration = int(payload.get("duration_ms", 0) or 0)
+    if in_tokens:
+        add_parts.append("total_token_in :ti")
+        values[":ti"] = {"N": str(in_tokens)}
+    if out_tokens:
+        add_parts.append("total_token_out :to_")
+        values[":to_"] = {"N": str(out_tokens)}
+    if cost:
+        add_parts.append("total_cost_usd :cost")
+        values[":cost"] = {"N": str(cost)}
+    if duration:
+        add_parts.append("total_duration_ms :dur")
+        values[":dur"] = {"N": str(duration)}
 
 
 def forward_to_memory(envelope: dict[str, Any]) -> None:

@@ -24,6 +24,10 @@ class RunSummary(_Frozen):
     spec_slug: str | None = None
     tasks_completed: int = 0
     tasks_total: int = 0
+    total_token_in: int = 0
+    total_token_out: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
 
 
 class RunEvent(_Frozen):

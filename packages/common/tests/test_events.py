@@ -107,18 +107,9 @@ def test_unknown_field_rejected() -> None:
 
 
 def test_run_completed_payload_has_required_fields() -> None:
-    payload = RunCompleted(
-        project_slug="demo",
-        spec_slug="add-healthz",
-        tasks_completed=3,
-        total_duration_ms=12345,
-        total_token_in=4096,
-        total_token_out=2048,
-        total_cost_usd=0.42,
-    )
+    payload = RunCompleted(project_slug="demo", spec_slug="add-healthz", tasks_completed=3)
     rendered = json.loads(payload.model_dump_json())
-    assert rendered["total_cost_usd"] == 0.42
-    assert rendered["tasks_completed"] == 3
+    assert rendered == {"project_slug": "demo", "spec_slug": "add-healthz", "tasks_completed": 3}
 
 
 def test_envelope_type_is_literal_pinned() -> None:

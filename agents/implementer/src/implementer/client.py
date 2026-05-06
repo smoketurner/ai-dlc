@@ -15,6 +15,8 @@ Flow per invocation:
 
 from __future__ import annotations
 
+from typing import Any
+
 import structlog
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 
@@ -64,7 +66,7 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     create_branch(branch)
 
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
-    report = await drive_agent(user_prompt, run_id=payload.run_id)
+    report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
     if report is None:
         logger.warning(
@@ -85,6 +87,7 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
             diff_summary="(no diff — task blocked by agent)",
             session_id=payload.run_id,
             blocked_reason=report.blocked_reason,
+            **usage,
         )
 
     materialize_spec_in_repo(payload.spec_slug)
@@ -107,6 +110,7 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
         pr_url=pr_url,
         diff_summary=short_diff_summary()[:4096],
         session_id=payload.run_id,
+        **usage,
     )
 
 
@@ -149,27 +153,51 @@ def compose_prompt(
     return "\n".join(parts)
 
 
-async def drive_agent(user_prompt: str, *, run_id: str) -> FinishReport | None:
-    """Run one ClaudeSDKClient session and return the agent's structured report.
+async def drive_agent(
+    user_prompt: str,
+    *,
+    run_id: str,
+) -> tuple[FinishReport | None, dict[str, Any]]:
+    """Run one ClaudeSDKClient session.
 
-    The ``finish`` MCP tool stashes its validated payload into
-    :class:`FinishSink`; this function reads it back after the SDK loop
-    drains. Returns ``None`` if the agent ended without calling
-    ``finish`` — the caller surfaces that as a fallback PR body and
-    emits a warning log.
+    Returns a tuple of:
+
+    * the agent's structured ``finish`` report, or ``None`` if the agent
+      ended without calling ``finish``;
+    * a dict of usage fields (``token_in``, ``token_out``, ``cost_usd``,
+      ``duration_ms``) sourced from the SDK's :class:`ResultMessage`.
+
+    The Claude Agent SDK reports cost directly, so no pricing-table
+    lookup is needed for the implementer.
     """
     sink = FinishSink()
     options = build_options(run_id, finish_sink=sink)
+    usage: dict[str, Any] = {"token_in": 0, "token_out": 0, "cost_usd": 0.0, "duration_ms": 0}
     async with ClaudeSDKClient(options=options) as client:
         await client.query(user_prompt)
         async for msg in client.receive_response():
             if isinstance(msg, ResultMessage):
+                usage = extract_usage(msg)
                 logger.info(
                     "session done",
                     session_id=msg.session_id,
-                    cost_usd=getattr(msg, "total_cost_usd", None),
+                    cost_usd=usage["cost_usd"],
+                    token_in=usage["token_in"],
+                    token_out=usage["token_out"],
+                    duration_ms=usage["duration_ms"],
                 )
-    return sink.report
+    return sink.report, usage
+
+
+def extract_usage(msg: ResultMessage) -> dict[str, Any]:
+    """Pull the four usage fields off a Claude Agent SDK ResultMessage."""
+    raw = msg.usage or {}
+    return {
+        "token_in": int(raw.get("input_tokens", 0) or 0),
+        "token_out": int(raw.get("output_tokens", 0) or 0),
+        "cost_usd": float(msg.total_cost_usd or 0.0),
+        "duration_ms": int(msg.duration_ms or 0),
+    }
 
 
 def materialize_spec_in_repo(spec_slug: str) -> None:

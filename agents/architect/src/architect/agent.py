@@ -48,21 +48,27 @@ def build_agent(run_id: str) -> Agent:
 
 
 def generate_spec(
-    intent: str, *, project_slug: str, prior_feedback: str | None, run_id: str
+    agent: Agent,
+    intent: str,
+    *,
+    project_slug: str,
+    prior_feedback: str | None,
 ) -> SpecBundle:
     """Run the agent and return the validated SpecBundle.
 
+    The caller constructs the agent (so it can read usage metrics off of
+    it after this returns) and passes it in.
+
     Args:
+        agent: Strands ``Agent`` built via :func:`build_agent`.
         intent: Free-text feature intent from the user.
         project_slug: Project the spec belongs to.
         prior_feedback: Reviewer feedback from a prior rejection, or ``None``.
-        run_id: Run UUID7 — drives prompt-variant selection.
 
     Returns:
         A validated :class:`SpecBundle` ready for Markdown rendering.
     """
     user_message = _compose_message(intent, project_slug, prior_feedback)
-    agent = build_agent(run_id)
     return agent.structured_output(SpecBundle, user_message)
 
 

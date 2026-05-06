@@ -20,10 +20,10 @@ from typing import Any
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from architect.agent import generate_spec
+from architect.agent import build_agent, generate_spec, model_id
 from architect.spec import SpecBundle, render_design, render_requirements, render_tasks
 from architect.tools import write_spec_doc
-from common.runtime import ArchitectInput, ArchitectResult
+from common.runtime import ArchitectInput, ArchitectResult, usage_from_strands
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
@@ -40,11 +40,12 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         retry=payload.prior_feedback is not None,
     )
 
+    agent = build_agent(payload.run_id)
     spec = generate_spec(
+        agent,
         payload.intent,
         project_slug=payload.project_slug,
         prior_feedback=payload.prior_feedback,
-        run_id=payload.run_id,
     )
     upload_spec(spec)
 
@@ -58,6 +59,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         one_way_task_count=count_one_way_tasks(spec),
         proposed_adrs=spec.design.proposed_adrs,
         session_id=payload.run_id,
+        **usage_from_strands(agent, model_id=model_id()),
     )
     logger.info(
         "spec ready",

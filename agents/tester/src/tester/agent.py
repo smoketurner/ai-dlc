@@ -46,26 +46,18 @@ def build_agent(run_id: str) -> Agent:
 
 
 def analyze_gaps(
+    agent: Agent,
     *,
     project_slug: str,
     spec_slug: str,
     task_id: str,
     pr_url: str,
     diff_summary: str,
-    run_id: str,
 ) -> Report:
     """Run the agent and return the validated Report.
 
-    Args:
-        project_slug: Project the PR belongs to.
-        spec_slug: Slug of the parent spec.
-        task_id: Identifier of the task the PR implements.
-        pr_url: GitHub PR URL.
-        diff_summary: Diff summary the Implementer produced.
-        run_id: Run UUID7 — drives prompt-variant selection.
-
-    Returns:
-        A validated :class:`Report` ready for Markdown rendering.
+    Caller constructs the agent (via :func:`build_agent`) so the caller
+    can read usage metrics off it after this returns.
     """
     user_message = compose_message(
         project_slug=project_slug,
@@ -74,7 +66,6 @@ def analyze_gaps(
         pr_url=pr_url,
         diff_summary=diff_summary,
     )
-    agent = build_agent(run_id)
     return agent.structured_output(Report, user_message)
 
 

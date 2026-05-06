@@ -26,9 +26,9 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from common.runtime import ReviewerInput, ReviewerResult
+from common.runtime import ReviewerInput, ReviewerResult, usage_from_strands
 from common.task_token import heartbeat_loop, send_task_failure, send_task_success
-from reviewer.agent import review_pr
+from reviewer.agent import build_agent, model_id, review_pr
 from reviewer.review import Review, render_review, severity_counts
 from reviewer.tools import write_review
 
@@ -58,15 +58,16 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         async_token=payload.task_token is not None,
     )
 
+    agent = build_agent(payload.run_id)
     try:
         with heartbeat_loop(payload.task_token):
             review = review_pr(
+                agent,
                 project_slug=payload.project_slug,
                 spec_slug=payload.spec_slug,
                 task_id=payload.task_id,
                 pr_url=payload.pr_url,
                 diff_summary=payload.diff_summary,
-                run_id=payload.run_id,
             )
             upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
             post_pr_comment(payload=payload, review=review)
@@ -87,6 +88,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         low_severity_count=counts["low"],
         summary=review.summary[:2048],
         session_id=f"{payload.run_id}-{payload.task_id}-reviewer",
+        **usage_from_strands(agent, model_id=model_id()),
     )
     logger.info(
         "review ready",

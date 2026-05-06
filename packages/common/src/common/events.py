@@ -62,6 +62,20 @@ class Payload(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
 
+class UsagePayload(Payload):
+    """Payload base that carries per-invocation usage metrics.
+
+    Every agent's ``*.READY`` event mirrors the corresponding ``*Result``
+    in :mod:`common.runtime` and carries token / cost / duration so the
+    event_projector can accumulate them onto the run's ``STATE`` row.
+    """
+
+    token_in: Annotated[int, Field(ge=0)] = 0
+    token_out: Annotated[int, Field(ge=0)] = 0
+    cost_usd: Annotated[float, Field(ge=0.0)] = 0.0
+    duration_ms: Annotated[int, Field(ge=0)] = 0
+
+
 def now() -> datetime:
     """Return the current time in UTC, tz-aware."""
     return datetime.now(UTC)
@@ -155,7 +169,7 @@ class IssueAskPosted(Payload):
     session_id: str
 
 
-class SpecReady(Payload):
+class SpecReady(UsagePayload):
     """The architect agent has produced a spec bundle and is awaiting approval.
 
     The bundle is the three-document set (requirements, design, tasks) under
@@ -193,7 +207,7 @@ class SpecRejected(Payload):
     reason: str
 
 
-class CritiqueReady(Payload):
+class CritiqueReady(UsagePayload):
     """Critic agent produced an adversarial review of the spec — advisory.
 
     The critique is rendered to ``s3://artifacts/runs/{run_id}/critique.md``;
@@ -212,7 +226,7 @@ class CritiqueReady(Payload):
     session_id: str
 
 
-class TaskReady(Payload):
+class TaskReady(UsagePayload):
     """The implementer agent opened a PR for one task and is awaiting approval."""
 
     project_slug: str
@@ -244,7 +258,7 @@ class TaskRejected(Payload):
     reason: str
 
 
-class ReviewReady(Payload):
+class ReviewReady(UsagePayload):
     """Reviewer agent code-reviewed a task PR — advisory.
 
     Comments are posted to the PR via ``repo_helper.comment_pr``; this event
@@ -265,7 +279,7 @@ class ReviewReady(Payload):
     session_id: str
 
 
-class TestReportReady(Payload):
+class TestReportReady(UsagePayload):
     """Tester agent identified test gaps in a task PR — advisory.
 
     Test gap suggestions are posted to the PR via ``repo_helper.comment_pr``;
@@ -286,15 +300,17 @@ class TestReportReady(Payload):
 
 
 class RunCompleted(Payload):
-    """The run reached its terminal success state."""
+    """The run reached its terminal success state.
+
+    Run-level usage totals (token_in/out, cost_usd, duration_ms) are
+    accumulated on the run's STATE row by :mod:`event_projector` from
+    each ``*.READY`` event's :class:`UsagePayload`; readers of cumulative
+    metrics query the STATE row directly, not this event.
+    """
 
     project_slug: str
     spec_slug: str
     tasks_completed: int
-    total_duration_ms: int
-    total_token_in: int
-    total_token_out: int
-    total_cost_usd: float
 
 
 class RunFailed(Payload):

@@ -26,23 +26,11 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "project_slug",
-        "spec_slug",
-        "tasks_completed",
-        "total_duration_ms",
-        "total_token_in",
-        "total_token_out",
-        "total_cost_usd"
-      ],
+      "required": ["project_slug", "spec_slug", "tasks_completed"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
         "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "tasks_completed": { "type": "integer", "minimum": 0 },
-        "total_duration_ms": { "type": "integer", "minimum": 0 },
-        "total_token_in": { "type": "integer", "minimum": 0 },
-        "total_token_out": { "type": "integer", "minimum": 0 },
-        "total_cost_usd": { "type": "number", "minimum": 0 }
+        "tasks_completed": { "type": "integer", "minimum": 0 }
       }
     }
   }

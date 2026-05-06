@@ -65,6 +65,10 @@ def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
         spec_slug=item.get("spec_slug", {}).get("S") or None,
         tasks_completed=int(item.get("tasks_completed", {}).get("N", "0")),
         tasks_total=int(item.get("tasks_total", {}).get("N", "0")),
+        total_token_in=int(item.get("total_token_in", {}).get("N", "0")),
+        total_token_out=int(item.get("total_token_out", {}).get("N", "0")),
+        total_cost_usd=float(item.get("total_cost_usd", {}).get("N", "0")),
+        total_duration_ms=int(item.get("total_duration_ms", {}).get("N", "0")),
     )
 
 

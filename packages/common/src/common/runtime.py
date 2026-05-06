@@ -28,15 +28,38 @@ The pipeline is spec-driven:
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from common.pricing import calculate_cost
 
 
 class _Frozen(BaseModel):
     """Strict, frozen base for the runtime contract types."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+
+class _UsageMixin(_Frozen):
+    """Per-invocation usage fields shared by every agent's result.
+
+    Each agent populates these from its framework's metrics:
+
+    * Strands agents read ``Agent.event_loop_metrics.accumulated_usage`` /
+      ``accumulated_metrics["latencyMs"]`` after the call returns and
+      compute cost via :mod:`common.pricing`.
+    * The Implementer reads :class:`claude_agent_sdk.ResultMessage` —
+      it ships ``usage``, ``total_cost_usd``, and ``duration_ms`` directly.
+
+    Defaults are zero so existing agents that haven't been wired yet
+    keep validating; the dashboard simply shows ``0`` until they emit.
+    """
+
+    token_in: Annotated[int, Field(ge=0)] = 0
+    token_out: Annotated[int, Field(ge=0)] = 0
+    cost_usd: Annotated[float, Field(ge=0.0)] = 0.0
+    duration_ms: Annotated[int, Field(ge=0)] = 0
 
 
 class ArchitectInput(_Frozen):
@@ -59,7 +82,7 @@ class ArchitectInput(_Frozen):
     target_repo: str | None = None
 
 
-class ArchitectResult(_Frozen):
+class ArchitectResult(_UsageMixin):
     """Result the Architect returns. Becomes the SPEC.READY payload.
 
     ``one_way_task_count`` is the number of tasks the Architect classified
@@ -97,7 +120,7 @@ class CriticInput(_Frozen):
     target_repo: str | None = None
 
 
-class CriticResult(_Frozen):
+class CriticResult(_UsageMixin):
     """Result the Critic returns. Becomes the CRITIQUE.READY payload."""
 
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
@@ -144,7 +167,7 @@ class ImplementerInput(_Frozen):
     task_token: str | None = None
 
 
-class ImplementerResult(_Frozen):
+class ImplementerResult(_UsageMixin):
     """Result the Implementer returns. Becomes the TASK.READY payload.
 
     ``pr_url`` is ``None`` when the agent reported ``status='blocked'`` via
@@ -175,7 +198,7 @@ class ReviewerInput(_Frozen):
     task_token: str | None = None
 
 
-class ReviewerResult(_Frozen):
+class ReviewerResult(_UsageMixin):
     """Result the Reviewer returns. Becomes the REVIEW.READY payload."""
 
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
@@ -205,7 +228,7 @@ class TesterInput(_Frozen):
     task_token: str | None = None
 
 
-class TesterResult(_Frozen):
+class TesterResult(_UsageMixin):
     """Result the Tester returns. Becomes the TEST_REPORT.READY payload."""
 
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
@@ -294,3 +317,42 @@ class ProposerResult(_Frozen):
     target_files: list[str] = []
     summary: Annotated[str, Field(max_length=2048)]
     session_id: str
+
+
+def usage_from_strands(agent: Any, *, model_id: str) -> dict[str, Any]:
+    """Extract token + cost + duration from a Strands ``Agent``.
+
+    Strands' ``EventLoopMetrics.accumulated_usage`` accumulates input /
+    output tokens across every model call the agent made during one
+    ``__call__`` / ``structured_output`` invocation; ``accumulated_metrics``
+    carries cumulative latency in ms. Cost is computed via the local
+    pricing table since Strands does not compute it.
+
+    Returns a dict ready to splat into a ``*Result`` constructor::
+
+        result = ArchitectResult(
+            spec_slug=...,
+            **usage_from_strands(agent, model_id=...),
+        )
+
+    Defensive: returns zeros for all fields when ``event_loop_metrics``
+    is missing or doesn't carry the expected keys (e.g., a stubbed agent
+    in tests).
+    """
+    metrics = getattr(agent, "event_loop_metrics", None)
+    if metrics is None:
+        return {"token_in": 0, "token_out": 0, "cost_usd": 0.0, "duration_ms": 0}
+    usage = getattr(metrics, "accumulated_usage", None) or {}
+    perf = getattr(metrics, "accumulated_metrics", None) or {}
+    in_tokens = int(usage.get("inputTokens", 0) or 0)
+    out_tokens = int(usage.get("outputTokens", 0) or 0)
+    return {
+        "token_in": in_tokens,
+        "token_out": out_tokens,
+        "cost_usd": calculate_cost(
+            model_id,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+        ),
+        "duration_ms": int(perf.get("latencyMs", 0) or 0),
+    }

@@ -18,8 +18,8 @@ from typing import Any
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from common.runtime import CriticInput, CriticResult
-from critic.agent import critique_spec
+from common.runtime import CriticInput, CriticResult, usage_from_strands
+from critic.agent import build_agent, critique_spec, model_id
 from critic.critique import Critique, render_critique, severity_counts
 from critic.tools import critique_s3_key, write_critique
 
@@ -38,11 +38,12 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         spec_slug=payload.spec_slug,
     )
 
+    agent = build_agent(payload.run_id)
     critique = critique_spec(
+        agent,
         project_slug=payload.project_slug,
         spec_slug=payload.spec_slug,
         intent=payload.intent,
-        run_id=payload.run_id,
     )
     upload_critique(critique, run_id=payload.run_id)
 
@@ -56,6 +57,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         low_severity_count=counts["low"],
         summary=critique.summary[:2048],
         session_id=payload.run_id,
+        **usage_from_strands(agent, model_id=model_id()),
     )
     logger.info(
         "critique ready",

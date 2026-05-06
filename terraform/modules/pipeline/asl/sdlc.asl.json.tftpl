@@ -484,7 +484,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.system",
             "DetailType": "RUN.COMPLETED",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'RUN.COMPLETED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'tasks_completed': $count($states.input.spec.task_ids), 'total_duration_ms': 0, 'total_token_in': 0, 'total_token_out': 0, 'total_cost_usd': 0 } }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'RUN.COMPLETED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'tasks_completed': $count($states.input.spec.task_ids) } }) %}"
           }
         ]
       },
