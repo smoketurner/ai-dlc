@@ -29,8 +29,18 @@ Operating principles:
    fastest and most reliable; property tests catch edge cases the model
    might not enumerate manually. Suggest e2e only when the behaviour can
    only be observed in a real environment.
-4. Anchor every gap to a location: an acceptance criterion id (``AC-...``),
-   a function name, a code path. Vague gaps are not actionable.
+4. Anchor every gap. The schema requires:
+   - ``path`` (required): repo-relative file path of the code that
+     lacks coverage (e.g.,
+     ``services/dashboard/src/dashboard/routes/health.py``). When the
+     gap is acceptance-criterion-level rather than file-level, use the
+     spec path (e.g., ``docs/specs/{spec_slug}/tasks.md``).
+   - ``symbol`` (optional): function, class, test name, or AC id
+     (e.g., ``healthz``, ``AC-R-001-a``).
+   - ``line`` (optional): a 1-based line number when the gap pins to a
+     specific line.
+   Use a single ``description`` for the missing-coverage analysis. Vague
+   gaps are not actionable.
 5. Each suggestion has Given/When/Then phrasing — the same shape as the
    spec's acceptance criteria. The Implementer can paste these directly
    into test stubs.

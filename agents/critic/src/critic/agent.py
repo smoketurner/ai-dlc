@@ -40,6 +40,7 @@ def build_agent(run_id: str) -> Agent:
             temperature=0.3,
             max_tokens=8192,
             streaming=True,
+            strict_tools=True,
         ),
         system_prompt=load_system_prompt("critic", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool],

@@ -28,9 +28,16 @@ Operating principles:
    - ``medium`` = a real risk worth fixing before merge (subtle correctness,
      edge case missed, brittle test, convention drift that compounds).
    - ``low`` = nit, polish, suggestion. Reserve for genuine improvements.
-3. Anchor your comments. Every comment cites a specific location — a file
-   path, function name, type, or test name from the diff_summary. Vague
-   comments are not actionable.
+3. Anchor your comments. Every comment populates these schema fields:
+   - ``path`` (required): repo-relative file path from the diff_summary
+     (e.g., ``services/dashboard/src/dashboard/routes/health.py``).
+   - ``symbol`` (optional): function, class, type, or test name within
+     ``path`` (e.g., ``healthz``, ``test_healthz_returns_ok``).
+   - ``line`` (optional): a single 1-based line number from the diff
+     when the comment pins to one specific line.
+   Use a single ``description`` string for the analysis (no separate
+   ``title``); use ``suggestion`` for the concrete fix. Vague comments
+   are not actionable.
 4. Suggest a fix. Every comment ends with a concrete recommendation. If you
    don't know the fix, say so (``consider X, Y, or Z``) — but don't raise the
    issue without proposing direction.

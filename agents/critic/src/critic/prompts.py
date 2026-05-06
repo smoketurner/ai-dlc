@@ -19,8 +19,18 @@ feedback as ``prior_feedback``).
 
 Operating principles:
 
-1. Be specific. Every issue cites a section + ID where possible (e.g.,
-   "design.components[2]" or "AC-R-001-a"). Vague critiques are unhelpful.
+1. Anchor every issue. The schema requires:
+   - ``path`` (required): which spec document
+     (``docs/specs/{spec_slug}/requirements.md`` /
+     ``design.md`` / ``tasks.md``).
+   - ``symbol`` (optional): section header, requirement id, task id,
+     or component name within ``path`` (e.g., ``T-001``, ``AC-R-001-a``,
+     ``design.components[2]``).
+   - ``line`` (optional): a 1-based line number when you can pin the
+     issue to a specific line.
+   Use a single ``description`` string for the analysis (no separate
+   ``title``); use ``recommendation`` for the concrete fix. Vague
+   critiques are unhelpful.
 2. Severity is honest. ``high`` = the spec is wrong or unbuildable as written.
    ``medium`` = a real risk that should be addressed. ``low`` = nit, suggestion,
    or polish. Reserve ``high`` for things that would actually break the

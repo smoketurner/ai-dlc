@@ -20,11 +20,14 @@ def make_report(*, with_findings: bool = True) -> Report:
     gaps = (
         [
             Gap(
-                location="AC-R-001-a",
+                path="docs/specs/add-healthz/requirements.md",
+                symbol="AC-R-001-a",
                 description="No test asserts /healthz returns 200 without auth.",
             ),
             Gap(
-                location="dashboard.routes.health.healthz",
+                path="services/dashboard/src/dashboard/routes/health.py",
+                symbol="healthz",
+                line=14,
                 description="No test exercises the database-down path.",
             ),
         ]
@@ -47,7 +50,7 @@ def make_report(*, with_findings: bool = True) -> Report:
                 given="the database probe raises ConnectionError",
                 when="I call healthz()",
                 then="the response is 503 with body {ok: false, reason: 'db_unreachable'}",
-                covers=["dashboard.routes.health.healthz"],
+                covers=["healthz"],
             ),
         ]
         if with_findings
@@ -67,6 +70,19 @@ def test_minimal_report_validates() -> None:
     assert report.task_id == "T-001"
     assert gap_count(report) == 2
     assert suggestion_count(report) == 2
+
+
+def test_gap_accepts_llm_natural_shape() -> None:
+    """Strands ``structured_output`` shape: bare path + optional symbol/line."""
+    gap = Gap.model_validate(
+        {
+            "path": "services/dashboard/src/dashboard/routes/health.py",
+            "symbol": "healthz",
+            "description": "No test for the SIGTERM-shutdown path.",
+        },
+    )
+    assert gap.symbol == "healthz"
+    assert gap.line is None
 
 
 def test_invalid_test_kind_rejected() -> None:
@@ -97,7 +113,7 @@ def test_render_report_includes_gaps_and_suggestions() -> None:
     out = render_report(make_report())
     assert "# Test report — `T-001`" in out
     assert "**2** gap(s) · **2** suggestion(s)" in out
-    assert "**AC-R-001-a** — No test asserts" in out
+    assert "docs/specs/add-healthz/requirements.md (AC-R-001-a)" in out
     assert "### 1. `test_healthz_returns_200_without_auth` (integration)" in out
     assert "**Covers:** `AC-R-001-a`" in out
     assert "## Strengths" in out

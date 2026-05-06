@@ -28,10 +28,20 @@ class _Frozen(BaseModel):
 
 
 class Issue(_Frozen):
-    """One issue the Critic identified in the spec."""
+    """One issue the Critic identified in the spec.
+
+    ``path``, ``symbol``, and ``line`` together anchor the issue to a
+    concrete location in the spec bundle (``requirements.md``,
+    ``design.md``, ``tasks.md``) — the dashboard renders ``path:line`` as
+    a deep link and uses ``symbol`` as the section / task-id label.
+    ``symbol`` and ``line`` are optional because not every issue can be
+    pinned to a specific element (e.g., a missing-section gap).
+    """
 
     severity: Severity
-    location: Annotated[str, Field(min_length=1, max_length=256)]
+    path: Annotated[str, Field(min_length=1, max_length=256)]
+    symbol: Annotated[str, Field(max_length=128)] | None = None
+    line: Annotated[int, Field(ge=1)] | None = None
     description: Annotated[str, Field(min_length=1, max_length=1024)]
     recommendation: Annotated[str, Field(min_length=1, max_length=1024)]
 
@@ -43,6 +53,14 @@ class Critique(_Frozen):
     summary: Annotated[str, Field(min_length=1, max_length=2048)]
     issues: Annotated[NoneSafeList[Issue], Field(max_length=64)] = Field(default_factory=list)
     strengths: NoneSafeList[str] = Field(default_factory=list)
+
+
+def issue_anchor(issue: Issue) -> str:
+    """Format ``path[:line] (symbol)`` for human-readable rendering."""
+    anchor = f"{issue.path}:{issue.line}" if issue.line is not None else issue.path
+    if issue.symbol:
+        return f"{anchor} ({issue.symbol})"
+    return anchor
 
 
 def severity_counts(critique: Critique) -> dict[Severity, int]:
@@ -70,7 +88,7 @@ def render_critique(critique: Critique) -> str:
     if critique.issues:
         lines += ["## Issues", ""]
         for ix, issue in enumerate(critique.issues, start=1):
-            lines.append(f"### {ix}. [{issue.severity}] {issue.location}")
+            lines.append(f"### {ix}. [{issue.severity}] {issue_anchor(issue)}")
             lines.append("")
             lines.append(f"**Problem:** {issue.description}")
             lines.append("")

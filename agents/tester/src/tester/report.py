@@ -27,9 +27,16 @@ class _Frozen(BaseModel):
 
 
 class Gap(_Frozen):
-    """One missing piece of test coverage the Tester identified."""
+    """One missing piece of test coverage the Tester identified.
 
-    location: Annotated[str, Field(min_length=1, max_length=256)]
+    ``path``, ``symbol``, and ``line`` together anchor the gap to the
+    code that lacks coverage. ``symbol`` and ``line`` are optional — a
+    gap may be file-level (e.g., "no tests at all for module X").
+    """
+
+    path: Annotated[str, Field(min_length=1, max_length=256)]
+    symbol: Annotated[str, Field(max_length=128)] | None = None
+    line: Annotated[int, Field(ge=1)] | None = None
     description: Annotated[str, Field(min_length=1, max_length=1024)]
 
 
@@ -54,6 +61,14 @@ class Report(_Frozen):
         default_factory=list,
     )
     strengths: NoneSafeList[str] = Field(default_factory=list)
+
+
+def gap_anchor(gap: Gap) -> str:
+    """Format ``path[:line] (symbol)`` for human-readable rendering."""
+    anchor = f"{gap.path}:{gap.line}" if gap.line is not None else gap.path
+    if gap.symbol:
+        return f"{anchor} ({gap.symbol})"
+    return anchor
 
 
 def gap_count(report: Report) -> int:
@@ -81,7 +96,7 @@ def render_report(report: Report) -> str:
     if report.gaps:
         lines += ["## Gaps", ""]
         for ix, gap in enumerate(report.gaps, start=1):
-            lines.append(f"{ix}. **{gap.location}** — {gap.description}")
+            lines.append(f"{ix}. **{gap_anchor(gap)}** — {gap.description}")
         lines.append("")
     if report.suggestions:
         lines += ["## Suggested tests", ""]

@@ -14,19 +14,23 @@ def make_critique(*, with_issues: bool = True) -> Critique:
         [
             Issue(
                 severity="high",
-                location="design.components[2]",
+                path="docs/specs/add-healthz/design.md",
+                symbol="components[2]",
                 description="No concrete file path named for the projector Lambda.",
                 recommendation="Add `lambdas/event_projector/src/event_projector/handler.py`.",
             ),
             Issue(
                 severity="medium",
-                location="AC-R-001-a",
+                path="docs/specs/add-healthz/requirements.md",
+                symbol="AC-R-001-a",
+                line=42,
                 description="`supports OAuth` is not observable.",
                 recommendation="Restate as `Given a Cognito JWT, when I POST /v1/runs, then 202`.",
             ),
             Issue(
                 severity="low",
-                location="tasks[3]",
+                path="docs/specs/add-healthz/tasks.md",
+                symbol="T-003",
                 description="Task estimated > 200 LOC.",
                 recommendation="Split into T-003a (route) and T-003b (validation).",
             ),
@@ -52,10 +56,25 @@ def test_invalid_severity_rejected() -> None:
     with pytest.raises(ValidationError):
         Issue(
             severity="critical",  # ty: ignore[invalid-argument-type]
-            location="x",
+            path="docs/x.md",
             description="x",
             recommendation="x",
         )
+
+
+def test_issue_accepts_llm_natural_shape_with_optional_symbol_and_line() -> None:
+    """The natural Strands ``structured_output`` shape: bare path + symbol."""
+    issue = Issue.model_validate(
+        {
+            "severity": "medium",
+            "path": "docs/specs/add-healthz/tasks.md",
+            "symbol": "T-001",
+            "description": "T-001 has no explicit acceptance criteria.",
+            "recommendation": "Add a Given/When/Then.",
+        },
+    )
+    assert issue.symbol == "T-001"
+    assert issue.line is None
 
 
 def test_severity_counts_complete() -> None:
@@ -72,7 +91,7 @@ def test_render_critique_includes_counts_and_issues() -> None:
     out = render_critique(make_critique())
     assert "# Critique — `add-healthz`" in out
     assert "**1** high · **1** medium · **1** low" in out
-    assert "### 1. [high] design.components[2]" in out
+    assert "### 1. [high] docs/specs/add-healthz/design.md (components[2])" in out
     assert "## Strengths" in out
     assert out.endswith("\n")
 

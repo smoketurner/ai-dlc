@@ -27,10 +27,20 @@ class _Frozen(BaseModel):
 
 
 class ReviewComment(_Frozen):
-    """One comment the Reviewer would post on the PR."""
+    """One comment the Reviewer would post on the PR.
+
+    ``path``, ``symbol``, and ``line`` together anchor the comment to a
+    concrete code location — the dashboard renders ``path:line`` as a
+    deep link to the file/diff and uses ``symbol`` as the function /
+    class / test name. ``symbol`` and ``line`` are optional because not
+    every comment can be pinned to a specific element (e.g., file-level
+    notes).
+    """
 
     severity: Severity
-    location: Annotated[str, Field(min_length=1, max_length=256)]
+    path: Annotated[str, Field(min_length=1, max_length=256)]
+    symbol: Annotated[str, Field(max_length=128)] | None = None
+    line: Annotated[int, Field(ge=1)] | None = None
     description: Annotated[str, Field(min_length=1, max_length=1024)]
     suggestion: Annotated[str, Field(min_length=1, max_length=1024)]
 
@@ -45,6 +55,14 @@ class Review(_Frozen):
         default_factory=list,
     )
     strengths: NoneSafeList[str] = Field(default_factory=list)
+
+
+def comment_anchor(comment: ReviewComment) -> str:
+    """Format ``path[:line] (symbol)`` for human-readable rendering."""
+    anchor = f"{comment.path}:{comment.line}" if comment.line is not None else comment.path
+    if comment.symbol:
+        return f"{anchor} ({comment.symbol})"
+    return anchor
 
 
 def severity_counts(review: Review) -> dict[Severity, int]:
@@ -72,7 +90,7 @@ def render_review(review: Review) -> str:
     if review.comments:
         lines += ["## Comments", ""]
         for ix, comment in enumerate(review.comments, start=1):
-            lines.append(f"### {ix}. [{comment.severity}] `{comment.location}`")
+            lines.append(f"### {ix}. [{comment.severity}] `{comment_anchor(comment)}`")
             lines.append("")
             lines.append(f"**Issue:** {comment.description}")
             lines.append("")

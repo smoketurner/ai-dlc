@@ -14,13 +14,15 @@ def make_review(*, with_comments: bool = True, verdict: str = "request_changes")
         [
             ReviewComment(
                 severity="high",
-                location="services/dashboard/src/dashboard/routes/health.py:14",
+                path="services/dashboard/src/dashboard/routes/health.py",
+                symbol="healthz",
+                line=14,
                 description="Returns 200 even when the database connection is down.",
                 suggestion="Add a `db.execute('SELECT 1')` probe and return 503 on failure.",
             ),
             ReviewComment(
                 severity="medium",
-                location="services/dashboard/tests/test_health.py",
+                path="services/dashboard/tests/test_health.py",
                 description="No test exercises the unauth path.",
                 suggestion="Add a test that asserts /healthz returns 200 without a JWT.",
             ),
@@ -56,10 +58,25 @@ def test_invalid_severity_rejected() -> None:
     with pytest.raises(ValidationError):
         ReviewComment(
             severity="critical",  # ty: ignore[invalid-argument-type]
-            location="x",
+            path="x",
             description="x",
             suggestion="x",
         )
+
+
+def test_review_comment_accepts_llm_natural_shape() -> None:
+    """Strands ``structured_output`` shape: bare path + optional symbol/line."""
+    comment = ReviewComment.model_validate(
+        {
+            "severity": "medium",
+            "path": "services/dashboard/src/dashboard/routes/health.py",
+            "symbol": "healthz",
+            "description": "Missing graceful-shutdown handling.",
+            "suggestion": "Set a SIGTERM handler that flips the response to 503.",
+        },
+    )
+    assert comment.symbol == "healthz"
+    assert comment.line is None
 
 
 def test_severity_counts_complete() -> None:
@@ -77,7 +94,7 @@ def test_render_review_includes_verdict_and_comments() -> None:
     assert "# Review — `T-001`" in out
     assert "Verdict: **request_changes**" in out
     assert "1 high · 1 medium · 0 low" in out
-    assert "### 1. [high] `services/dashboard/src/dashboard/routes/health.py:14`" in out
+    assert "### 1. [high] `services/dashboard/src/dashboard/routes/health.py:14 (healthz)`" in out
     assert "## Strengths" in out
     assert out.endswith("\n")
 
