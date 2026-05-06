@@ -15,11 +15,12 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
-import common.github_app as auth_mod
 import httpx
 import pytest
 import repo_helper.handler as h
 from aws_lambda_powertools.utilities.typing import LambdaContext
+
+import common.github_app as auth_mod
 
 
 def ctx() -> LambdaContext:
