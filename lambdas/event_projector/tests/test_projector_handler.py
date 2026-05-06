@@ -117,6 +117,48 @@ def test_run_state_row_upserted_with_status() -> None:
     assert state["spec_slug"]["S"] == "add-healthz"
 
 
+def test_request_received_with_source_issue_url_indexes_state_row() -> None:
+    received = envelope(
+        type="REQUEST.RECEIVED",
+        payload={
+            "project_slug": "demo",
+            "intent": "Add /version endpoint",
+            "requestor": "alice",
+            "source_issue_url": "https://github.com/o/r/issues/7",
+        },
+    )
+
+    handler(eb_event(received), ctx())
+
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["gsi1pk"]["S"] == "ISSUE#https://github.com/o/r/issues/7"
+    assert state["gsi1sk"]["S"] == "RUN#run-1"
+    assert state["source_issue_url"]["S"] == "https://github.com/o/r/issues/7"
+
+
+def test_request_received_without_issue_url_skips_index() -> None:
+    received = envelope(
+        type="REQUEST.RECEIVED",
+        payload={
+            "project_slug": "demo",
+            "intent": "Manual run via dashboard",
+            "requestor": "alice",
+        },
+    )
+
+    handler(eb_event(received), ctx())
+
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert "gsi1pk" not in state
+    assert "gsi1sk" not in state
+
+
 def test_run_completed_captures_cost_and_tokens() -> None:
     completed = envelope(
         type="RUN.COMPLETED",

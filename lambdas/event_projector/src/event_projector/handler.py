@@ -123,6 +123,20 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
     if isinstance(payload.get("spec_slug"), str) and payload["spec_slug"]:
         expr_parts.append("spec_slug = :spec")
         values[":spec"] = {"S": payload["spec_slug"]}
+    # REQUEST.RECEIVED for an issue-driven run carries source_issue_url.
+    # Project the URL onto the gsi1 keys so the dashboard can look up
+    # in-flight runs by issue (used by the issues.unassigned cancel path).
+    if (
+        event_type == "REQUEST.RECEIVED"
+        and isinstance(payload.get("source_issue_url"), str)
+        and payload["source_issue_url"]
+    ):
+        expr_parts.append("gsi1pk = if_not_exists(gsi1pk, :issue)")
+        expr_parts.append("gsi1sk = if_not_exists(gsi1sk, :runref)")
+        expr_parts.append("source_issue_url = if_not_exists(source_issue_url, :issue_url)")
+        values[":issue"] = {"S": f"ISSUE#{payload['source_issue_url']}"}
+        values[":runref"] = {"S": f"RUN#{run_id}"}
+        values[":issue_url"] = {"S": payload["source_issue_url"]}
     if event_type == "RUN.COMPLETED":
         expr_parts.extend(
             [

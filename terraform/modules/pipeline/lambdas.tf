@@ -89,8 +89,15 @@ module "hitl_handler" {
   attach_policy_statements = true
   policy_statements = {
     approvals_table = {
-      effect    = "Allow"
-      actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
+      effect = "Allow"
+      actions = [
+        "dynamodb:PutItem",
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem",
+        # Query is required by the CANCEL_RUN op: list every PENDING
+        # GATE row for a run and SendTaskFailure on each task_token.
+        "dynamodb:Query",
+      ]
       resources = [var.approvals_table_arn]
     }
     states_callback = {

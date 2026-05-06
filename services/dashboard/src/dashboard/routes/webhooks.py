@@ -9,6 +9,13 @@ the webhook secret stored in Secrets Manager, then dispatch on event type:
     * pull_request_review.submitted state=changes_requested → reject
     * issue_comment.created on a PR with body containing
       ``/aidlc approve`` or ``/aidlc reject <reason>``      → approve / reject
+    * pull_request.closed merged=true                       → approve
+    * pull_request.closed merged=false                      → reject
+
+* Cancellation (forwarded to ``hitl_handler`` ``CANCEL_RUN`` op):
+    * issues.unassigned when the configured bot login is the unassignee.
+      We resolve the issue → run via the runs-table ``gsi1`` (``ISSUE#``)
+      lookup the projector populated, then fail every PENDING gate.
 
 * Triage (forwarded to the ``triage_dispatcher`` Lambda):
     * issues.opened with the ``aidlc:ready`` label
@@ -34,7 +41,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 
-from dashboard.deps import lambda_client, secrets, settings
+from dashboard.deps import ddb, lambda_client, secrets, settings
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -45,6 +52,7 @@ GO_RE = re.compile(r"/aidlc\s+go\b", re.IGNORECASE)
 
 READY_LABEL = "aidlc:ready"
 AWAITING_RESPONSE_LABEL = "aidlc:awaiting-response"
+CANCELLED_LABEL = "aidlc:cancelled"
 TERMINAL_LABELS = frozenset({"aidlc:in-progress", "aidlc:deferred", "aidlc:declined"})
 
 
@@ -70,7 +78,7 @@ def verify_signature(*, body: bytes, signature_header: str | None) -> None:
 
 @router.post("/webhooks/github", status_code=status.HTTP_202_ACCEPTED)
 async def receive_github_webhook(request: Request) -> dict[str, Any]:
-    """Verify HMAC and route to hitl_handler (HITL gate) or triage_dispatcher."""
+    """Verify HMAC and route to hitl_handler (HITL gate / cancel) or triage_dispatcher."""
     body = await request.body()
     verify_signature(body=body, signature_header=request.headers.get("x-hub-signature-256"))
     event_type = request.headers.get("x-github-event", "")
@@ -78,8 +86,13 @@ async def receive_github_webhook(request: Request) -> dict[str, Any]:
 
     decision = parse_decision(event_type, payload)
     if decision is not None:
-        invoke_hitl_decide(decision)
+        invoke_hitl(decision)
         return {"ok": True, "decision": decision["decision"], "gate_ref": decision["gate_ref"]}
+
+    cancel = parse_cancellation(event_type, payload)
+    if cancel is not None:
+        invoke_hitl(cancel)
+        return {"ok": True, "cancel_run": cancel["run_id"]}
 
     triage = parse_triage(event_type, payload)
     if triage is not None:
@@ -95,6 +108,8 @@ def parse_decision(event_type: str, payload: dict[str, Any]) -> dict[str, str] |
         return decision_from_review(payload)
     if event_type == "issue_comment":
         return decision_from_comment(payload)
+    if event_type == "pull_request":
+        return decision_from_pr_close(payload)
     return None
 
 
@@ -116,6 +131,43 @@ def decision_from_review(payload: dict[str, Any]) -> dict[str, str] | None:
         "decision": decision,
         "reviewer": review.get("user", {}).get("login", "unknown"),
         "reason": review.get("body") or "",
+    }
+
+
+def decision_from_pr_close(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Resolve the task gate when a PR carrying our run_id markers closes.
+
+    Lets humans merge or close a PR via the GitHub UI without leaving an
+    explicit review or ``/aidlc approve`` comment — without this, the
+    Step Functions task gate would wait for a review that never comes.
+
+    * ``merged: true``  → approve, attribute to the merger.
+    * ``merged: false`` → reject, reason "PR closed without merge".
+    """
+    if payload.get("action") != "closed":
+        return None
+    pr = payload.get("pull_request", {})
+    run_id, gate_ref = parse_run_meta(pr.get("body", "") or "")
+    if run_id is None or gate_ref is None:
+        return None
+    if pr.get("merged"):
+        merger = (pr.get("merged_by") or pr.get("user") or {}).get("login", "unknown")
+        return {
+            "op": "DECIDE",
+            "run_id": run_id,
+            "gate_ref": gate_ref,
+            "decision": "approve",
+            "reviewer": merger,
+            "reason": "PR merged",
+        }
+    closer = (payload.get("sender") or {}).get("login", "unknown")
+    return {
+        "op": "DECIDE",
+        "run_id": run_id,
+        "gate_ref": gate_ref,
+        "decision": "reject",
+        "reviewer": closer,
+        "reason": "PR closed without merge",
     }
 
 
@@ -164,13 +216,59 @@ def parse_run_meta(body: str) -> tuple[str | None, str | None]:
     return match.group(1), match.group(2)
 
 
-def invoke_hitl_decide(payload: dict[str, str]) -> None:
-    """Synchronously invoke the hitl_handler Lambda with the DECIDE op."""
+def invoke_hitl(payload: dict[str, Any]) -> None:
+    """Synchronously invoke the hitl_handler Lambda with the given op payload."""
     lambda_client().invoke(
         FunctionName=settings().hitl_handler_function,
         InvocationType="RequestResponse",
         Payload=json.dumps(payload).encode("utf-8"),
     )
+
+
+def parse_cancellation(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a CANCEL_RUN payload when the bot was unassigned from an issue.
+
+    Looks up the in-flight run for the issue via the runs table's ``gsi1``
+    index (``ISSUE#{url}`` → ``RUN#{run_id}``). Returns ``None`` if no
+    bot login is configured, the unassignee isn't the bot, or no run is
+    found for the issue.
+    """
+    if event_type != "issues" or payload.get("action") != "unassigned":
+        return None
+    bot_login = settings().github_bot_login
+    if not bot_login:
+        return None
+    if (payload.get("assignee") or {}).get("login", "") != bot_login:
+        return None
+    issue_url = (payload.get("issue") or {}).get("html_url")
+    if not issue_url:
+        return None
+    run_id = lookup_run_by_issue(issue_url)
+    if run_id is None:
+        return None
+    sender = (payload.get("sender") or {}).get("login", "unknown")
+    return {
+        "op": "CANCEL_RUN",
+        "run_id": run_id,
+        "reviewer": sender,
+        "reason": f"bot unassigned from {issue_url} by {sender}",
+    }
+
+
+def lookup_run_by_issue(issue_url: str) -> str | None:
+    """Query the runs table's ``gsi1`` for the run associated with this issue."""
+    resp = ddb().query(
+        TableName=settings().runs_table,
+        IndexName="gsi1",
+        KeyConditionExpression="gsi1pk = :pk",
+        ExpressionAttributeValues={":pk": {"S": f"ISSUE#{issue_url}"}},
+        ProjectionExpression="pk",
+        Limit=1,
+    )
+    items = resp.get("Items", [])
+    if not items:
+        return None
+    return items[0]["pk"]["S"].removeprefix("RUN#")
 
 
 def parse_triage(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:

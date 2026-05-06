@@ -14,7 +14,9 @@ from fastapi import HTTPException
 
 from dashboard.routes.webhooks import (
     decision_from_comment,
+    decision_from_pr_close,
     decision_from_review,
+    parse_cancellation,
     parse_decision,
     parse_run_meta,
     parse_triage,
@@ -371,3 +373,135 @@ def test_triage_from_issue_comment_aidlc_go_still_works_without_awaiting_label()
     # Fresh round, not a resume — no prior context attached.
     assert "prior_human_comments" not in envelope
     assert "prior_triage_count" not in envelope
+
+
+# --- pull_request.closed → DECIDE ----------------------------------------
+
+
+def pr_closed_payload(
+    *,
+    merged: bool,
+    body: str = "_run_id: r1_\ngate_ref: task:T-001",
+) -> dict[str, Any]:
+    """Build a ``pull_request.closed`` webhook payload with run_id/gate_ref markers."""
+    return {
+        "action": "closed",
+        "pull_request": {
+            "body": body,
+            "merged": merged,
+            "merged_by": {"login": "carol"} if merged else None,
+            "user": {"login": "ai-dlc-bot"},
+        },
+        "sender": {"login": "dave" if not merged else "carol"},
+    }
+
+
+def test_decision_from_pr_close_merged_resolves_as_approve() -> None:
+    decision = decision_from_pr_close(pr_closed_payload(merged=True))
+
+    assert decision is not None
+    assert decision["decision"] == "approve"
+    assert decision["reviewer"] == "carol"
+    assert decision["gate_ref"] == "task:T-001"
+    assert decision["reason"] == "PR merged"
+
+
+def test_decision_from_pr_close_unmerged_resolves_as_reject() -> None:
+    decision = decision_from_pr_close(pr_closed_payload(merged=False))
+
+    assert decision is not None
+    assert decision["decision"] == "reject"
+    assert decision["reviewer"] == "dave"
+    assert decision["reason"] == "PR closed without merge"
+
+
+def test_decision_from_pr_close_ignores_pr_without_run_meta() -> None:
+    payload = pr_closed_payload(merged=True, body="just a regular PR body")
+    assert decision_from_pr_close(payload) is None
+
+
+def test_decision_from_pr_close_ignores_non_close_action() -> None:
+    payload = pr_closed_payload(merged=False)
+    payload["action"] = "opened"
+    assert decision_from_pr_close(payload) is None
+
+
+def test_parse_decision_routes_pull_request_close() -> None:
+    assert parse_decision("pull_request", pr_closed_payload(merged=True)) is not None
+
+
+# --- issues.unassigned → CANCEL_RUN --------------------------------------
+
+
+def unassign_payload(
+    *,
+    unassignee_login: str = BOT_LOGIN,
+    issue_url: str = "https://github.com/o/r/issues/7",
+    sender_login: str = "alice",
+) -> dict[str, Any]:
+    """Build an ``issues.unassigned`` webhook payload."""
+    return {
+        "action": "unassigned",
+        "assignee": {"login": unassignee_login},
+        "issue": {"html_url": issue_url, "number": 7, "title": "x"},
+        "repository": {"full_name": "o/r"},
+        "sender": {"login": sender_login},
+    }
+
+
+@pytest.fixture
+def stub_ddb_lookup(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Replace ``ddb()`` with a MagicMock whose query return is configurable."""
+    fake = MagicMock()
+    fake.query.return_value = {"Items": []}
+    monkeypatch.setattr("dashboard.routes.webhooks.ddb", lambda: fake)
+    return {"client": fake}
+
+
+def test_parse_cancellation_returns_cancel_payload_when_run_found(
+    monkeypatch: pytest.MonkeyPatch,
+    stub_ddb_lookup: dict[str, Any],
+) -> None:
+    fake_settings = MagicMock()
+    fake_settings.github_webhook_secret_id = "/aidlc/dev/github-webhook-secret"  # noqa: S105
+    fake_settings.github_bot_login = BOT_LOGIN
+    fake_settings.runs_table = "runs-table"
+    monkeypatch.setattr("dashboard.routes.webhooks.settings", lambda: fake_settings)
+    stub_ddb_lookup["client"].query.return_value = {"Items": [{"pk": {"S": "RUN#run-7"}}]}
+
+    out = parse_cancellation("issues", unassign_payload())
+
+    assert out is not None
+    assert out["op"] == "CANCEL_RUN"
+    assert out["run_id"] == "run-7"
+    assert out["reviewer"] == "alice"
+    assert "https://github.com/o/r/issues/7" in out["reason"]
+
+
+def test_parse_cancellation_returns_none_when_no_run_indexed(
+    stub_ddb_lookup: dict[str, Any],
+) -> None:
+    # Default stub returns no Items.
+    assert parse_cancellation("issues", unassign_payload()) is None
+
+
+def test_parse_cancellation_ignores_non_bot_unassignee(
+    stub_ddb_lookup: dict[str, Any],
+) -> None:
+    payload = unassign_payload(unassignee_login="alice")
+    assert parse_cancellation("issues", payload) is None
+
+
+def test_parse_cancellation_disabled_when_bot_login_unset(
+    disable_bot_login: None,
+    stub_ddb_lookup: dict[str, Any],
+) -> None:
+    assert parse_cancellation("issues", unassign_payload()) is None
+
+
+def test_parse_cancellation_ignores_non_unassign_actions(
+    stub_ddb_lookup: dict[str, Any],
+) -> None:
+    payload = unassign_payload()
+    payload["action"] = "assigned"
+    assert parse_cancellation("issues", payload) is None

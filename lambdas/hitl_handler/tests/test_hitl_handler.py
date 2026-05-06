@@ -133,3 +133,87 @@ def test_invalid_event_shape() -> None:
     out = handler(cast("dict[str, Any]", []), ctx())
     assert out["ok"] is False
     assert out["error"]["kind"] == "invalid_event"
+
+
+def store_pending_gate(*, run_id: str, gate_ref: str, task_token: str) -> None:
+    """Helper: drop a PENDING approval row directly so cancel_run has work to do."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": f"RUN#{run_id}"},
+            "sk": {"S": f"GATE#{gate_ref}"},
+            "task_token": {"S": task_token},
+            "status": {"S": "PENDING"},
+        },
+    )
+
+
+def test_cancel_run_resolves_every_pending_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    failures: list[dict[str, str]] = []
+
+    def capture(**kwargs: Any) -> None:
+        failures.append({"taskToken": kwargs["taskToken"], "cause": kwargs["cause"]})
+
+    monkeypatch.setattr(sfn(), "send_task_failure", capture)
+
+    store_pending_gate(run_id="run-1", gate_ref="spec", task_token="t-spec")  # noqa: S106
+    store_pending_gate(run_id="run-1", gate_ref="task:T-001", task_token="t-task1")  # noqa: S106
+    store_pending_gate(run_id="run-1", gate_ref="task:T-002", task_token="t-task2")  # noqa: S106
+
+    out = handler(
+        {
+            "op": "CANCEL_RUN",
+            "run_id": "run-1",
+            "reviewer": "alice",
+            "reason": "bot unassigned",
+        },
+        ctx(),
+    )
+
+    assert out["ok"] is True
+    assert out["run_id"] == "run-1"
+    assert sorted(out["gates_cancelled"]) == ["spec", "task:T-001", "task:T-002"]
+    assert {f["taskToken"] for f in failures} == {"t-spec", "t-task1", "t-task2"}
+    assert all(f["cause"] == "bot unassigned" for f in failures)
+
+    for gate_ref in ("spec", "task:T-001", "task:T-002"):
+        item = ddb().get_item(
+            TableName=TABLE,
+            Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": f"GATE#{gate_ref}"}},
+        )["Item"]
+        assert item["status"]["S"] == "CANCEL"
+
+
+def test_cancel_run_skips_already_resolved_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sfn(), "send_task_failure", lambda **_: None)
+    # APPROVED gate should be ignored — only PENDING rows are cancelled.
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-2"},
+            "sk": {"S": "GATE#spec"},
+            "task_token": {"S": "t-spec"},
+            "status": {"S": "APPROVE"},
+        },
+    )
+    store_pending_gate(run_id="run-2", gate_ref="task:T-001", task_token="t-task1")  # noqa: S106
+
+    out = handler(
+        {"op": "CANCEL_RUN", "run_id": "run-2", "reviewer": "alice", "reason": "stop"},
+        ctx(),
+    )
+
+    assert out["gates_cancelled"] == ["task:T-001"]
+
+
+def test_cancel_run_no_pending_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sfn(), "send_task_failure", lambda **_: None)
+
+    out = handler(
+        {"op": "CANCEL_RUN", "run_id": "ghost", "reviewer": "alice", "reason": "stop"},
+        ctx(),
+    )
+
+    assert out == {"ok": True, "run_id": "ghost", "gates_cancelled": []}

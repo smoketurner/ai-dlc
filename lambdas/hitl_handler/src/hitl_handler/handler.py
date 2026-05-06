@@ -1,6 +1,6 @@
 """HITL handler — bridges Step Functions task tokens to human approval.
 
-Two operations dispatched on ``input.op``:
+Three operations dispatched on ``input.op``:
 
 * ``REQUEST_APPROVAL`` — Step Functions invokes via ``.waitForTaskToken``.
   We persist the ``task_token`` in the approvals table keyed by
@@ -10,6 +10,11 @@ Two operations dispatched on ``input.op``:
 * ``DECIDE`` — Invoked by API Gateway's ``POST /v1/runs/{id}/decide`` (and
   the GitHub webhook entrypoint). Looks up the stored task_token by gate
   reference and calls ``SendTaskSuccess`` or ``SendTaskFailure``.
+
+* ``CANCEL_RUN`` — Resolve every PENDING gate on a run with
+  ``SendTaskFailure``. Invoked when the bot is unassigned from the
+  source issue (``issues.unassigned`` webhook) — stops the run cleanly
+  without waiting for individual gate decisions.
 
 Gate references:
   * ``spec``         — the SPEC.READY → SPEC.APPROVED gate; one per run.
@@ -77,6 +82,15 @@ class DecideInput(BaseOp):
     decision: Literal["approve", "reject"]
     reviewer: str = Field(min_length=1, max_length=128)
     reason: str | None = None
+
+
+class CancelRunInput(BaseOp):
+    """Cancel every PENDING gate on a run via ``SendTaskFailure``."""
+
+    op: Literal["CANCEL_RUN"]
+    run_id: str = Field(min_length=1, max_length=128)
+    reviewer: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=512)
 
 
 @cache
@@ -204,9 +218,56 @@ def decide(req: DecideInput) -> dict[str, Any]:
     return {"ok": True, "decision": req.decision}
 
 
+def list_pending_gates(run_id: str) -> list[tuple[str, str]]:
+    """Query approvals for every PENDING ``GATE#*`` row of ``run_id``.
+
+    Returns a list of ``(gate_ref, task_token)`` tuples. Empty list when
+    there are no open gates (already-resolved run, or never had any).
+    """
+    resp = ddb().query(
+        TableName=approvals_table(),
+        KeyConditionExpression="pk = :pk and begins_with(sk, :prefix)",
+        FilterExpression="#s = :pending",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":pk": {"S": f"RUN#{run_id}"},
+            ":prefix": {"S": "GATE#"},
+            ":pending": {"S": "PENDING"},
+        },
+        ProjectionExpression="sk, task_token",
+    )
+    out: list[tuple[str, str]] = []
+    for item in resp.get("Items", []):
+        gate_ref = item["sk"]["S"].removeprefix("GATE#")
+        token = item.get("task_token", {}).get("S")
+        if token:
+            out.append((gate_ref, token))
+    return out
+
+
+def cancel_run(req: CancelRunInput) -> dict[str, Any]:
+    """Resolve every PENDING gate on ``run_id`` with ``SendTaskFailure``."""
+    pending = list_pending_gates(req.run_id)
+    cancelled: list[str] = []
+    for gate_ref, token in pending:
+        sfn().send_task_failure(taskToken=token, error="RunCancelled", cause=req.reason)
+        try:
+            mark_resolved(req.run_id, gate_ref, "cancel", req.reviewer)
+        except ddb().exceptions.ConditionalCheckFailedException:
+            # Already resolved by a concurrent DECIDE — that's fine.
+            continue
+        cancelled.append(gate_ref)
+    logger.info(
+        "run cancelled",
+        extra={"run_id": req.run_id, "gates_cancelled": cancelled, "reason": req.reason},
+    )
+    return {"ok": True, "run_id": req.run_id, "gates_cancelled": cancelled}
+
+
 DISPATCH: dict[str, tuple[type[BaseOp], Any]] = {
     "REQUEST_APPROVAL": (RequestApprovalInput, request_approval),
     "DECIDE": (DecideInput, decide),
+    "CANCEL_RUN": (CancelRunInput, cancel_run),
 }
 
 
