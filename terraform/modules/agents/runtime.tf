@@ -158,6 +158,49 @@ data "aws_iam_policy_document" "runtime_inline" {
     resources = [aws_bedrockagentcore_gateway.agent[each.key].gateway_arn]
   }
 
+  # AgentCore Browser. Granted to agents whose ``features`` include
+  # ``browser`` (currently the Proposer for external research). Sessions
+  # are derived ARNs under the parent browser, so we authorize both.
+  dynamic "statement" {
+    for_each = contains(each.value.features, "browser") ? [1] : []
+    content {
+      sid = "AgentCoreBrowser"
+      actions = [
+        "bedrock-agentcore:StartBrowserSession",
+        "bedrock-agentcore:StopBrowserSession",
+        "bedrock-agentcore:GetBrowserSession",
+        "bedrock-agentcore:ListBrowserSessions",
+        "bedrock-agentcore:UpdateBrowserStream",
+        "bedrock-agentcore:ConnectBrowserAutomationStream",
+      ]
+      resources = [
+        aws_bedrockagentcore_browser.shared.browser_arn,
+        "${aws_bedrockagentcore_browser.shared.browser_arn}/*",
+      ]
+    }
+  }
+
+  # AgentCore Code Interpreter. Granted to agents whose ``features``
+  # include ``code_interpreter`` (currently Tester + Reviewer for
+  # sandboxed test/lint execution).
+  dynamic "statement" {
+    for_each = contains(each.value.features, "code_interpreter") ? [1] : []
+    content {
+      sid = "AgentCoreCodeInterpreter"
+      actions = [
+        "bedrock-agentcore:StartCodeInterpreterSession",
+        "bedrock-agentcore:StopCodeInterpreterSession",
+        "bedrock-agentcore:GetCodeInterpreterSession",
+        "bedrock-agentcore:ListCodeInterpreterSessions",
+        "bedrock-agentcore:InvokeCodeInterpreter",
+      ]
+      resources = [
+        aws_bedrockagentcore_code_interpreter.shared.code_interpreter_arn,
+        "${aws_bedrockagentcore_code_interpreter.shared.code_interpreter_arn}/*",
+      ]
+    }
+  }
+
   # Direct lambda:InvokeFunction on the agent's tool targets. Most agents
   # call tools via the gateway (which has its own role) — this is the
   # escape hatch for agents that orchestrate Lambdas directly (e.g., the
@@ -337,6 +380,12 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     # delegate git ops to the repo_helper Lambda and don't need this.
     each.key == "implementer" && var.github_app_secret_name != null ? {
       AIDLC_GITHUB_APP_SECRET_ARN = data.aws_secretsmanager_secret.github_app[0].arn
+    } : {},
+    contains(var.agents[each.key].features, "browser") ? {
+      AIDLC_BROWSER_ID = aws_bedrockagentcore_browser.shared.browser_id
+    } : {},
+    contains(var.agents[each.key].features, "code_interpreter") ? {
+      AIDLC_CODE_INTERPRETER_ID = aws_bedrockagentcore_code_interpreter.shared.code_interpreter_id
     } : {},
   )
 

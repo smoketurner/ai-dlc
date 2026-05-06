@@ -15,12 +15,15 @@ variable "agents" {
     workload identity, AgentCore Gateway, and AgentCore Runtime backed by an
     ECR image (always pulled by `:latest`). The `targets` field is a subset
     of the registered tool Lambdas; valid values are `artifact_tool` and
-    `repo_helper`. Image deploys happen via the images-build workflow's
+    `repo_helper`. The `features` field opts the agent into shared
+    AgentCore compute resources; valid values are `browser` and
+    `code_interpreter`. Image deploys happen via the images-build workflow's
     update-agent-runtime call — terraform doesn't track image SHAs.
   EOT
   type = map(object({
     description                         = string
     targets                             = set(string)
+    features                            = optional(set(string), [])
     allowed_resource_oauth2_return_urls = optional(list(string), [])
     bedrock_model_id                    = optional(string, "")
   }))
@@ -43,16 +46,19 @@ variable "agents" {
     reviewer = {
       description      = "Reviewer agent — code-reviews each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
+      features         = ["code_interpreter"]
       bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     tester = {
       description      = "Tester agent — flags test gaps in each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
+      features         = ["code_interpreter"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     proposer = {
       description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
       targets          = ["repo_helper"]
+      features         = ["browser"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     triage = {
@@ -68,6 +74,14 @@ variable "agents" {
       length(setsubtract(cfg.targets, ["artifact_tool", "repo_helper"])) == 0
     ])
     error_message = "agents[*].targets values must be a subset of {artifact_tool, repo_helper}."
+  }
+
+  validation {
+    condition = alltrue([
+      for cfg in values(var.agents) :
+      length(setsubtract(cfg.features, ["browser", "code_interpreter"])) == 0
+    ])
+    error_message = "agents[*].features values must be a subset of {browser, code_interpreter}."
   }
 }
 

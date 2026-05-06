@@ -8,6 +8,26 @@ output "memory_arn" {
   value       = aws_bedrockagentcore_memory.this.arn
 }
 
+output "browser_id" {
+  description = "AgentCore Browser resource ID — injected as AIDLC_BROWSER_ID into runtimes whose agents declare features=[\"browser\"]."
+  value       = aws_bedrockagentcore_browser.shared.browser_id
+}
+
+output "browser_arn" {
+  description = "AgentCore Browser resource ARN."
+  value       = aws_bedrockagentcore_browser.shared.browser_arn
+}
+
+output "code_interpreter_id" {
+  description = "AgentCore Code Interpreter resource ID — injected as AIDLC_CODE_INTERPRETER_ID into runtimes whose agents declare features=[\"code_interpreter\"]."
+  value       = aws_bedrockagentcore_code_interpreter.shared.code_interpreter_id
+}
+
+output "code_interpreter_arn" {
+  description = "AgentCore Code Interpreter resource ARN."
+  value       = aws_bedrockagentcore_code_interpreter.shared.code_interpreter_arn
+}
+
 output "platform_workload_name" {
   description = "Shared AgentCore workload identity name. Empty when github_app_secret_name isn't configured."
   value = (

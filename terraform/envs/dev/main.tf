@@ -131,16 +131,19 @@ module "agents" {
     reviewer = {
       description      = "Reviewer agent — code-reviews each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
+      features         = ["code_interpreter"]
       bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     tester = {
       description      = "Tester agent — flags test gaps in each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
+      features         = ["code_interpreter"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     proposer = {
       description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
       targets          = ["repo_helper"]
+      features         = ["browser"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     triage = {
