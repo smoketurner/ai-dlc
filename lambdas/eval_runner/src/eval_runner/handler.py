@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import boto3
 import yaml
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="eval_runner")
+tracer = Tracer(service="eval_runner")
+metrics = Metrics(namespace="ai-dlc", service="eval_runner")
 
 
 class BaseOp(BaseModel):
@@ -145,6 +147,8 @@ METRIC_NAMESPACE = "AIDLC/Evals"
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Lambda entrypoint dispatching on ``op``."""
     if not isinstance(event, dict):

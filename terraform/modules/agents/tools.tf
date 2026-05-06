@@ -23,6 +23,7 @@ module "tool_lambda" {
   memory_size   = 512
   timeout       = 30
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/${each.key}/src"
@@ -33,8 +34,10 @@ module "tool_lambda" {
 
   environment_variables = each.key == "repo_helper" ? merge(
     {
-      AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket
-      AIDLC_MEMORY_MD_BUCKET = var.memory_md_bucket
+      AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
+      AIDLC_MEMORY_MD_BUCKET       = var.memory_md_bucket
+      POWERTOOLS_SERVICE_NAME      = each.key
+      POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     },
     var.github_app_secret_name == null ? {} : {
       AIDLC_GITHUB_APP_SECRET_ARN      = data.aws_secretsmanager_secret.github_app[0].arn
@@ -42,8 +45,10 @@ module "tool_lambda" {
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.platform[0].name
     },
     ) : {
-    AIDLC_ARTIFACTS_BUCKET = var.artifacts_bucket
-    AIDLC_MEMORY_MD_BUCKET = var.memory_md_bucket
+    AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
+    AIDLC_MEMORY_MD_BUCKET       = var.memory_md_bucket
+    POWERTOOLS_SERVICE_NAME      = each.key
+    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days

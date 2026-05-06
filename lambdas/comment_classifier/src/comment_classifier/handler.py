@@ -18,7 +18,6 @@ hand-label calibration cycle.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from datetime import UTC, datetime
@@ -26,9 +25,10 @@ from functools import cache
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
+from aws_lambda_powertools.utilities.parser import ValidationError, parse
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 from comment_classifier.prompts import SYSTEM_PROMPT
 from common.eval import ClassifiedComment, CommentCategory
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="comment_classifier")
+tracer = Tracer(service="comment_classifier")
+metrics = Metrics(namespace="ai-dlc", service="comment_classifier")
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 VALID_CATEGORIES: frozenset[str] = frozenset(
@@ -90,12 +92,14 @@ def model_id() -> str:
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Classify one PR review comment; persist + return the result."""
     try:
-        req = ClassificationRequest.model_validate(event)
+        req = parse(event=event, model=ClassificationRequest)
     except ValidationError as exc:
-        logger.warning("invalid input", extra={"errors": json.loads(exc.json())})
+        logger.warning("invalid input", extra={"errors": exc.errors()})
         return {"ok": False, "error": "validation_error"}
 
     category = classify(req.comment_body)

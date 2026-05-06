@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import boto3
+import few_shot_miner.handler as miner
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from few_shot_miner.handler import ddb, handler, s3
@@ -26,6 +27,7 @@ def ctx() -> LambdaContext:
             memory_limit_in_mb=128,
             invoked_function_arn="arn:aws:lambda:us-east-1:000000000000:function:t",
             aws_request_id="rid-1",
+            get_remaining_time_in_millis=lambda: 30_000,
         ),
     )
 
@@ -167,7 +169,7 @@ def test_clean_run_emits_intent_and_task_examples() -> None:
         {"Records": [state_stream_record(run_id="run-1", status="RUN.COMPLETED", rejections="0")]},
         ctx(),
     )
-    assert out["mined"] == 1
+    assert out == {"batchItemFailures": []}
     keys = [
         item["Key"]
         for item in s3()
@@ -185,7 +187,7 @@ def test_rejected_run_is_skipped() -> None:
         {"Records": [state_stream_record(run_id="run-2", status="RUN.COMPLETED", rejections="3")]},
         ctx(),
     )
-    assert out["mined"] == 0
+    assert out == {"batchItemFailures": []}
     keys = s3().list_objects_v2(Bucket=ARTIFACTS, Prefix="evals/few-shots/").get("Contents", [])
     assert not keys
 
@@ -196,7 +198,7 @@ def test_in_progress_run_is_skipped() -> None:
         {"Records": [state_stream_record(run_id="run-3", status="SPEC.READY", rejections="0")]},
         ctx(),
     )
-    assert out["mined"] == 0
+    assert out == {"batchItemFailures": []}
 
 
 def test_event_row_update_is_skipped() -> None:
@@ -213,12 +215,12 @@ def test_event_row_update_is_skipped() -> None:
         },
     }
     out = handler({"Records": [record]}, ctx())
-    assert out["mined"] == 0
+    assert out == {"batchItemFailures": []}
 
 
 def test_remove_event_skipped() -> None:
     out = handler({"Records": [{"eventName": "REMOVE"}]}, ctx())
-    assert out["mined"] == 0
+    assert out == {"batchItemFailures": []}
 
 
 def test_intent_payload_carries_intent_string() -> None:
@@ -279,7 +281,7 @@ def test_unannounced_task_excluded() -> None:
         {"Records": [state_stream_record(run_id="run-7", status="RUN.COMPLETED", rejections="0")]},
         ctx(),
     )
-    assert out["mined"] == 1  # the run still mines — just the task is skipped
+    assert out == {"batchItemFailures": []}  # the run still mines — just the task is skipped
     task_keys = [
         item["Key"]
         for item in s3()
@@ -290,3 +292,68 @@ def test_unannounced_task_excluded() -> None:
         .get("Contents", [])
     ]
     assert not task_keys
+
+
+def test_partial_failure_isolates_poison_record() -> None:
+    """A failing record reports its sequence number; siblings still process."""
+    seed_run_events("run-ok", with_tasks=("T-001",))
+    good = {
+        "eventID": "good",
+        "eventName": "MODIFY",
+        "eventSource": "aws:dynamodb",
+        "eventVersion": "1.1",
+        "awsRegion": "us-east-1",
+        "dynamodb": {
+            "SequenceNumber": "100",
+            "Keys": {"pk": {"S": "RUN#run-ok"}, "sk": {"S": "STATE"}},
+            "NewImage": {
+                "pk": {"S": "RUN#run-ok"},
+                "sk": {"S": "STATE"},
+                "status": {"S": "RUN.COMPLETED"},
+                "spec_slug": {"S": "add-healthz"},
+                "project_slug": {"S": "demo"},
+                "total_rejections": {"N": "0"},
+            },
+        },
+    }
+    poison = {
+        "eventID": "poison",
+        "eventName": "MODIFY",
+        "eventSource": "aws:dynamodb",
+        "eventVersion": "1.1",
+        "awsRegion": "us-east-1",
+        "dynamodb": {
+            "SequenceNumber": "200",
+            "Keys": {"pk": {"S": "RUN#poison"}, "sk": {"S": "STATE"}},
+            "NewImage": {
+                "pk": {"S": "RUN#poison"},
+                "sk": {"S": "STATE"},
+                "status": {"S": "RUN.COMPLETED"},
+                "project_slug": {"S": "demo"},
+                # invalid total_rejections type triggers the int() in mine_record;
+                # a non-numeric string passes the isdigit guard but to force a
+                # genuine failure we'll patch fetch_events.
+                "total_rejections": {"N": "0"},
+            },
+        },
+    }
+    original_fetch = miner.fetch_events
+
+    def fetch_or_raise(run_id: str) -> list[dict[str, Any]]:
+        if run_id == "poison":
+            msg = "boom"
+            raise RuntimeError(msg)
+        return original_fetch(run_id)
+
+    setattr(miner, "fetch_events", fetch_or_raise)  # noqa: B010
+    try:
+        out = handler({"Records": [good, poison]}, ctx())
+    finally:
+        setattr(miner, "fetch_events", original_fetch)  # noqa: B010
+    assert out["batchItemFailures"] == [{"itemIdentifier": "200"}]
+    contents = (
+        s3()
+        .list_objects_v2(Bucket=ARTIFACTS, Prefix="evals/few-shots/intent_to_spec/")
+        .get("Contents", [])
+    )
+    assert contents, "the good record's example should have been written"

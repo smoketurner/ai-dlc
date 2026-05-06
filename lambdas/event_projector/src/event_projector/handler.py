@@ -9,7 +9,9 @@ Two trigger sources, dispatched by event shape:
 
 * **DynamoDB Streams** (runs + approvals tables) — currently a no-op
   passthrough; surfaces here so the wiring exists when a stream consumer
-  is needed.
+  is needed. Routed through Powertools' ``BatchProcessor`` so a single
+  poison record reports only itself as a partial failure rather than
+  poison-pilling the whole batch.
 
 The projector is idempotent: every write uses the event_id as a sort-key
 suffix or a ``ConditionExpression`` that keeps repeats from clobbering
@@ -21,16 +23,34 @@ from __future__ import annotations
 import json
 import os
 from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
+from aws_lambda_powertools.metrics import MetricUnit
+from aws_lambda_powertools.utilities.batch import (
+    BatchProcessor,
+    EventType,
+    process_partial_response,
+)
+from aws_lambda_powertools.utilities.batch.types import PartialItemFailureResponse
+from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import (
+    DynamoDBRecord,
+)
+from aws_lambda_powertools.utilities.parser import ValidationError, parse
+from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
+
+from common.events import UntypedEnvelope
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
 
 logger = Logger(service="event_projector")
+tracer = Tracer(service="event_projector")
+metrics = Metrics(namespace="ai-dlc", service="event_projector")
+
+stream_processor = BatchProcessor(event_type=EventType.DynamoDBStreams)
 
 
 @cache
@@ -56,10 +76,20 @@ def memory_id() -> str:
 
 
 @logger.inject_lambda_context(log_event=False)
-def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
+def handler(
+    event: dict[str, Any],
+    context: LambdaContext,
+) -> dict[str, Any] | PartialItemFailureResponse:
     """Fan out one EventBridge event or one DDB-Stream batch to consumers."""
     if "Records" in event:
-        return handle_dynamodb_stream(event)
+        return process_partial_response(
+            event=event,
+            record_handler=process_stream_record,
+            processor=stream_processor,
+            context=context,
+        )
     if "detail" in event and "detail-type" in event:
         return handle_eventbridge(event)
     logger.warning("unknown trigger shape", extra={"keys": sorted(event.keys())})
@@ -68,26 +98,53 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
 
 def handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
     """Single EventBridge invocation; ``event['detail']`` is the envelope."""
-    detail = event["detail"]
-    if isinstance(detail, str):
-        detail = json.loads(detail)
-    event_type = detail.get("type") or event.get("detail-type")
-    run_id = detail.get("run_id")
-    if run_id is None:
-        return {"ok": False, "error": "missing run_id"}
+    try:
+        # parse() is typed to allow batch shapes; EventBridgeEnvelope always
+        # returns the single inner model, hence the cast.
+        envelope = cast(
+            "UntypedEnvelope",
+            parse(
+                event=normalise(event),
+                model=UntypedEnvelope,
+                envelope=EventBridgeEnvelope,
+            ),
+        )
+    except ValidationError as exc:
+        logger.warning("invalid event", extra={"errors": exc.errors()})
+        return {"ok": False, "error": "validation_error"}
+    detail = envelope.model_dump(mode="json")
+    run_id = str(envelope.run_id)
+    event_type = envelope.type
     upsert_run_event(run_id=run_id, event_type=event_type, envelope=detail)
     update_run_state(run_id=run_id, event_type=event_type, envelope=detail)
     forward_to_memory(detail)
+    metrics.add_metric(name="EventsProjected", unit=MetricUnit.Count, value=1)
     return {"ok": True, "run_id": run_id, "type": event_type}
 
 
-def handle_dynamodb_stream(event: dict[str, Any]) -> dict[str, Any]:
-    """Pass-through; logs the batch size and returns success."""
-    count = len(event.get("Records", []))
-    logger.info("ddb stream batch", extra={"records": count})
-    return {"ok": True, "records": count}
+def normalise(event: dict[str, Any]) -> dict[str, Any]:
+    """Decode ``detail`` if EventBridge ships it as a JSON string."""
+    detail = event.get("detail")
+    if isinstance(detail, str):
+        return {**event, "detail": json.loads(detail)}
+    return event
 
 
+def process_stream_record(record: DynamoDBRecord) -> None:
+    """Per-record handler for the DDB Streams branch.
+
+    Currently a no-op pass-through; raising propagates to the BatchProcessor
+    which records the record's sequence number under ``batchItemFailures``
+    so DDB Streams retries only the failed record.
+    """
+    seq = record.dynamodb.sequence_number if record.dynamodb else None
+    logger.debug(
+        "ddb stream record",
+        extra={"event_name": record.event_name, "seq": seq},
+    )
+
+
+@tracer.capture_method
 def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
     """Append the event to the run's timeline row."""
     event_id = envelope.get("event_id", "unknown")
@@ -103,6 +160,7 @@ def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str,
     )
 
 
+@tracer.capture_method
 def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
     """Upsert the run's STATE row with current status + cumulative metrics.
 
@@ -192,6 +250,7 @@ def accumulate_usage(
         values[":dur"] = {"N": str(duration)}
 
 
+@tracer.capture_method
 def forward_to_memory(envelope: dict[str, Any]) -> None:
     """Emit the envelope to AgentCore Memory as a CreateEvent."""
     actor_id = envelope.get("payload", {}).get("project_slug") or envelope.get("actor_id", "system")
@@ -210,3 +269,4 @@ def forward_to_memory(envelope: dict[str, Any]) -> None:
         )
     except Exception as exc:
         logger.warning("memory CreateEvent failed", extra={"err": repr(exc)})
+        metrics.add_metric(name="MemoryWriteFailures", unit=MetricUnit.Count, value=1)

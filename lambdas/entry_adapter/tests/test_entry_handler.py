@@ -10,7 +10,7 @@ from typing import Any, cast
 import boto3
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from entry_adapter.handler import ddb, events, handler
+from entry_adapter.handler import events, handler, persistence
 from moto import mock_aws
 
 BUS = "ai-dlc-test-bus"
@@ -26,17 +26,17 @@ def ctx() -> LambdaContext:
             memory_limit_in_mb=128,
             invoked_function_arn="arn:aws:lambda:us-east-1:000000000000:function:t",
             aws_request_id="rid-1",
+            get_remaining_time_in_millis=lambda: 30_000,
         ),
     )
 
 
 @pytest.fixture(autouse=True)
 def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Set env vars + create the bus and idempotency table under moto."""
+    """Create the bus and idempotency table under moto for each test."""
     monkeypatch.setenv("AIDLC_BUS_NAME", BUS)
     monkeypatch.setenv("AIDLC_IDEMPOTENCY_TABLE", TABLE)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    ddb.cache_clear()
     events.cache_clear()
     with mock_aws():
         boto3.client("events").create_event_bus(Name=BUS)
@@ -46,8 +46,13 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             KeySchema=[{"AttributeName": "idempotency_key", "KeyType": "HASH"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        # Module-level persistence was built before moto patched boto3, so
+        # its cached DDB resource targets the real AWS. Repoint it at moto.
+        # Powertools doesn't expose these as a typed public API, so use
+        # setattr to bypass static-attribute checks.
+        setattr(persistence, "table", boto3.resource("dynamodb").Table(TABLE))  # noqa: B010
+        setattr(persistence, "client", boto3.client("dynamodb"))  # noqa: B010
         yield
-    ddb.cache_clear()
     events.cache_clear()
 
 
@@ -71,7 +76,7 @@ def test_first_submission_returns_202() -> None:
     assert body["project_slug"] == "demo"
 
 
-def test_duplicate_idempotency_returns_409() -> None:
+def test_replay_returns_cached_response() -> None:
     body = {
         "project_slug": "demo",
         "intent": "Add /healthz endpoint",
@@ -81,10 +86,8 @@ def test_duplicate_idempotency_returns_409() -> None:
     first = submit(body)
     second = submit(body)
     assert first["statusCode"] == 202
-    assert second["statusCode"] == 409
-    second_body = json.loads(second["body"])
-    assert second_body["error"] == "idempotent_replay"
-    assert second_body["run_id"] == json.loads(first["body"])["run_id"]
+    assert second["statusCode"] == 202
+    assert json.loads(first["body"]) == json.loads(second["body"])
 
 
 def test_invalid_body_returns_400() -> None:

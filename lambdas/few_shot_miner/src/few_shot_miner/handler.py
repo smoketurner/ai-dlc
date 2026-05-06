@@ -18,6 +18,10 @@ The proposer reads these as a few-shot bank when proposing prompt
 updates. We do *not* mine rejected runs here — that's the telemetry
 agent's job; rejection records carry the labeling. Mining only clean
 runs keeps the example bank high-signal.
+
+Records are dispatched through Powertools' ``BatchProcessor`` so a single
+poison record reports only itself as a partial failure rather than
+poison-pilling the whole batch.
 """
 
 from __future__ import annotations
@@ -29,7 +33,17 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
+from aws_lambda_powertools.metrics import MetricUnit
+from aws_lambda_powertools.utilities.batch import (
+    BatchProcessor,
+    EventType,
+    process_partial_response,
+)
+from aws_lambda_powertools.utilities.batch.types import PartialItemFailureResponse
+from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import (
+    DynamoDBRecord,
+)
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 if TYPE_CHECKING:
@@ -37,6 +51,10 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="few_shot_miner")
+tracer = Tracer(service="few_shot_miner")
+metrics = Metrics(namespace="ai-dlc", service="few_shot_miner")
+
+stream_processor = BatchProcessor(event_type=EventType.DynamoDBStreams)
 
 
 @cache
@@ -62,15 +80,26 @@ def runs_table() -> str:
 
 
 @logger.inject_lambda_context(log_event=False)
-def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
-    """Process one DynamoDB Streams batch."""
-    records = event.get("Records") or []
-    mined = 0
-    for record in records:
-        if mine_record(record):
-            mined += 1
-    logger.info("ddb stream batch", extra={"records": len(records), "mined": mined})
-    return {"ok": True, "records": len(records), "mined": mined}
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
+def handler(event: dict[str, Any], context: LambdaContext) -> PartialItemFailureResponse:
+    """Process one DynamoDB Streams batch with partial-failure reporting."""
+    return process_partial_response(
+        event=event,
+        record_handler=process_stream_record,
+        processor=stream_processor,
+        context=context,
+    )
+
+
+def process_stream_record(record: DynamoDBRecord) -> None:
+    """Per-record handler routed via ``BatchProcessor``.
+
+    Failures raise; the batch processor records the sequence number under
+    ``batchItemFailures`` so DDB Streams retries only the failed item.
+    """
+    if mine_record(record.raw_event):
+        metrics.add_metric(name="FewShotsMined", unit=MetricUnit.Count, value=1)
 
 
 def mine_record(record: dict[str, Any]) -> bool:
@@ -116,6 +145,7 @@ def has_rejections(image: dict[str, Any]) -> bool:
     return int(raw) > 0
 
 
+@tracer.capture_method
 def fetch_events(run_id: str) -> list[dict[str, Any]]:
     """Pull the run's event timeline (envelope payloads only)."""
     items: list[dict[str, Any]] = []

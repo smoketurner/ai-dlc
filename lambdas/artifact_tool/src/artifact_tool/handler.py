@@ -19,7 +19,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, Literal
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -28,6 +28,8 @@ if TYPE_CHECKING:
 
 
 logger = Logger(service="artifact_tool")
+tracer = Tracer(service="artifact_tool")
+metrics = Metrics(namespace="ai-dlc", service="artifact_tool")
 
 
 @cache
@@ -156,6 +158,8 @@ DISPATCH: dict[str, tuple[type[BaseOp], Any]] = {
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Lambda entrypoint. Dispatches on ``input.op`` to a typed handler."""
     payload = event.get("input") if isinstance(event, dict) else None

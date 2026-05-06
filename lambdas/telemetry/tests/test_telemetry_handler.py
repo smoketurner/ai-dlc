@@ -13,7 +13,7 @@ import boto3
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from moto import mock_aws
-from telemetry.handler import bedrock, build_record, ddb, handler, s3
+from telemetry.handler import RejectionEnvelope, bedrock, build_record, ddb, handler, s3
 
 ARTIFACTS = "test-artifacts"
 RUNS = "test-runs"
@@ -96,10 +96,16 @@ def envelope(event_type: str = "TASK.REJECTED", **payload_overrides: Any) -> dic
 
 
 def eb(env: dict[str, Any]) -> dict[str, Any]:
-    """Wrap the envelope in EventBridge shape."""
+    """Wrap the envelope in EventBridge shape (full schema for parse())."""
     return {
-        "source": "ai-dlc.system",
+        "version": "0",
+        "id": "11111111-2222-3333-4444-555555555555",
         "detail-type": env["type"],
+        "source": "ai-dlc.system",
+        "account": "000000000000",
+        "time": "2026-05-01T12:00:00Z",
+        "region": "us-east-1",
+        "resources": [],
         "detail": env,
     }
 
@@ -154,6 +160,7 @@ def test_unknown_event_type_ignored() -> None:
 def test_missing_detail_returns_error() -> None:
     out = handler({"source": "x"}, ctx())
     assert out["ok"] is False
+    assert out["error"] == "validation_error"
 
 
 def test_empty_reason_falls_back_to_other(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -187,9 +194,7 @@ def test_spec_rejection_uses_spec_gate_ref() -> None:
 
 
 def test_build_record_carries_category_and_envelope() -> None:
-    env = envelope()
-    record = build_record(
-        detail=env, event_type=env["type"], gate_ref="spec", category="test-failed"
-    )
+    parsed = RejectionEnvelope.model_validate(envelope())
+    record = build_record(envelope=parsed, gate_ref="spec", category="test-failed")
     assert record["category"] == "test-failed"
     assert record["envelope"]["run_id"] == "run-1"

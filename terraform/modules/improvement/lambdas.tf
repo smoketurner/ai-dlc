@@ -17,6 +17,7 @@ module "telemetry" {
   memory_size   = 512
   timeout       = 60
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/telemetry/src"
@@ -26,12 +27,13 @@ module "telemetry" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_ARTIFACTS_BUCKET      = var.artifacts_bucket
-    AIDLC_RUNS_TABLE            = var.runs_table
-    AIDLC_TELEMETRY_MODEL_ID    = var.telemetry_model_id
-    POWERTOOLS_SERVICE_NAME     = "telemetry"
-    POWERTOOLS_LOG_LEVEL        = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+    AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
+    AIDLC_RUNS_TABLE              = var.runs_table
+    AIDLC_TELEMETRY_MODEL_ID      = var.telemetry_model_id
+    POWERTOOLS_SERVICE_NAME       = "telemetry"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -76,6 +78,7 @@ module "few_shot_miner" {
   memory_size   = 512
   timeout       = 60
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/few_shot_miner/src"
@@ -85,11 +88,12 @@ module "few_shot_miner" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_ARTIFACTS_BUCKET      = var.artifacts_bucket
-    AIDLC_RUNS_TABLE            = var.runs_table
-    POWERTOOLS_SERVICE_NAME     = "few_shot_miner"
-    POWERTOOLS_LOG_LEVEL        = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+    AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
+    AIDLC_RUNS_TABLE              = var.runs_table
+    POWERTOOLS_SERVICE_NAME       = "few_shot_miner"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -120,9 +124,10 @@ module "few_shot_miner" {
 
   event_source_mapping = {
     runs_stream = {
-      event_source_arn  = var.runs_stream_arn
-      starting_position = "LATEST"
-      batch_size        = 10
+      event_source_arn        = var.runs_stream_arn
+      starting_position       = "LATEST"
+      batch_size              = 10
+      function_response_types = ["ReportBatchItemFailures"]
       filter_criteria = [{
         pattern = jsonencode({
           eventName = ["MODIFY", "INSERT"]

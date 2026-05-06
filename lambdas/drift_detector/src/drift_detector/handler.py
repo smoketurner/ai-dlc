@@ -32,7 +32,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +42,8 @@ if TYPE_CHECKING:
     from mypy_boto3_sns.client import SNSClient
 
 logger = Logger(service="drift_detector")
+tracer = Tracer(service="drift_detector")
+metrics = Metrics(namespace="ai-dlc", service="drift_detector")
 
 METRIC_NAMESPACE = "AIDLC/Evals"
 RESULTS_PREFIX = "evals/results/"
@@ -135,6 +137,8 @@ def regression_threshold() -> float:
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Lambda entrypoint. The event is opaque — the Lambda always re-reads S3."""
     del event

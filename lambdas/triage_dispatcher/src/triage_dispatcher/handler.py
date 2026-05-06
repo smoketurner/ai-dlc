@@ -34,10 +34,10 @@ from functools import cache
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
+from aws_lambda_powertools.utilities.parser import ValidationError, parse
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from botocore.exceptions import ClientError
-from pydantic import ValidationError
 
 from common.events import EventEnvelope, RequestReceived
 from common.ids import new_correlation_id, new_event_id, new_run_id
@@ -52,6 +52,8 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="triage_dispatcher")
+tracer = Tracer(service="triage_dispatcher")
+metrics = Metrics(namespace="ai-dlc", service="triage_dispatcher")
 
 READY_LABEL = "aidlc:ready"
 IN_PROGRESS_LABEL = "aidlc:in-progress"
@@ -113,12 +115,14 @@ def artifacts_bucket() -> str:
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Triage one issue. Returns the decision envelope for caller logging."""
     try:
-        req = TriageRequest.model_validate(event)
+        req = parse(event=event, model=TriageRequest)
     except ValidationError as exc:
-        logger.warning("invalid input", extra={"errors": json.loads(exc.json())})
+        logger.warning("invalid input", extra={"errors": exc.errors()})
         return {"ok": False, "error": "validation_error"}
 
     logger.info(

@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 import httpx
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -38,6 +38,8 @@ from repo_helper.auth import (
 )
 
 logger = Logger(service="repo_helper")
+tracer = Tracer(service="repo_helper")
+metrics = Metrics(namespace="ai-dlc", service="repo_helper")
 
 
 class BaseOp(BaseModel):
@@ -166,6 +168,8 @@ DISPATCH: dict[str, type[BaseOp]] = {
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Lambda entrypoint. Validates input, dispatches to the GitHub API."""
     payload = event.get("input") if isinstance(event, dict) else None

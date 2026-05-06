@@ -27,13 +27,15 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
 
 logger = Logger(service="pr_telemetry")
+tracer = Tracer(service="pr_telemetry")
+metrics = Metrics(namespace="ai-dlc", service="pr_telemetry")
 
 RUN_ID_MARKER = re.compile(r"_run_id:\s*([0-9a-f-]{36})_", re.IGNORECASE)
 
@@ -50,6 +52,8 @@ def telemetry_table() -> str:
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Dispatch one GitHub webhook payload to the matching telemetry op."""
     action = str(event.get("action", ""))

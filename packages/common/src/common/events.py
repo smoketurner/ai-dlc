@@ -27,7 +27,7 @@ The platform follows a spec-driven SDLC pipeline:
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -360,3 +360,41 @@ class EventEnvelope[PayloadT: Payload](BaseModel):
     causation_id: EventId | None = None
     actor_id: Annotated[str, Field(min_length=1, max_length=128)]
     payload: PayloadT
+
+
+class IncomingEnvelope[PayloadT: Payload](EventEnvelope[PayloadT]):
+    """Wire-format variant for parsing incoming EventBridge events.
+
+    Identical fields to :class:`EventEnvelope`, but with ``strict=False`` so
+    Pydantic coerces ISO-8601 datetime strings (the on-the-wire timestamp
+    representation) into :class:`datetime` instances. The strict envelope is
+    used at *emission* — we control the shape and want any drift to fail
+    loud. This permissive sibling is used at *ingestion* by Lambdas that
+    parse events back off the bus.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
+
+
+class UntypedEnvelope(BaseModel):
+    """Wire-format variant carrying the envelope fields with an untyped payload.
+
+    Use when a Lambda needs the validated envelope metadata (``type``,
+    ``run_id``, ``timestamp``, etc.) but operates on payloads structurally
+    rather than against a known typed-payload union. Avoids the strict
+    union-discrimination Pydantic does in :class:`IncomingEnvelope` when
+    every payload field would have to satisfy one of the typed payload
+    classes.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
+
+    schema_version: Literal["1.0"] = "1.0"
+    event_id: EventId
+    type: EventType
+    timestamp: datetime
+    run_id: RunId
+    correlation_id: CorrelationId
+    causation_id: EventId | None = None
+    actor_id: Annotated[str, Field(min_length=1, max_length=128)]
+    payload: dict[str, Any]

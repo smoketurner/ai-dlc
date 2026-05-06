@@ -25,7 +25,7 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from botocore.config import Config
 from botocore.exceptions import ClientError, ReadTimeoutError
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from mypy_boto3_stepfunctions.client import SFNClient
 
 logger = Logger(service="runtime_invoker")
+tracer = Tracer(service="runtime_invoker")
+metrics = Metrics(namespace="ai-dlc", service="runtime_invoker")
 
 # Long enough to establish the connection + receive AgentCore's request
 # acknowledgement, short enough that the Lambda doesn't sit idle while
@@ -78,6 +80,8 @@ def sfn_client() -> SFNClient:
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Dispatch to the agent runtime and return immediately."""
     try:

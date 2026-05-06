@@ -46,11 +46,11 @@ from typing import TYPE_CHECKING
 import boto3
 import httpx
 import jwt
+from aws_lambda_powertools.utilities.parameters import SecretsProvider
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
-    from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "ai-dlc-repo-helper/1.0"
@@ -84,23 +84,36 @@ class AppCredentials(BaseModel):
 
 
 @cache
-def secrets_client() -> SecretsManagerClient:
-    """Process-cached boto3 Secrets Manager client."""
-    return boto3.client("secretsmanager")
-
-
-@cache
 def agentcore_client() -> BedrockAgentCoreClient:
     """Process-cached boto3 client for AgentCore Identity APIs."""
     return boto3.client("bedrock-agentcore")
 
 
+SECRET_TTL_SECONDS = 900  # 15 min — picks up rotated secrets without redeploy.
+
+
 @cache
+def secrets_provider() -> SecretsProvider:
+    """Process-cached Powertools SecretsProvider (handles boto3 client setup)."""
+    return SecretsProvider()
+
+
 def app_credentials() -> AppCredentials:
-    """Read + parse the App credentials secret. Cached for the life of the container."""
-    secret_arn = os.environ["AIDLC_GITHUB_APP_SECRET_ARN"]
-    response = secrets_client().get_secret_value(SecretId=secret_arn)
-    return AppCredentials.model_validate_json(response["SecretString"])
+    """Read + parse the App credentials secret.
+
+    Powertools' ``SecretsProvider`` caches the value for ``SECRET_TTL_SECONDS``,
+    so a rotated secret value flows in without requiring a Lambda redeploy.
+    """
+    raw = secrets_provider().get(
+        os.environ["AIDLC_GITHUB_APP_SECRET_ARN"],
+        max_age=SECRET_TTL_SECONDS,
+    )
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if not isinstance(raw, str):
+        msg = f"Expected SecretString, got {type(raw).__name__}"
+        raise TypeError(msg)
+    return AppCredentials.model_validate_json(raw)
 
 
 def oauth_provider_name() -> str:

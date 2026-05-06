@@ -24,17 +24,25 @@ import json
 import os
 from datetime import UTC, datetime
 from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import boto3
-from aws_lambda_powertools import Logger
+from aws_lambda_powertools import Logger, Metrics, Tracer
+from aws_lambda_powertools.utilities.parser import ValidationError, parse
+from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
+
+from common.events import IncomingEnvelope, SpecRejected, TaskRejected
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
     from mypy_boto3_s3.client import S3Client
 
+RejectionEnvelope = IncomingEnvelope[SpecRejected | TaskRejected]
+
 logger = Logger(service="telemetry")
+tracer = Tracer(service="telemetry")
+metrics = Metrics(namespace="ai-dlc", service="telemetry")
 
 CATEGORIES = (
     "missing-acceptance-criteria",
@@ -50,6 +58,19 @@ CATEGORIES = (
 )
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def normalise(event: dict[str, Any]) -> dict[str, Any]:
+    """Decode an EventBridge ``detail`` JSON string into a dict if needed.
+
+    EventBridge usually delivers ``detail`` as a dict to Lambda, but some
+    routes (e.g. archive/replay) wrap it as a JSON string. ``parse()``
+    against ``EventBridgeEnvelope`` requires a dict.
+    """
+    detail = event.get("detail")
+    if isinstance(detail, str):
+        return {**event, "detail": json.loads(detail)}
+    return event
 
 
 @cache
@@ -86,29 +107,38 @@ def model_id() -> str:
 
 
 @logger.inject_lambda_context(log_event=False)
+@tracer.capture_lambda_handler
+@metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Categorize one rejection event."""
-    detail = event.get("detail")
-    if isinstance(detail, str):
-        detail = json.loads(detail)
-    if not isinstance(detail, dict):
-        logger.warning("missing detail")
-        return {"ok": False, "error": "missing_detail"}
-    event_type = detail.get("type") or event.get("detail-type")
-    if event_type not in {"SPEC.REJECTED", "TASK.REJECTED"}:
-        logger.info("ignoring non-rejection", extra={"type": event_type})
+    try:
+        # parse() is typed to allow batch shapes; EventBridgeEnvelope always
+        # returns the single inner model, hence the cast.
+        envelope = cast(
+            "RejectionEnvelope",
+            parse(
+                event=normalise(event),
+                model=RejectionEnvelope,
+                envelope=EventBridgeEnvelope,
+            ),
+        )
+    except ValidationError as exc:
+        logger.warning("invalid event", extra={"errors": exc.errors()})
+        return {"ok": False, "error": "validation_error"}
+
+    if envelope.type not in {"SPEC.REJECTED", "TASK.REJECTED"}:
+        logger.info("ignoring non-rejection", extra={"type": envelope.type})
         return {"ok": True, "ignored": True}
-    payload = detail.get("payload") or {}
-    run_id = detail.get("run_id", "unknown")
-    gate_ref = derive_gate_ref(event_type, payload)
-    project_slug = payload.get("project_slug", "unknown")
-    reason = payload.get("reason") or ""
-    category = classify(reason, event_type=event_type, payload=payload)
+    payload = envelope.payload
+    run_id = str(envelope.run_id)
+    gate_ref = derive_gate_ref(envelope.type, payload)
+    reason = payload.reason
+    category = classify(reason, event_type=envelope.type, payload=payload)
     record = build_record(
-        detail=detail, event_type=event_type, gate_ref=gate_ref, category=category
+        envelope=envelope, gate_ref=gate_ref, category=category
     )
     persist_record(run_id=run_id, gate_ref=gate_ref, record=record)
-    update_counters(run_id=run_id, project_slug=project_slug, category=category)
+    update_counters(run_id=run_id, project_slug=payload.project_slug, category=category)
     logger.info(
         "rejection categorized",
         run_id=run_id,
@@ -118,15 +148,20 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     return {"ok": True, "category": category, "run_id": run_id, "gate_ref": gate_ref}
 
 
-def derive_gate_ref(event_type: str, payload: dict[str, Any]) -> str:
+def derive_gate_ref(event_type: str, payload: SpecRejected | TaskRejected) -> str:
     """Translate the event type + payload into the conventional gate_ref."""
     if event_type == "SPEC.REJECTED":
         return "spec"
-    task_id = payload.get("task_id", "unknown")
+    task_id = payload.task_id if isinstance(payload, TaskRejected) else "unknown"
     return f"task:{task_id}"
 
 
-def classify(reason: str, *, event_type: str, payload: dict[str, Any]) -> str:
+def classify(
+    reason: str,
+    *,
+    event_type: str,
+    payload: SpecRejected | TaskRejected,
+) -> str:
     """Ask Haiku to map ``reason`` to one of :data:`CATEGORIES`."""
     if not reason.strip():
         return "other"
@@ -176,21 +211,23 @@ Reply with the label only. No prose, no punctuation, no quotes.
 """
 
 
-def build_prompt(*, reason: str, event_type: str, payload: dict[str, Any]) -> str:
+def build_prompt(
+    *,
+    reason: str,
+    event_type: str,
+    payload: SpecRejected | TaskRejected,
+) -> str:
     """Compose the user prompt for the categorization call."""
-    parts = [f"Event: {event_type}"]
-    if "spec_slug" in payload:
-        parts.append(f"Spec: {payload['spec_slug']}")
-    if "task_id" in payload:
-        parts.append(f"Task: {payload['task_id']}")
+    parts = [f"Event: {event_type}", f"Spec: {payload.spec_slug}"]
+    if isinstance(payload, TaskRejected):
+        parts.append(f"Task: {payload.task_id}")
     parts += ["", "Reviewer reason:", reason.strip()]
     return "\n".join(parts)
 
 
 def build_record(
     *,
-    detail: dict[str, Any],
-    event_type: str,
+    envelope: RejectionEnvelope,
     gate_ref: str,
     category: str,
 ) -> dict[str, Any]:
@@ -198,10 +235,10 @@ def build_record(
     return {
         "schema_version": "1.0",
         "labeled_at": datetime.now(UTC).isoformat(),
-        "event_type": event_type,
+        "event_type": envelope.type,
         "gate_ref": gate_ref,
         "category": category,
-        "envelope": detail,
+        "envelope": envelope.model_dump(mode="json"),
     }
 
 

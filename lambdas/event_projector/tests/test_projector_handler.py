@@ -27,6 +27,7 @@ def ctx() -> LambdaContext:
             memory_limit_in_mb=128,
             invoked_function_arn="arn:aws:lambda:us-east-1:000000000000:function:t",
             aws_request_id="rid-1",
+            get_remaining_time_in_millis=lambda: 30_000,
         ),
     )
 
@@ -88,8 +89,13 @@ def eb_event(env: dict[str, Any]) -> dict[str, Any]:
     """Wrap an envelope in an EventBridge event shape."""
     return {
         "version": "0",
-        "source": "ai-dlc.system",
+        "id": "11111111-2222-3333-4444-555555555555",
         "detail-type": env["type"],
+        "source": "ai-dlc.system",
+        "account": "000000000000",
+        "time": "2026-05-01T12:00:00Z",
+        "region": "us-east-1",
+        "resources": [],
         "detail": env,
     }
 
@@ -256,8 +262,22 @@ def test_duplicate_event_id_silently_skipped() -> None:
 
 
 def test_ddb_stream_event_passthrough() -> None:
-    out = handler({"Records": [{"eventName": "INSERT"}]}, ctx())
-    assert out == {"ok": True, "records": 1}
+    out = handler(
+        {
+            "Records": [
+                {
+                    "eventID": "1",
+                    "eventName": "INSERT",
+                    "eventSource": "aws:dynamodb",
+                    "eventVersion": "1.1",
+                    "awsRegion": "us-east-1",
+                    "dynamodb": {"SequenceNumber": "1", "Keys": {"pk": {"S": "RUN#1"}}},
+                },
+            ],
+        },
+        ctx(),
+    )
+    assert out == {"batchItemFailures": []}
 
 
 def test_unknown_trigger_returns_error() -> None:

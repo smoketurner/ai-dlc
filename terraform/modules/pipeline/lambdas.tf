@@ -18,6 +18,7 @@ module "entry_adapter" {
   memory_size   = 256
   timeout       = 10
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/entry_adapter/src"
@@ -27,12 +28,13 @@ module "entry_adapter" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_BUS_NAME              = var.bus_name
-    AIDLC_IDEMPOTENCY_TABLE     = var.idempotency_table
-    AIDLC_IDEMPOTENCY_TTL       = "86400"
-    POWERTOOLS_SERVICE_NAME     = "entry_adapter"
-    POWERTOOLS_LOG_LEVEL        = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+    AIDLC_BUS_NAME                = var.bus_name
+    AIDLC_IDEMPOTENCY_TABLE       = var.idempotency_table
+    AIDLC_IDEMPOTENCY_TTL         = "86400"
+    POWERTOOLS_SERVICE_NAME       = "entry_adapter"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -40,8 +42,10 @@ module "entry_adapter" {
   attach_policy_statements = true
   policy_statements = {
     idempotency_table = {
-      effect    = "Allow"
-      actions   = ["dynamodb:PutItem", "dynamodb:GetItem"]
+      effect = "Allow"
+      # Powertools' DynamoDBPersistenceLayer needs UpdateItem in addition
+      # to PutItem/GetItem to flip in-progress records to completed.
+      actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
       resources = [var.idempotency_table_arn]
     }
     put_events = {
@@ -69,6 +73,7 @@ module "hitl_handler" {
   memory_size   = 256
   timeout       = 30
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/hitl_handler/src"
@@ -78,10 +83,11 @@ module "hitl_handler" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_APPROVALS_TABLE       = var.approvals_table
-    POWERTOOLS_SERVICE_NAME     = "hitl_handler"
-    POWERTOOLS_LOG_LEVEL        = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+    AIDLC_APPROVALS_TABLE         = var.approvals_table
+    POWERTOOLS_SERVICE_NAME       = "hitl_handler"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -125,6 +131,7 @@ module "triage_dispatcher" {
   memory_size   = 512
   timeout       = 60
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/triage_dispatcher/src"
@@ -139,6 +146,7 @@ module "triage_dispatcher" {
     AIDLC_TRIAGE_RUNTIME_ARN        = var.triage_runtime_arn
     AIDLC_ARTIFACTS_BUCKET          = var.artifacts_bucket
     POWERTOOLS_SERVICE_NAME         = "triage_dispatcher"
+    POWERTOOLS_METRICS_NAMESPACE    = "ai-dlc"
     POWERTOOLS_LOG_LEVEL            = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT     = "false"
   }
@@ -210,8 +218,9 @@ module "runtime_invoker" {
   # The shim returns ~immediately (read-timeout=2s for the dispatch +
   # the network call setup), so a 60s Lambda timeout is plenty even
   # under cold-start.
-  timeout = 60
-  publish = true
+  timeout      = 60
+  publish      = true
+  tracing_mode = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/runtime_invoker/src"
@@ -221,9 +230,10 @@ module "runtime_invoker" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    POWERTOOLS_SERVICE_NAME     = "runtime_invoker"
-    POWERTOOLS_LOG_LEVEL        = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+    POWERTOOLS_SERVICE_NAME       = "runtime_invoker"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -263,6 +273,7 @@ module "event_projector" {
   memory_size   = 512
   timeout       = 30
   publish       = true
+  tracing_mode  = "Active"
 
   source_path = [{
     path             = "${local.source_dir}/event_projector/src"
@@ -272,11 +283,12 @@ module "event_projector" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = {
-    AIDLC_RUNS_TABLE            = var.runs_table
-    AIDLC_MEMORY_ID             = var.memory_id
-    POWERTOOLS_SERVICE_NAME     = "event_projector"
-    POWERTOOLS_LOG_LEVEL        = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT = "false"
+    AIDLC_RUNS_TABLE              = var.runs_table
+    AIDLC_MEMORY_ID               = var.memory_id
+    POWERTOOLS_SERVICE_NAME       = "event_projector"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   }
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -310,14 +322,16 @@ module "event_projector" {
 
   event_source_mapping = {
     runs_stream = {
-      event_source_arn  = var.runs_stream_arn
-      starting_position = "LATEST"
-      batch_size        = 10
+      event_source_arn        = var.runs_stream_arn
+      starting_position       = "LATEST"
+      batch_size              = 10
+      function_response_types = ["ReportBatchItemFailures"]
     }
     approvals_stream = {
-      event_source_arn  = var.approvals_stream_arn
-      starting_position = "LATEST"
-      batch_size        = 10
+      event_source_arn        = var.approvals_stream_arn
+      starting_position       = "LATEST"
+      batch_size              = 10
+      function_response_types = ["ReportBatchItemFailures"]
     }
   }
 
