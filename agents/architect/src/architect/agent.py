@@ -16,6 +16,7 @@ from strands.models import BedrockModel
 from architect.hooks import build_hooks
 from architect.spec import SpecBundle
 from architect.tools import read_memory_md_tool, write_spec_doc_tool
+from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
@@ -74,6 +75,7 @@ def generate_spec(
 
 def _compose_message(intent: str, project_slug: str, prior_feedback: str | None) -> str:
     parts = [
+        agent_memory_preamble(project_slug=project_slug, query=intent),
         f"Project: {project_slug}",
         "",
         "Intent:",

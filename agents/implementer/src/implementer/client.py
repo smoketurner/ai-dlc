@@ -20,6 +20,7 @@ from typing import Any
 import structlog
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 
+from common.memory import agent_memory_preamble
 from common.runtime import ImplementerInput, ImplementerResult
 from implementer.finish import FinishReport, FinishSink
 from implementer.options import build_options
@@ -131,7 +132,9 @@ def compose_prompt(
     payload: ImplementerInput, *, task_title: str, task_done_when: str | None
 ) -> str:
     """Compose the user message handed to Claude."""
+    query = f"{task_title} — {task_done_when}" if task_done_when else task_title
     parts = [
+        agent_memory_preamble(project_slug=payload.project_slug, query=query),
         f"Spec: {payload.spec_slug}  (files in /workspace/spec/)",
         f"Project: {payload.project_slug}  (repo at /workspace/repo/)",
         f"Task: {payload.task_id} — {task_title}",

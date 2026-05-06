@@ -61,7 +61,7 @@ Shared package every other component depends on. Lambdas pull from `common`; the
 - [x] `src/common/s3.py` — typed wrappers around the `mypy_boto3_s3.client.S3Client` (put_text/get_text/list_keys with KMS-SSE)
 - [x] `src/common/agentcore_memory.py` — typed wrappers around `BedrockAgentCoreClient` (`create_event`, `retrieve_memory_records`)
 - [x] `src/common/memory_md.py` — strict 6-section parser/renderer; fail-fast on unknown headers or out-of-order sections
-- [x] `src/common/memory.py` — hybrid memory orchestrator (load_memory_md / save_memory_md / sync_to_agentcore / retrieve_relevant_memory)
+- [x] `src/common/memory.py` — hybrid memory orchestrator (load_memory_md / save_memory_md / retrieve_relevant_memory / agent_memory_preamble). Writes into AgentCore Memory are owned exclusively by the `event_projector` Lambda; agents read via `agent_memory_preamble`, which retrieves project-namespaced records and renders them as a Markdown preamble prepended to every agent's user message.
 - [x] `src/common/gateway.py` — minimal MCP JSON-RPC client to AgentCore Gateway
 - [x] `src/common/git_ops.py` — `subprocess`-based git helpers for the Implementer's persistent FS
 - [x] `src/common/runtime.py` — `InvocationPayload` model used by every agent's `/invocations` entrypoint

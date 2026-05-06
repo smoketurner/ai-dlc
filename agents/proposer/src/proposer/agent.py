@@ -13,6 +13,7 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
+from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from proposer.hooks import (
     ProposerCallTracker,
@@ -104,6 +105,10 @@ def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_i
 def compose_message(*, project_slug: str, trigger_reason: str, lookback_days: int) -> str:
     """Compose the user-message prompt for the proposer."""
     parts = [
+        agent_memory_preamble(
+            project_slug=project_slug,
+            query=f"prompt and convention proposals triggered by {trigger_reason}",
+        ),
         f"Project: {project_slug}",
         f"Trigger: {trigger_reason}",
         f"Lookback window: {lookback_days} days",

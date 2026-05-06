@@ -12,6 +12,7 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
+from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from tester.hooks import build_hooks
 from tester.report import Report
@@ -79,6 +80,7 @@ def compose_message(
 ) -> str:
     """Compose the user-message prompt for the tester."""
     parts = [
+        agent_memory_preamble(project_slug=project_slug, query=diff_summary),
         f"Project: {project_slug}",
         f"Spec slug: {spec_slug}",
         f"Task id: {task_id}",

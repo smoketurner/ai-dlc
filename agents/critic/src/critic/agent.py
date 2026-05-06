@@ -13,6 +13,7 @@ import os
 from strands import Agent
 from strands.models import BedrockModel
 
+from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from critic.critique import Critique
 from critic.hooks import build_hooks
@@ -65,6 +66,7 @@ def critique_spec(
 def compose_message(*, project_slug: str, spec_slug: str, intent: str) -> str:
     """Compose the user-message prompt for the critic."""
     parts = [
+        agent_memory_preamble(project_slug=project_slug, query=intent),
         f"Project: {project_slug}",
         f"Spec slug: {spec_slug}",
         "",

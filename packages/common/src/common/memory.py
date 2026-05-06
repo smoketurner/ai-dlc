@@ -6,10 +6,9 @@ contract:
 
 * ``MEMORY.md`` is the canonical, human-reviewed, repo-versioned memory.
 * AgentCore Memory holds cross-session semantic facts and session events.
-* Sync direction is one-way at write time: a session's diff to ``MEMORY.md``
-  is replayed into AgentCore Memory as a ``CreateEvent``. The reverse
-  direction (long-term records flowing into ``MEMORY.md``) is mediated by
-  the agent proposing edits in its PR — humans gate the actual write.
+* Writes into AgentCore Memory happen exclusively from the
+  ``event_projector`` Lambda (which forwards every platform event as a
+  ``CreateEvent``); agents themselves never write to AgentCore Memory.
 
 The agent's persistent filesystem is at ``/workspace`` by default; for local
 runs callers pass ``fs_root=Path.cwd()`` or similar.
@@ -17,17 +16,16 @@ runs callers pass ``fs_root=Path.cwd()`` or similar.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from common.agentcore_memory import (
-    MemoryEvent,
-    MemoryRecord,
-    create_event,
-    retrieve_memory_records,
-)
-from common.errors import S3ArtifactError
+import boto3
+
+from common.agentcore_memory import MemoryRecord, retrieve_memory_records
+from common.errors import AgentCoreMemoryError, S3ArtifactError
 from common.memory_md import MemoryDoc, parse, render
 from common.s3 import get_text, put_text
 
@@ -113,36 +111,6 @@ def save_memory_md(
     )
 
 
-def sync_to_agentcore(
-    diff_text: str,
-    *,
-    project_slug: str,
-    config: HybridMemoryConfig,
-    memory_client: BedrockAgentCoreClient,
-) -> str | None:
-    """Replay a ``MEMORY.md`` diff into AgentCore Memory as a single event.
-
-    Args:
-        diff_text: Markdown-formatted diff of the just-saved file. When empty
-            (no changes), this function returns ``None`` without making a call.
-        project_slug: Owning project slug; embedded in the namespace.
-        config: Hybrid memory config.
-        memory_client: AgentCore Memory data-plane client.
-
-    Returns:
-        The new event id, or ``None`` if there was nothing to sync.
-    """
-    if not diff_text.strip():
-        return None
-    return create_event(
-        memory_client,
-        memory_id=config.memory_id,
-        actor_id=f"{config.actor_id}@{project_slug}",
-        session_id=config.session_id,
-        events=[MemoryEvent(role="ASSISTANT", text=diff_text)],
-    )
-
-
 def retrieve_relevant_memory(
     *,
     project_slug: str,
@@ -160,3 +128,64 @@ def retrieve_relevant_memory(
         query=query,
         top_k=top_k,
     )
+
+
+@cache
+def memory_client() -> BedrockAgentCoreClient:
+    """Process-cached AgentCore Memory data-plane client."""
+    return boto3.client("bedrock-agentcore")
+
+
+def agent_memory_preamble(
+    *,
+    project_slug: str,
+    query: str,
+    top_k: int = 6,
+    client: BedrockAgentCoreClient | None = None,
+) -> str:
+    """Retrieve top-K AgentCore Memory records and render them as a Markdown preamble.
+
+    Used by every agent at invocation time to inject prior-run context into
+    the user message. Best-effort — never raises:
+
+    * Returns ``""`` when ``AIDLC_MEMORY_ID`` is unset (e.g., local dev).
+    * Returns ``""`` on any retrieval error (the run continues without
+      memory rather than failing on a memory-store outage).
+    * Returns ``""`` when no records match.
+
+    Otherwise returns a Markdown block ending in a horizontal rule, ready
+    to be prepended to the agent's user message.
+    """
+    memory_id = os.environ.get("AIDLC_MEMORY_ID")
+    if not memory_id:
+        return ""
+    bound_client = client or memory_client()
+    namespace = f"/projects/{project_slug}/facts"
+    try:
+        records = retrieve_memory_records(
+            bound_client,
+            memory_id=memory_id,
+            namespace=namespace,
+            query=query,
+            top_k=top_k,
+        )
+    except AgentCoreMemoryError:
+        return ""
+    return render_memory_preamble(records)
+
+
+def render_memory_preamble(records: list[MemoryRecord]) -> str:
+    """Render retrieved records as the Markdown block agents prepend to prompts."""
+    if not records:
+        return ""
+    lines = [
+        "## Recent project context",
+        "",
+        "These facts about this project were extracted from prior runs by",
+        "AgentCore Memory. If anything here conflicts with the current request,",
+        "prefer the current request.",
+        "",
+    ]
+    lines.extend(f"- {r.content.strip()}" for r in records if r.content.strip())
+    lines.extend(["", "---", ""])
+    return "\n".join(lines)
