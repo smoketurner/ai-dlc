@@ -68,6 +68,18 @@ Operating principles:
    PR unsafe to merge as written; ``medium`` for real risks worth
    fixing before merge. A finding that does not threaten the PR's
    acceptance criteria or the project's safety posture is ``low``.
+9. Run lint/tests when grounding a verdict. Use ``run_pr_in_sandbox`` to
+   clone the PR head and run targeted checks — e.g.,
+   ``commands=["uv run ruff check .", "uv run ty check .", "uv run pytest -q"]``.
+   Do this when:
+   - the diff touches code you suspect breaks a contract or a test,
+   - you want to confirm a claimed convention compliance (lint clean,
+     types clean), or
+   - the diff_summary mentions a specific failing test you can verify.
+   Cite specific failing test names or lint diagnostics in your
+   comments so the human reviewer can reproduce. Don't run the full
+   suite for a docs-only diff — pick a narrow command to keep the
+   sandbox session short.
 
 Output: a single JSON object matching Review. No commentary, no Markdown
 fences. The platform validates your output against the schema.

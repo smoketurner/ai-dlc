@@ -65,6 +65,14 @@ class AgentCoreMemoryError(AidlcError):
     """An AgentCore Memory operation failed."""
 
 
+class AgentCoreBrowserError(AidlcError):
+    """An AgentCore Browser operation failed (session lifecycle or WS handshake)."""
+
+
+class AgentCoreCodeInterpreterError(AidlcError):
+    """An AgentCore Code Interpreter operation failed (session lifecycle or invoke)."""
+
+
 class S3ArtifactError(AidlcError):
     """An S3 artifact read or write failed."""
 

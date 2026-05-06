@@ -567,3 +567,112 @@ def test_list_issues_filters_out_pull_requests(
     issues = out["result"]["issues"]
     assert len(issues) == 1
     assert issues[0]["issue_number"] == 7
+
+
+def test_mint_clone_token_returns_authenticated_url_with_install_token(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Default path: no requestor_sub → installation token embedded in clone URL."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/smoketurner/ai-dlc/pulls/42"
+        return httpx.Response(
+            200,
+            json={
+                "number": 42,
+                "html_url": "https://github.com/smoketurner/ai-dlc/pull/42",
+                "state": "open",
+                "merged": False,
+                "title": "T",
+                "head": {"sha": "deadbeef"},
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "mint_clone_token",
+                "repo": "smoketurner/ai-dlc",
+                "pr_number": 42,
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["op"] == "mint_clone_token"
+    assert out["result"] == {
+        "clone_url": "https://x-access-token:ghs_fake_install@github.com/smoketurner/ai-dlc.git",
+        "head_sha": "deadbeef",
+    }
+
+
+def test_mint_clone_token_uses_user_obo_when_requestor_sub_set(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """When requestor_sub is supplied, the embedded token is the user-OBO bearer."""
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "number": 7,
+                "state": "open",
+                "merged": False,
+                "title": "T",
+                "head": {"sha": "abc123"},
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "mint_clone_token",
+                "repo": "o/r",
+                "pr_number": 7,
+                "requestor_sub": "cognito-sub-xyz",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["clone_url"] == "https://x-access-token:ghs_fake_user@github.com/o/r.git"
+    assert out["result"]["head_sha"] == "abc123"
+
+
+def test_mint_clone_token_missing_pr_returns_error_envelope(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A 404 from GitHub propagates as a github_http_error envelope, not an exception."""
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "mint_clone_token", "repo": "o/r", "pr_number": 999}},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "github_http_error"
+    assert out["error"]["detail"]["status_code"] == 404
+
+
+def test_mint_clone_token_validates_repo_format() -> None:
+    out = h.handler(
+        {"input": {"op": "mint_clone_token", "repo": "no-slash", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"
+
+
+def test_mint_clone_token_requires_positive_pr_number() -> None:
+    out = h.handler(
+        {"input": {"op": "mint_clone_token", "repo": "o/r", "pr_number": 0}},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"

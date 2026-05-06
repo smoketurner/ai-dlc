@@ -154,6 +154,24 @@ class ListIssuesInput(BaseOp):
     per_page: int = Field(default=30, ge=1, le=100)
 
 
+class MintCloneTokenInput(BaseOp):
+    """Mint a short-lived authenticated clone URL for a PR head.
+
+    Used by Tester/Reviewer to hand a Code Interpreter sandbox session a
+    URL it can ``git clone`` directly. The returned token is the same
+    bearer ``token_for_call`` produces for any other op — installation
+    token by default, user-OBO when ``requestor_sub`` resolves to a
+    linked user. The token is embedded as the userinfo component of the
+    URL (``https://x-access-token:<token>@github.com/<repo>.git``); the
+    response field carries it in plaintext, so callers MUST avoid
+    logging the result.
+    """
+
+    op: Literal["mint_clone_token"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+
+
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
     "comment_pr": CommentPrInput,
@@ -164,6 +182,7 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "label_issue": LabelIssueInput,
     "get_issue": GetIssueInput,
     "list_issues": ListIssuesInput,
+    "mint_clone_token": MintCloneTokenInput,
 }
 
 
@@ -372,6 +391,25 @@ def list_issues(req: ListIssuesInput, client: httpx.Client) -> dict[str, Any]:
     }
 
 
+def mint_clone_token(req: MintCloneTokenInput, client: httpx.Client) -> dict[str, Any]:
+    """Resolve a PR's head SHA and return an authenticated clone URL.
+
+    The token embedded in the URL is the same bearer that authenticated
+    this Lambda call (cached by :func:`repo_helper.auth.token_for_call`).
+    The response carries the token in plaintext so the calling agent can
+    hand it to a Code Interpreter sandbox; callers MUST treat the result
+    as a credential and avoid logging it.
+    """
+    response = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
+    response.raise_for_status()
+    head_sha = str(response.json()["head"]["sha"])
+    token = token_for_call(repo=req.repo, requestor_sub=req.requestor_sub)
+    return {
+        "clone_url": f"https://x-access-token:{token}@github.com/{req.repo}.git",
+        "head_sha": head_sha,
+    }
+
+
 def head_commit_sha(repo: str, branch: str, client: httpx.Client) -> str:
     """Return the SHA of the latest commit on ``branch``."""
     response = client.get(f"/repos/{repo}/git/refs/heads/{branch}")
@@ -491,4 +529,5 @@ OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     LabelIssueInput: ("label_issue", label_issue),
     GetIssueInput: ("get_issue", get_issue),
     ListIssuesInput: ("list_issues", list_issues),
+    MintCloneTokenInput: ("mint_clone_token", mint_clone_token),
 }

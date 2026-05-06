@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 import boto3
 from strands import tool
 
+from common.sandbox import run_pr_in_sandbox
+
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
@@ -103,3 +105,4 @@ def review_s3_key(*, run_id: str, task_id: str) -> str:
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
 read_spec_doc_tool = tool(read_spec_doc)
+run_pr_in_sandbox_tool = tool(run_pr_in_sandbox)

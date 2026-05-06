@@ -22,6 +22,7 @@ from proposer.hooks import (
 )
 from proposer.proposal import Proposal
 from proposer.tools import (
+    browse_url_tool,
     read_drift_report_tool,
     read_eval_aggregate_tool,
     read_few_shot_summary_tool,
@@ -63,6 +64,7 @@ def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
             read_rejection_summary_tool,
             read_few_shot_summary_tool,
             read_memory_md_tool,
+            browse_url_tool,
         ],
         hooks=hooks,
     )

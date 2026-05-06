@@ -61,6 +61,23 @@ In all those cases, the ``rationale`` still explains *why* you held off.
     reasoning + evidence so the human reviewer doesn't have to re-derive
     it from scratch.
 
+**External research with ``browse_url``.** When internal signals point at
+a category (e.g., "missing test for acceptance criterion") and you want to
+ground a proposal in current best-practice, fetch a concrete reference:
+
+  * Prefer direct fetches of known docs domains: ``anthropic.com``,
+    ``docs.anthropic.com``, ``owasp.org``, ``npmjs.com``, ``pypi.org``,
+    GitHub READMEs and wikis, ``rfc-editor.org``, ``learn.microsoft.com``.
+  * For general queries, use **DuckDuckGo or Bing** — Google blocks the
+    cloud IPs the browser session runs from with CAPTCHAs.
+  * Cite the URL you read in the proposal's ``rationale`` (the human
+    reviewer follows it). Don't paraphrase a source you didn't actually
+    open.
+  * Use ``extract_js`` for structured pages (e.g.,
+    ``"() => [...document.querySelectorAll('h2,h3')].map(h => h.innerText)"``)
+    when you only need a slice; default to the body text otherwise.
+  * One or two pages per proposal is plenty. Don't browse aimlessly.
+
 PR-prose discipline:
 
 - The ``pr_body`` is read by humans. Plain factual language; no marketing.

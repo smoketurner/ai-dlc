@@ -16,7 +16,7 @@ from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from tester.hooks import build_hooks
 from tester.report import Report
-from tester.tools import read_memory_md_tool, read_spec_doc_tool
+from tester.tools import read_memory_md_tool, read_spec_doc_tool, run_pr_in_sandbox_tool
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -41,7 +41,7 @@ def build_agent(run_id: str) -> Agent:
             streaming=True,
         ),
         system_prompt=load_system_prompt("tester", variant),
-        tools=[read_memory_md_tool, read_spec_doc_tool],
+        tools=[read_memory_md_tool, read_spec_doc_tool, run_pr_in_sandbox_tool],
         hooks=build_hooks(),
     )
 

@@ -457,9 +457,12 @@ Items that came out of execution and aren't on the critical path. Each one is a 
 - [ ] [#10 — Wire custom domain for the dashboard](https://github.com/smoketurner/ai-dlc/issues/10)
 - [ ] [#11 — Tune persistent FS retention based on real paused-session data](https://github.com/smoketurner/ai-dlc/issues/11)
 - [ ] [#12 — Add Slack-based HITL approvals for non-engineer reviewers](https://github.com/smoketurner/ai-dlc/issues/12)
-- [ ] [#13 — Add AgentCore Browser + Code Interpreter when an agent needs them](https://github.com/smoketurner/ai-dlc/issues/13)
 - [ ] [#14 — Add actionlint to CI alongside zizmor](https://github.com/smoketurner/ai-dlc/issues/14)
 - [ ] [#15 — Add Playwright E2E tests for the dashboard](https://github.com/smoketurner/ai-dlc/issues/15)
+
+### Completed
+
+- [x] [#13 — Add AgentCore Browser + Code Interpreter when an agent needs them](https://github.com/smoketurner/ai-dlc/issues/13) — landed 2026-05-06. Tester + Reviewer use Code Interpreter (clone PR head + run targeted tests/lint via `common.sandbox.run_pr_in_sandbox`); Proposer uses Browser for external research (Playwright over CDP via `proposer.tools.browse_url`). New `repo_helper.mint_clone_token` op mints short-lived authenticated clone URLs through the existing user-OBO + installation-token paths; tokens are redacted from any sandbox output that surfaces. Per-agent feature-gating is `var.agents[*].features = ["browser" | "code_interpreter"]`; resources live at `terraform/modules/agents/{browser,code_interpreter}.tf`. Live-AWS apply gate remaining.
 
 ### Decided not to do
 

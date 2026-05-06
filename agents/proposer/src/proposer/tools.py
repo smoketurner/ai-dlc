@@ -1,12 +1,13 @@
 """Strands tools the Proposer uses to read recent quality signals.
 
-The Proposer reads from S3 only — eval results, drift reports, rejection
-records (from the telemetry Lambda), and the few-shot example bank (from
-the few_shot_miner Lambda). It never reads or writes the SDLC pipeline
+The Proposer reads from S3 (eval results, drift reports, rejection records
+from the telemetry Lambda, and the few-shot example bank from the
+few_shot_miner Lambda) and browses external best-practice docs via an
+AgentCore browser session. It never reads or writes the SDLC pipeline
 state directly.
 
-Outputs from each tool are JSON-serialised summaries kept under ~16 KB so
-they fit comfortably in the model's context.
+S3 outputs are JSON-serialised summaries kept under ~16 KB so they fit
+comfortably in the model's context. Browser results are also truncated.
 """
 
 from __future__ import annotations
@@ -19,10 +20,22 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
+import structlog
+from bedrock_agentcore.tools.browser_client import BrowserClient
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import sync_playwright
 from strands import tool
+
+from common import agentcore_browser as browser
+from common.errors import AgentCoreBrowserError
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
+
+logger = structlog.get_logger()
+
+BROWSER_GOTO_TIMEOUT_MS = 30_000
+BROWSER_TEXT_LIMIT = 32_768
 
 EVALS_RESULTS_PREFIX = "evals/results/"
 EVALS_DRIFT_PREFIX = "evals/drift/"
@@ -161,9 +174,94 @@ def read_memory_md(project_slug: str) -> str:
     return obj["Body"].read().decode("utf-8")
 
 
+def aws_region() -> str:
+    """AWS region the agent runtime is deployed in."""
+    return os.environ["AWS_REGION"]
+
+
+def browser_id() -> str | None:
+    """AgentCore Browser resource id — None when unset."""
+    return os.environ.get("AIDLC_BROWSER_ID") or None
+
+
+def browse_url(url: str, extract_js: str | None = None) -> dict[str, Any]:
+    """Fetch a page via an isolated AgentCore browser session.
+
+    Use this to research external best-practices, framework docs, and
+    library conventions while drafting a proposal. Avoid Google (cloud
+    IPs hit CAPTCHAs) — prefer DuckDuckGo or Bing for general queries
+    and fetch known doc domains directly (anthropic.com, OWASP,
+    npmjs.com, pypi.org, GitHub READMEs).
+
+    Args:
+        url: Absolute URL to navigate to (must include scheme).
+        extract_js: Optional JavaScript expression evaluated in the page
+            after load. The return value MUST be JSON-serialisable.
+            When omitted, the page's visible body text is returned.
+
+    Returns:
+        ``{"url": str, "title": str, "text": str}`` by default;
+        ``{"url": str, "title": str, "extracted": Any}`` when
+        ``extract_js`` is supplied. ``{"error": str}`` on failure.
+    """
+    bid = browser_id()
+    if bid is None:
+        return {"error": "AIDLC_BROWSER_ID is not set"}
+    sdk_client = BrowserClient(region=aws_region())
+    try:
+        info = browser.start_session(sdk_client, browser_id=bid)
+    except AgentCoreBrowserError as exc:
+        return {"error": str(exc)}
+    try:
+        return navigate_and_extract(
+            ws_url=info.ws_url,
+            ws_headers=info.ws_headers,
+            url=url,
+            extract_js=extract_js,
+        )
+    finally:
+        try:
+            browser.stop_session(sdk_client)
+        except AgentCoreBrowserError as exc:
+            logger.warning("browser stop_session failed", err=str(exc))
+
+
+def navigate_and_extract(
+    *,
+    ws_url: str,
+    ws_headers: dict[str, str],
+    url: str,
+    extract_js: str | None,
+) -> dict[str, Any]:
+    """Connect Playwright to the running session and extract page content.
+
+    Split out from :func:`browse_url` so tests can drive it without
+    starting a real AgentCore session.
+    """
+    try:
+        with sync_playwright() as runner:
+            chromium = runner.chromium.connect_over_cdp(ws_url, headers=ws_headers)
+            try:
+                context = chromium.contexts[0] if chromium.contexts else chromium.new_context()
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(url, wait_until="load", timeout=BROWSER_GOTO_TIMEOUT_MS)
+                title = page.title()
+                if extract_js is not None:
+                    extracted = page.evaluate(extract_js)
+                    return {"url": url, "title": title, "extracted": extracted}
+                text = page.evaluate("() => document.body.innerText")
+                return {"url": url, "title": title, "text": str(text)[:BROWSER_TEXT_LIMIT]}
+            finally:
+                chromium.close()
+    except PlaywrightError as exc:
+        logger.warning("browser navigation failed", url=url, err=str(exc))
+        return {"error": f"browse failed: {exc.__class__.__name__}: {exc}"}
+
+
 # Strands wrappers — exposed to the agent.
 read_eval_aggregate_tool = tool(read_eval_aggregate)
 read_drift_report_tool = tool(read_drift_report)
 read_rejection_summary_tool = tool(read_rejection_summary)
 read_few_shot_summary_tool = tool(read_few_shot_summary)
 read_memory_md_tool = tool(read_memory_md)
+browse_url_tool = tool(browse_url)

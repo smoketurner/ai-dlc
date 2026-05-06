@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "aws-agents@agent-toolkit-for-aws": true
+  },
+  "extraKnownMarketplaces": {
+    "agent-toolkit-for-aws": {
+      "source": {
+        "source": "github",
+        "repo": "aws/agent-toolkit-for-aws"
+      }
+    }
+  }
+}
