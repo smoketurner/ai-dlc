@@ -17,6 +17,7 @@ module "eval_runner" {
   timeout       = 60
   publish       = true
   tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/eval_runner/src"

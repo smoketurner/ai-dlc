@@ -75,6 +75,7 @@ module "hitl_handler" {
   timeout       = 30
   publish       = true
   tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/hitl_handler/src"
@@ -223,6 +224,7 @@ module "runtime_invoker" {
   timeout      = 60
   publish      = true
   tracing_mode = "Active"
+  layers       = [var.common_layer_arn]
 
   source_path = [{
     path             = "${local.source_dir}/runtime_invoker/src"

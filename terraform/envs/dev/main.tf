@@ -157,6 +157,8 @@ module "agents" {
 
   github_app_secret_name     = var.github_app_secret_name
   dashboard_oauth_return_url = "${local.dashboard_url}/auth/github/callback"
+
+  common_layer_arn = module.common_layer.lambda_layer_arn
 }
 
 resource "aws_secretsmanager_secret" "github_webhook" {
