@@ -33,6 +33,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.pricing import calculate_cost
+from common.validators import NoneSafeList
 
 
 class _Frozen(BaseModel):
@@ -98,7 +99,7 @@ class ArchitectResult(_UsageMixin):
     task_count: Annotated[int, Field(ge=1)]
     task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
     one_way_task_count: Annotated[int, Field(ge=0)] = 0
-    proposed_adrs: list[str] = Field(default_factory=list)
+    proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
     session_id: str
 
 
@@ -256,10 +257,12 @@ class TriageInput(_Frozen):
     issue_title: Annotated[str, Field(min_length=1, max_length=512)]
     issue_body: Annotated[str, Field(max_length=8192)]
     issue_type: Literal["Bug", "Feature", "Task", "Other"] | None = None
-    issue_labels: Annotated[list[str], Field(max_length=32)] = Field(default_factory=list)
+    issue_labels: Annotated[NoneSafeList[str], Field(max_length=32)] = Field(
+        default_factory=list,
+    )
     prior_triage_count: Annotated[int, Field(ge=0, le=16)] = 0
     prior_human_comments: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=2048)]],
+        NoneSafeList[Annotated[str, Field(min_length=1, max_length=2048)]],
         Field(max_length=16),
     ] = Field(default_factory=list)
     run_id: str

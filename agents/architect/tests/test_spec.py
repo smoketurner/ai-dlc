@@ -174,6 +174,48 @@ def test_task_with_one_way_door_validates() -> None:
     assert task.door.door_class == "one_way"
 
 
+def test_task_depends_on_none_coerced_to_empty_list() -> None:
+    """Strands' structured_output sometimes hands back ``depends_on: null``."""
+    task = Task.model_validate(
+        {
+            "id": "T-001",
+            "title": "x",
+            "implements": ["AC-R-001-a"],
+            "done_when": "x",
+            "depends_on": None,
+        },
+    )
+    assert task.depends_on == []
+
+
+def test_task_touches_none_coerced_to_empty_list() -> None:
+    """Same shape as depends_on — ``touches: null`` from the LLM coerces to ``[]``."""
+    task = Task.model_validate(
+        {
+            "id": "T-001",
+            "title": "x",
+            "implements": ["AC-R-001-a"],
+            "done_when": "x",
+            "touches": None,
+        },
+    )
+    assert task.touches == []
+
+
+def test_task_door_categories_none_coerced_to_empty_list() -> None:
+    """Nested case: ``door.categories: null`` inside an otherwise valid Task."""
+    task = Task.model_validate(
+        {
+            "id": "T-001",
+            "title": "x",
+            "implements": ["AC-R-001-a"],
+            "done_when": "x",
+            "door": {"door_class": "two_way", "categories": None, "rationale": None},
+        },
+    )
+    assert task.door.categories == []
+
+
 def test_task_depends_on_self_rejected() -> None:
     with pytest.raises(ValidationError):
         Task(

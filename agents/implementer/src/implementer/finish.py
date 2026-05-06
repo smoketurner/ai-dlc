@@ -27,6 +27,8 @@ from typing import Annotated, Any, Literal, Self
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server, tool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from common.validators import NoneSafeList
+
 FINISH_SERVER_NAME = "finish_server"
 FINISH_TOOL_NAME = f"mcp__{FINISH_SERVER_NAME}__finish"
 
@@ -52,10 +54,14 @@ class FinishReport(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     summary: Annotated[str, Field(min_length=1, max_length=500)]
-    files_changed: Annotated[list[str], Field(max_length=64)] = Field(default_factory=list)
-    tests_run: Annotated[list[TestResult], Field(max_length=32)] = Field(default_factory=list)
+    files_changed: Annotated[NoneSafeList[str], Field(max_length=64)] = Field(
+        default_factory=list,
+    )
+    tests_run: Annotated[NoneSafeList[TestResult], Field(max_length=32)] = Field(
+        default_factory=list,
+    )
     risks: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=256)]],
+        NoneSafeList[Annotated[str, Field(min_length=1, max_length=256)]],
         Field(max_length=8),
     ] = Field(default_factory=list)
     status: Literal["done", "blocked"]

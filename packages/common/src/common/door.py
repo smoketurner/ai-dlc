@@ -32,6 +32,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from common.validators import NoneSafeList
+
 DoorClass = Literal["one_way", "two_way"]
 """Reversibility class of a unit of work."""
 
@@ -102,7 +104,10 @@ class DoorAssessment(_Frozen):
     """
 
     door_class: DoorClass = "two_way"
-    categories: Annotated[list[OneWayCategory], Field(max_length=10)] = Field(default_factory=list)
+    categories: Annotated[
+        NoneSafeList[OneWayCategory],
+        Field(max_length=10),
+    ] = Field(default_factory=list)
     rationale: Annotated[str | None, Field(max_length=1024)] = None
 
     @model_validator(mode="after")

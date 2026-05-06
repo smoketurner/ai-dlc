@@ -13,9 +13,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from common.validators import none_to_empty_list
+from common.validators import NoneSafeList
 
 TestKind = Literal["unit", "integration", "property", "e2e"]
 
@@ -49,20 +49,11 @@ class Report(_Frozen):
 
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
     summary: Annotated[str, Field(min_length=1, max_length=2048)]
-    gaps: Annotated[
-        list[Gap],
-        Field(max_length=64),
-        BeforeValidator(none_to_empty_list),
-    ] = Field(default_factory=list)
-    suggestions: Annotated[
-        list[Suggestion],
-        Field(max_length=64),
-        BeforeValidator(none_to_empty_list),
-    ] = Field(default_factory=list)
-    strengths: Annotated[
-        list[str],
-        BeforeValidator(none_to_empty_list),
-    ] = Field(default_factory=list)
+    gaps: Annotated[NoneSafeList[Gap], Field(max_length=64)] = Field(default_factory=list)
+    suggestions: Annotated[NoneSafeList[Suggestion], Field(max_length=64)] = Field(
+        default_factory=list,
+    )
+    strengths: NoneSafeList[str] = Field(default_factory=list)
 
 
 def gap_count(report: Report) -> int:

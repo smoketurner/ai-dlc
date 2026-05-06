@@ -22,6 +22,8 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.validators import NoneSafeList
+
 TASK_LINE = re.compile(r"^- \[(?P<state>[ x])\] \*\*(?P<id>T-\d{3,})\*\* — (?P<title>.+)$")
 SUBBULLET = re.compile(r"^  - \*\*(?P<key>[^:*]+):\*\* (?P<value>.+)$")
 
@@ -34,8 +36,8 @@ class TaskRow(BaseModel):
     id: Annotated[str, Field(pattern=r"^T-\d{3,}$")]
     title: str
     done: bool = False
-    implements: list[str] = Field(default_factory=list)
-    touches: list[str] = Field(default_factory=list)
+    implements: NoneSafeList[str] = Field(default_factory=list)
+    touches: NoneSafeList[str] = Field(default_factory=list)
     done_when: str | None = None
 
 

@@ -45,6 +45,12 @@ def test_one_way_with_category_and_rationale_validates() -> None:
     assert assessment.categories == ["production_terraform"]
 
 
+def test_categories_none_coerced_to_empty_list() -> None:
+    """Strands' structured_output sometimes hands back ``categories: null``."""
+    assessment = DoorAssessment.model_validate({"door_class": "two_way", "categories": None})
+    assert assessment.categories == []
+
+
 def test_assessment_is_frozen() -> None:
     assessment = DoorAssessment()
     with pytest.raises(ValidationError):

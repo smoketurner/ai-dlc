@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import BeforeValidator
 
 
 def none_to_empty_list(v: Any) -> Any:
@@ -32,3 +34,13 @@ def none_to_empty_list(v: Any) -> Any:
             return []
         return decoded
     return v
+
+
+type NoneSafeList[T] = Annotated[list[T], BeforeValidator(none_to_empty_list)]
+"""``list[T]`` field that coerces ``None`` (and JSON-string nulls) to ``[]``.
+
+Use on every Pydantic field that backs an LLM structured-output payload —
+the model occasionally returns explicit ``null`` for a list field, which
+:class:`pydantic.BaseModel` rejects unless we coerce. Pair with
+``Field(default_factory=list)`` so omission also lands as ``[]``.
+"""

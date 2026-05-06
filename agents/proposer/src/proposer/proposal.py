@@ -20,6 +20,7 @@ from typing import Annotated, Self
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from common.hooks import validate_no_spec_dump
+from common.validators import NoneSafeList
 
 ALLOWED_TARGETS = re.compile(r"^(docs/MEMORY\.md|agents/[\w-]+/src/[\w-]+/prompts(_b)?\.py)$")
 
@@ -57,8 +58,10 @@ class Proposal(_Frozen):
     """
 
     rationale: Annotated[str, Field(min_length=1, max_length=4096)]
-    supporting_evidence: Annotated[list[str], Field(max_length=32)] = Field(default_factory=list)
-    edits: Annotated[list[FileEdit], Field(max_length=8)] = Field(default_factory=list)
+    supporting_evidence: Annotated[NoneSafeList[str], Field(max_length=32)] = Field(
+        default_factory=list,
+    )
+    edits: Annotated[NoneSafeList[FileEdit], Field(max_length=8)] = Field(default_factory=list)
     pr_title: Annotated[str, Field(min_length=1, max_length=72)] = "ai-dlc proposer: no-op"
     pr_body: Annotated[str, Field(min_length=1, max_length=65_536)] = "no edits"
 

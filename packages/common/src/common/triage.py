@@ -22,6 +22,8 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from common.validators import NoneSafeList
+
 WorkflowKind = Literal["spec_driven", "bug_fix", "upgrade", "docs"]
 """Which workflow phase Step Functions should branch into.
 
@@ -69,7 +71,7 @@ class TriageDecision(_Frozen):
     rationale: Annotated[str, Field(min_length=1, max_length=2048)]
     workflow_kind: WorkflowKind | None = None
     missing_information: Annotated[
-        list[MissingInformation],
+        NoneSafeList[MissingInformation],
         Field(max_length=8),
     ] = Field(default_factory=list)
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0

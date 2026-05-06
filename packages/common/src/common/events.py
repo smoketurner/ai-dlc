@@ -32,6 +32,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.ids import CorrelationId, EventId, RunId, new_event_id
+from common.validators import NoneSafeList
 
 EventType = Literal[
     "REQUEST.RECEIVED",
@@ -183,7 +184,7 @@ class SpecReady(UsagePayload):
     requirements_summary: Annotated[str, Field(max_length=1024)]
     design_summary: Annotated[str, Field(max_length=1024)]
     task_count: Annotated[int, Field(ge=1)]
-    proposed_adrs: list[str] = Field(default_factory=list)
+    proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
     session_id: str
 
 

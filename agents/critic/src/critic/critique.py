@@ -16,6 +16,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.validators import NoneSafeList
+
 Severity = Literal["high", "medium", "low"]
 
 
@@ -39,8 +41,8 @@ class Critique(_Frozen):
 
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     summary: Annotated[str, Field(min_length=1, max_length=2048)]
-    issues: Annotated[list[Issue], Field(max_length=64)] = Field(default_factory=list)
-    strengths: list[str] = Field(default_factory=list)
+    issues: Annotated[NoneSafeList[Issue], Field(max_length=64)] = Field(default_factory=list)
+    strengths: NoneSafeList[str] = Field(default_factory=list)
 
 
 def severity_counts(critique: Critique) -> dict[Severity, int]:
