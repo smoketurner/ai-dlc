@@ -67,8 +67,9 @@ data "aws_iam_policy_document" "task_inline" {
 
   statement {
     sid     = "ReadArtifacts"
-    actions = ["s3:GetObject"]
+    actions = ["s3:GetObject", "s3:ListBucket"]
     resources = [
+      var.artifacts_bucket_arn,
       "${var.artifacts_bucket_arn}/*",
     ]
   }
