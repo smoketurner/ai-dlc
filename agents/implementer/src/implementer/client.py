@@ -25,10 +25,12 @@ from common.runtime import ImplementerInput, ImplementerResult
 from implementer.finish import FinishReport, FinishSink
 from implementer.options import build_options
 from implementer.repo_ops import (
+    agent_made_real_changes,
     clone_repo,
     commit_changes,
     create_branch,
     fetch_spec,
+    has_uncommitted_changes,
     make_session,
     open_pr,
     push_branch,
@@ -75,7 +77,27 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
             run_id=payload.run_id,
             task_id=payload.task_id,
         )
-    elif report.status == "blocked":
+
+    if not agent_made_real_changes(payload.spec_slug):
+        blocked_reason = (
+            report.blocked_reason if report and report.blocked_reason else "agent produced no diff"
+        )
+        logger.info(
+            "implementer produced no diff; skipping PR",
+            run_id=payload.run_id,
+            task_id=payload.task_id,
+            blocked_reason=blocked_reason,
+        )
+        return ImplementerResult(
+            task_id=payload.task_id,
+            pr_url=None,
+            diff_summary="(no diff — agent produced no changes)",
+            session_id=payload.run_id,
+            blocked_reason=blocked_reason,
+            **usage,
+        )
+
+    if report is not None and report.status == "blocked":
         logger.info(
             "implementer reported blocked",
             run_id=payload.run_id,
@@ -94,8 +116,9 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     materialize_spec_in_repo(payload.spec_slug)
     update_tasks_md(payload.task_id, payload.spec_slug)
 
-    commit_msg = build_commit_message(payload.task_id, task.title)
-    commit_changes(commit_msg)
+    if has_uncommitted_changes():
+        commit_msg = build_commit_message(payload.task_id, task.title)
+        commit_changes(commit_msg)
     push_branch(branch)
 
     pr_url = open_pr(
@@ -246,10 +269,14 @@ def render_pr_body(
 ) -> str:
     """Render the PR body from a :class:`FinishReport`.
 
-    Sections (in order, omitted when empty): Summary, Files changed,
-    Tests, Risks. Always emits a footer with run + correlation IDs and
-    a link to the in-repo spec folder. If ``report`` is ``None``, emits
-    a fallback body explaining that ``finish`` was not called.
+    Sections (in order, omitted when empty): Summary, Tests, Risks. The
+    list of changed files is intentionally not duplicated — GitHub's PR
+    view already shows the diff, and the agent's self-reported list
+    misses platform-added files (spec materialization, ``tasks.md``
+    flip), so emitting it would mislead reviewers about scope. Always
+    emits a footer with run + correlation IDs and a link to the in-repo
+    spec folder. If ``report`` is ``None``, emits a fallback body
+    explaining that ``finish`` was not called.
     """
     if report is None:
         return render_no_finish_body(payload, task_title=task_title)
@@ -262,10 +289,6 @@ def render_pr_body(
         report.summary,
         "",
     ]
-    if report.files_changed:
-        lines += ["### Files changed", ""]
-        lines += [f"- `{path}`" for path in report.files_changed]
-        lines += [""]
     if report.tests_run:
         lines += ["### Tests", ""]
         lines += [f"- `{t.name}` — {t.status}" for t in report.tests_run]

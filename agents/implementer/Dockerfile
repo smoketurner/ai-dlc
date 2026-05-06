@@ -45,22 +45,36 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     AIDLC_WORKSPACE=/workspace/repo \
     CLAUDE_CODE_USE_BEDROCK=1
 
-# git for repo ops; nodejs for the Claude Code CLI; ca-certificates so HTTPS works.
+# git for repo ops; nodejs for the Claude Code CLI; ca-certificates so HTTPS
+# works; curl + jq for endpoint probing and JSON inspection; make as the
+# canonical lint/test entrypoint many project Makefiles encode; ripgrep + fd
+# because Claude Code's instructions tell it to prefer ``rg`` over ``grep``
+# and ``fd`` over ``find`` — having them present unlocks the faster paths.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        fd-find \
         git \
         gnupg \
+        jq \
+        make \
+        ripgrep \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-    && apt-get purge -y --auto-remove curl gnupg \
+    && apt-get purge -y --auto-remove gnupg \
     && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && groupadd --system --gid 1000 agent \
     && useradd --system --uid 1000 --gid agent --create-home agent \
     && mkdir -p /workspace \
     && chown -R agent:agent /workspace
+
+# uv is the project repos' build/test driver — the agent is told to run
+# ``uv sync`` and ``uv run ruff/ty/pytest`` in /workspace/repo, so it must
+# be on PATH here. The astral builder image already has both binaries.
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
 WORKDIR /app
 

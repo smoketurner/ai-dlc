@@ -27,7 +27,7 @@ def test_render_pr_body_minimal_done(payload: ImplementerInput) -> None:
     assert "## T-001: Add /healthz endpoint" in body
     assert "### Summary" in body
     assert "Added /healthz endpoint." in body
-    assert "### Files changed" not in body  # empty list — section omitted
+    assert "### Files changed" not in body
     assert "### Tests" not in body
     assert "### Risks" not in body
     assert payload.run_id in body
@@ -47,9 +47,10 @@ def test_render_pr_body_full(payload: ImplementerInput) -> None:
         status="done",
     )
     body = render_pr_body(payload, task_title="Add /healthz endpoint", report=report)
-    assert "### Files changed" in body
-    assert "- `app/main.py`" in body
-    assert "- `tests/test_health.py`" in body
+    # GitHub already shows the diff; the agent's self-reported file list is
+    # always omitted to avoid misleading reviewers about scope.
+    assert "### Files changed" not in body
+    assert "- `app/main.py`" not in body
     assert "### Tests" in body
     assert "- `test_health_returns_200` — pass" in body
     assert "- `test_health_under_load` — skip" in body
@@ -65,7 +66,7 @@ def test_render_pr_body_omits_empty_sections(payload: ImplementerInput) -> None:
         status="done",
     )
     body = render_pr_body(payload, task_title="Tweak default", report=report)
-    assert "### Files changed" in body
+    assert "### Files changed" not in body
     assert "### Tests" not in body
     assert "### Risks" not in body
 

@@ -46,7 +46,11 @@ from typing import TYPE_CHECKING
 import boto3
 import httpx
 import jwt
+import structlog
+from botocore.exceptions import ClientError
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
@@ -235,6 +239,15 @@ def user_oauth_token_for_requestor_sub(requestor_sub: str) -> str | None:
             scopes=[],  # default scopes — GitHub Apps determine permissions at install time
         )
     except client.exceptions.ResourceNotFoundException:
+        return None
+    except ClientError as exc:
+        # Throttling, transient IAM/network failures, etc. — degrade to the
+        # installation token rather than crashing the run.
+        logger.warning(
+            "user-OBO failed; falling back to installation token",
+            requestor_sub=requestor_sub,
+            error_code=exc.response.get("Error", {}).get("Code"),
+        )
         return None
     access_token = resource_response.get("accessToken")
     if not access_token:

@@ -32,7 +32,7 @@ import httpx
 import structlog
 
 from common.door import classify_paths
-from implementer.agentcore_auth import (
+from common.github_app import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
 )
@@ -234,8 +234,53 @@ def commit_changes(message: str) -> str:
 
 
 def push_branch(branch: str) -> None:
-    """Push ``branch`` to ``origin``."""
-    run_git("push", "--set-upstream", "origin", branch)
+    """Push ``branch`` to ``origin``, recovering from non-fast-forward rejects.
+
+    A re-run for the same ``(spec_slug, task_id)`` finds the remote branch
+    populated from the prior run while the local branch was force-recreated
+    off ``main``. The first push fails with ``! [rejected] ... non-fast-
+    forward``. We fetch the remote ref and force-push with a lease — the
+    lease (no explicit value) reads the just-fetched
+    ``refs/remotes/origin/<branch>``, so a concurrent maintainer push
+    between fetch and push fails loud rather than getting overwritten.
+    """
+    try:
+        run_git("push", "--set-upstream", "origin", branch)
+    except RuntimeError as exc:
+        logger.info("push rejected; fetching and force-pushing", branch=branch, error=str(exc))
+        run_git("fetch", "origin", branch)
+        run_git("push", "--force-with-lease", "origin", branch)
+        logger.info("force-pushed existing branch", branch=branch)
+
+
+def has_uncommitted_changes() -> bool:
+    """``True`` when the working tree has any uncommitted modifications."""
+    return bool(run_git("status", "--porcelain").strip())
+
+
+def agent_made_real_changes(spec_slug: str) -> bool:
+    """``True`` when the agent's edits touch any path outside the spec tree.
+
+    The platform writes the spec bundle to ``docs/specs/<spec_slug>/`` after
+    the agent finishes, but those files come from the platform — not the
+    agent. Re-runs that hit a Bedrock auth failure or otherwise short-
+    circuit produce zero agent edits; we want to detect that and skip the
+    PR-creation flow rather than emit a 1-line "diff" PR.
+    """
+    # ``rstrip`` instead of ``strip``: the porcelain format leads with status
+    # flags ('` M`', '`A `', etc.), so a leading space is meaningful and
+    # must survive the trim.
+    porcelain = run_git("status", "--porcelain").rstrip()
+    if not porcelain:
+        return False
+    spec_prefix = f"docs/specs/{spec_slug}/"
+    for line in porcelain.splitlines():
+        # ``git status --porcelain`` format: two status chars, a space, then
+        # the path (and optionally `` -> path`` for renames).
+        path = line[3:].split(" -> ")[-1]
+        if not path.startswith(spec_prefix):
+            return True
+    return False
 
 
 def changed_paths(*, base: str) -> list[str]:
@@ -281,6 +326,37 @@ def draft_explanation(categories: list[str]) -> str:
     )
 
 
+def read_pr_html_url(session: RepoSession, pr_number: int) -> str:
+    """Fetch a PR's ``html_url`` by number."""
+    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls/{pr_number}"
+    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
+        resp = client.get(url, headers=github_headers(session.access_token))
+        resp.raise_for_status()
+        return str(resp.json()["html_url"])
+
+
+def find_open_pr_for_branch(session: RepoSession, branch: str) -> int | None:
+    """Return the open PR's number for ``branch``, or ``None`` if none exists.
+
+    Used to make :func:`open_pr` idempotent across re-runs: when a prior
+    invocation already opened a PR for this head, we reuse it rather than
+    posting and getting a 422 "A pull request already exists" back.
+    """
+    owner = session.target_repo.split("/", 1)[0]
+    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls"
+    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
+        resp = client.get(
+            url,
+            headers=github_headers(session.access_token),
+            params={"head": f"{owner}:{branch}", "state": "open"},
+        )
+        resp.raise_for_status()
+        body = resp.json()
+    if not body:
+        return None
+    return int(body[0]["number"])
+
+
 def open_pr(
     session: RepoSession,
     *,
@@ -290,14 +366,29 @@ def open_pr(
     body: str,
     draft: bool = False,
 ) -> str:
-    """Open a PR via the GitHub REST API; return the PR HTML URL.
+    """Open (or reuse) a PR via the GitHub REST API; return the PR HTML URL.
 
-    Forces draft mode when the diff touches any path matching the
-    one-way door rules in :func:`common.door.classify_paths` — defense
-    in depth on top of the Architect's stated ``door_class``. When the
-    override engages, also posts an explanatory first comment on the PR
-    so the maintainer knows why it landed in draft.
+    When an open PR already exists for ``branch``, return its URL instead
+    of creating a new one. The existing PR's title/body/draft state is
+    left untouched — reviewers may have anchored comments on the original
+    body, and we don't want to flip a "Ready for review" PR back to draft.
+
+    For brand-new PRs, force draft mode when the diff touches any path
+    matching the one-way door rules in :func:`common.door.classify_paths`
+    — defense in depth on top of the Architect's stated ``door_class``.
+    When the override engages, also post an explanatory first comment on
+    the PR so the maintainer knows why it landed in draft.
     """
+    existing_pr = find_open_pr_for_branch(session, branch)
+    if existing_pr is not None:
+        existing_url = read_pr_html_url(session, existing_pr)
+        logger.info(
+            "open_pr reused existing pr",
+            target_repo=session.target_repo,
+            branch=branch,
+            pr_number=existing_pr,
+        )
+        return existing_url
     forced_categories = classify_paths(changed_paths(base=base))
     is_draft = draft or bool(forced_categories)
     override_engaged = bool(forced_categories) and not draft

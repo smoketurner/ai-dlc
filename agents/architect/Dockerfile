@@ -35,10 +35,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 1000 agent \
-    && useradd --system --uid 1000 --gid agent --create-home agent
+    && useradd --system --uid 1000 --gid agent --create-home agent \
+    && mkdir -p /workspace \
+    && chown -R agent:agent /workspace
+
+ENV AIDLC_WORKSPACE_ROOT=/workspace
 
 WORKDIR /app
 

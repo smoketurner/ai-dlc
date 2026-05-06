@@ -15,7 +15,12 @@ from strands.models import BedrockModel
 
 from architect.hooks import build_hooks
 from architect.spec import SpecBundle
-from architect.tools import read_memory_md_tool, write_spec_doc_tool
+from architect.tools import (
+    list_repo_paths_tool,
+    read_memory_md_tool,
+    read_repo_file_tool,
+    write_spec_doc_tool,
+)
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 
@@ -43,7 +48,12 @@ def build_agent(run_id: str) -> Agent:
             streaming=True,
         ),
         system_prompt=load_system_prompt("architect", variant),
-        tools=[read_memory_md_tool, write_spec_doc_tool],
+        tools=[
+            read_memory_md_tool,
+            write_spec_doc_tool,
+            list_repo_paths_tool,
+            read_repo_file_tool,
+        ],
         hooks=build_hooks(),
     )
 
