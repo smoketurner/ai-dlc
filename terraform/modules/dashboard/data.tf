@@ -42,6 +42,18 @@ data "aws_iam_policy_document" "task_inline" {
   }
 
   statement {
+    sid = "DynamoDBDelete"
+    actions = [
+      "dynamodb:DeleteItem",
+      "dynamodb:BatchWriteItem",
+    ]
+    resources = [
+      var.runs_table_arn,
+      var.approvals_table_arn,
+    ]
+  }
+
+  statement {
     sid       = "PutEvents"
     actions   = ["events:PutEvents"]
     resources = [var.bus_arn]

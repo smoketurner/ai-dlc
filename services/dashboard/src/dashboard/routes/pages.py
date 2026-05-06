@@ -12,6 +12,7 @@ from dashboard.artifacts import read_critique
 from dashboard.auth import CurrentUser
 from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
+    TERMINAL_TYPES,
     get_run_events,
     list_pending_approvals,
     list_recent_runs,
@@ -29,7 +30,7 @@ async def runs_page(request: Request, user: CurrentUser) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "runs.html",
-        {"runs": runs, "user": user},
+        {"runs": runs, "user": user, "terminal_types": TERMINAL_TYPES},
     )
 
 
@@ -50,6 +51,7 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "summary": summary,
             "critique": critique,
             "user": user,
+            "terminal_types": TERMINAL_TYPES,
         },
     )
 

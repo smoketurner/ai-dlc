@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}runs · ai-dlc{% endblock %}
 {% block content %}
-<div x-data="{ filter: '' }" class="space-y-4">
+<div x-data="runsList()" class="space-y-4">
   <div class="flex items-baseline justify-between">
     <h1 class="text-xl font-semibold">Recent runs</h1>
     <input x-model="filter" type="search" placeholder="filter by project or status"
@@ -17,11 +17,12 @@
         <th class="px-3 py-2 text-right">tasks</th>
         <th class="px-3 py-2 text-right">tokens (in/out)</th>
         <th class="px-3 py-2 text-right">cost</th>
+        <th class="px-3 py-2 w-px"></th>
       </tr>
     </thead>
     <tbody>
       {% for run in runs %}
-      <tr x-show="filter === '' || '{{ run.project_slug }}'.includes(filter) || '{{ run.status }}'.includes(filter)"
+      <tr x-show="(filter === '' || '{{ run.project_slug }}'.includes(filter) || '{{ run.status }}'.includes(filter)) && !deleted.includes('{{ run.run_id }}')"
           class="border-b last:border-0 hover:bg-slate-50">
         <td class="px-3 py-2"><a href="/runs/{{ run.run_id }}" class="text-sky-700 hover:underline">{{ run.run_id }}</a></td>
         <td class="px-3 py-2">{{ run.project_slug }}</td>
@@ -34,6 +35,12 @@
         <td class="px-3 py-2 text-right font-mono text-xs">
           {% if run.total_cost_usd %}${{ "%.3f"|format(run.total_cost_usd) }}{% else %}—{% endif %}
         </td>
+        <td class="px-3 py-2 text-right">
+          {% if run.status in terminal_types %}
+          <button type="button" @click="deleteRun('{{ run.run_id }}')"
+                  class="text-rose-600 hover:text-rose-800 text-xs underline">delete</button>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -42,4 +49,22 @@
   <p class="text-slate-500 text-sm">No runs yet. <a class="text-sky-700 hover:underline" href="/submit">Submit one</a>.</p>
   {% endif %}
 </div>
+<script>
+function runsList() {
+  return {
+    filter: '',
+    deleted: [],
+    async deleteRun(runId) {
+      if (!window.confirm(`Delete run ${runId}? This permanently removes its events and approvals.`)) return;
+      const resp = await fetch(`/v1/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
+      if (resp.status === 204) {
+        this.deleted.push(runId);
+        return;
+      }
+      const text = await resp.text().catch(() => '');
+      window.alert(`Could not delete ${runId}: ${resp.status} ${text}`);
+    },
+  };
+}
+</script>
 {% endblock %}
