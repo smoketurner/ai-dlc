@@ -40,7 +40,6 @@ def build_agent(run_id: str) -> Agent:
             temperature=0.2,
             max_tokens=4096,
             streaming=True,
-            strict_tools=True,
         ),
         system_prompt=load_system_prompt("triage", variant),
     )

@@ -56,7 +56,6 @@ def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
             temperature=0.3,
             max_tokens=8192,
             streaming=True,
-            strict_tools=True,
         ),
         system_prompt=load_system_prompt("proposer", variant),
         tools=[

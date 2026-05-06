@@ -46,11 +46,11 @@ from typing import TYPE_CHECKING
 import boto3
 import httpx
 import jwt
-from aws_lambda_powertools.utilities.parameters import SecretsProvider
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
+    from mypy_boto3_secretsmanager.client import SecretsManagerClient
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "ai-dlc-repo-helper/1.0"
@@ -93,26 +93,36 @@ SECRET_TTL_SECONDS = 900  # 15 min — picks up rotated secrets without redeploy
 
 
 @cache
-def secrets_provider() -> SecretsProvider:
-    """Process-cached Powertools SecretsProvider (handles boto3 client setup)."""
-    return SecretsProvider()
+def secrets_client() -> SecretsManagerClient:
+    """Process-cached boto3 client for Secrets Manager."""
+    return boto3.client("secretsmanager")
+
+
+secret_cache: dict[str, tuple[str, float]] = {}
 
 
 def app_credentials() -> AppCredentials:
     """Read + parse the App credentials secret.
 
-    Powertools' ``SecretsProvider`` caches the value for ``SECRET_TTL_SECONDS``,
-    so a rotated secret value flows in without requiring a Lambda redeploy.
+    Cached for ``SECRET_TTL_SECONDS`` so a rotated secret flows in without
+    a Lambda / ECS redeploy. Lives in this module instead of relying on
+    ``aws_lambda_powertools`` so the dashboard (ECS) and the Lambdas
+    share the same code path.
     """
-    raw = secrets_provider().get(
-        os.environ["AIDLC_GITHUB_APP_SECRET_ARN"],
-        max_age=SECRET_TTL_SECONDS,
-    )
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8")
+    secret_id = os.environ["AIDLC_GITHUB_APP_SECRET_ARN"]
+    now = time.time()
+    cached = secret_cache.get(secret_id)
+    if cached is not None and cached[1] > now:
+        return AppCredentials.model_validate_json(cached[0])
+    response = secrets_client().get_secret_value(SecretId=secret_id)
+    raw = response.get("SecretString")
+    if raw is None:
+        binary = response.get("SecretBinary") or b""
+        raw = binary.decode("utf-8") if isinstance(binary, bytes) else binary
     if not isinstance(raw, str):
         msg = f"Expected SecretString, got {type(raw).__name__}"
         raise TypeError(msg)
+    secret_cache[secret_id] = (raw, now + SECRET_TTL_SECONDS)
     return AppCredentials.model_validate_json(raw)
 
 
