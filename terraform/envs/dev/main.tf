@@ -49,6 +49,7 @@ locals {
     proposer    = "latest"
     reviewer    = "latest"
     tester      = "latest"
+    triage      = "latest"
   }
 }
 
