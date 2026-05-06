@@ -53,6 +53,9 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", ARTIFACTS)
     monkeypatch.setenv("AIDLC_HITL_HANDLER_FUNCTION", "test-hitl")
     monkeypatch.setenv("AIDLC_TRIAGE_DISPATCHER_FUNCTION", "test-triage")
+    monkeypatch.setenv(
+        "AIDLC_GITHUB_APP_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:app"
+    )
     monkeypatch.setenv("AIDLC_GITHUB_WEBHOOK_SECRET_ID", "test-secret")
     monkeypatch.setenv("AIDLC_COGNITO_USER_POOL_ID", "test-pool")
     monkeypatch.setenv("AIDLC_COGNITO_CLIENT_ID", "test-client")

@@ -60,6 +60,12 @@ data "aws_iam_policy_document" "task_inline" {
   }
 
   statement {
+    sid       = "ReadGithubAppSecret"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+    resources = [var.github_app_secret_arn]
+  }
+
+  statement {
     sid       = "ReadWebhookSecret"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [var.github_webhook_secret_arn]

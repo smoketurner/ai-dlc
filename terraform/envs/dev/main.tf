@@ -244,6 +244,7 @@ module "dashboard" {
 
   github_webhook_secret_id  = aws_secretsmanager_secret.github_webhook.name
   github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn
+  github_app_secret_arn     = module.agents.github_app_secret_arn
 
   cognito_user_pool_arn       = module.auth.user_pool_arn
   cognito_user_pool_id        = module.auth.user_pool_id

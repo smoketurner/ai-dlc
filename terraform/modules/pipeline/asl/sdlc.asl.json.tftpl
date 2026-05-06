@@ -161,7 +161,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.critic",
             "DetailType": "CRITIQUE.READY",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'CRITIQUE.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'critic', 'payload': $merge([$states.input.critique, { 'project_slug': $states.input.project_slug }]) }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'CRITIQUE.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'critic', 'payload': $merge([$states.input.critique, { 'project_slug': $states.input.project_slug }]) }) %}"
           }
         ]
       },
@@ -177,7 +177,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.architect",
             "DetailType": "SPEC.READY",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'SPEC.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'architect', 'payload': $states.input.spec }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'SPEC.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'architect', 'payload': $states.input.spec }) %}"
           }
         ]
       },
@@ -205,7 +205,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.system",
             "DetailType": "SPEC.APPROVED",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'SPEC.APPROVED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'auto', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'reviewer': 'auto', 'comment': 'auto-approved: no one-way tasks and no high-severity critique findings' } }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'SPEC.APPROVED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'auto', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'reviewer': 'auto', 'comment': 'auto-approved: no one-way tasks and no high-severity critique findings' } }) %}"
           }
         ]
       },
@@ -256,7 +256,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.system",
             "DetailType": "SPEC.APPROVED",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'SPEC.APPROVED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': $states.input.reviewer, 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'reviewer': $states.input.reviewer, 'comment': $states.input.approval_comment } }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'SPEC.APPROVED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': $states.input.reviewer, 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'reviewer': $states.input.reviewer, 'comment': $states.input.approval_comment } }) %}"
           }
         ]
       },
@@ -409,7 +409,7 @@
                   "EventBusName": "${bus_name}",
                   "Source": "ai-dlc.reviewer",
                   "DetailType": "REVIEW.READY",
-                  "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'REVIEW.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'reviewer', 'payload': $merge([$states.input.review, { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug }]) }) %}"
+                  "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'REVIEW.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'reviewer', 'payload': $merge([$states.input.review, { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug }]) }) %}"
                 }
               ]
             },
@@ -425,7 +425,7 @@
                   "EventBusName": "${bus_name}",
                   "Source": "ai-dlc.tester",
                   "DetailType": "TEST_REPORT.READY",
-                  "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'TEST_REPORT.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'tester', 'payload': $merge([$states.input.test_report, { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug }]) }) %}"
+                  "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'TEST_REPORT.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'tester', 'payload': $merge([$states.input.test_report, { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec_slug }]) }) %}"
                 }
               ]
             },
@@ -441,7 +441,7 @@
                   "EventBusName": "${bus_name}",
                   "Source": "ai-dlc.implementer",
                   "DetailType": "TASK.READY",
-                  "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'TASK.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'implementer', 'payload': $merge([$states.input.result, { 'task_id': $states.input.task_id }]) }) %}"
+                  "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'TASK.READY', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'implementer', 'payload': $merge([$states.input.result, { 'task_id': $states.input.task_id }]) }) %}"
                 }
               ]
             },
@@ -484,7 +484,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.system",
             "DetailType": "RUN.COMPLETED",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'RUN.COMPLETED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'tasks_completed': $count($states.input.spec.task_ids) } }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'RUN.COMPLETED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'system', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'tasks_completed': $count($states.input.spec.task_ids) } }) %}"
           }
         ]
       },
@@ -499,7 +499,7 @@
             "EventBusName": "${bus_name}",
             "Source": "ai-dlc.system",
             "DetailType": "RUN.FAILED",
-            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'RUN.FAILED', 'run_id': $exists($states.input.run_id) ? $states.input.run_id : 'unknown', 'correlation_id': $exists($states.input.correlation_id) ? $states.input.correlation_id : 'unknown', 'actor_id': 'system', 'payload': { 'project_slug': $exists($states.input.project_slug) ? $states.input.project_slug : 'unknown', 'failed_state': 'unknown', 'error_class': 'StatesAll', 'error_message': $string($states.input), 'retryable': false } }) %}"
+            "Detail": "{% $string({ 'schema_version': '1.0', 'event_id': $uuid(), 'timestamp': $states.context.State.EnteredTime, 'type': 'RUN.FAILED', 'run_id': $exists($states.input.run_id) ? $states.input.run_id : 'unknown', 'correlation_id': $exists($states.input.correlation_id) ? $states.input.correlation_id : 'unknown', 'actor_id': 'system', 'payload': { 'project_slug': $exists($states.input.project_slug) ? $states.input.project_slug : 'unknown', 'failed_state': 'unknown', 'error_class': 'StatesAll', 'error_message': $string($states.input), 'retryable': false } }) %}"
           }
         ]
       },

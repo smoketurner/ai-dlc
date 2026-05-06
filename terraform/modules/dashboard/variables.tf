@@ -116,6 +116,16 @@ variable "triage_dispatcher_function_arn" {
   type        = string
 }
 
+variable "github_app_secret_arn" {
+  description = <<-EOT
+    Secrets Manager ARN of the GitHub App credentials. The dashboard
+    reads this to mint installation tokens directly (e.g., the eyes
+    reaction on a freshly-assigned issue) without going through a
+    Lambda hop.
+  EOT
+  type        = string
+}
+
 variable "github_webhook_secret_id" {
   description = "Secrets Manager secret id holding the GitHub webhook signing secret."
   type        = string

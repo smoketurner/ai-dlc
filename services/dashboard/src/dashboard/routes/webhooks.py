@@ -38,9 +38,11 @@ import re
 from functools import cache
 from typing import Any
 
+import httpx
 import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 
+from common import github_app as common_github
 from dashboard.deps import ddb, lambda_client, secrets, settings
 
 router = APIRouter()
@@ -96,6 +98,7 @@ async def receive_github_webhook(request: Request) -> dict[str, Any]:
 
     triage = parse_triage(event_type, payload)
     if triage is not None:
+        react_eyes(triage)
         invoke_triage(triage)
         return {"ok": True, "triage": triage["issue_url"]}
 
@@ -400,3 +403,36 @@ def invoke_triage(payload: dict[str, Any]) -> None:
         InvocationType="Event",
         Payload=json.dumps(payload).encode("utf-8"),
     )
+
+
+def react_eyes(triage: dict[str, Any]) -> None:
+    """Post a 👀 reaction on the source issue.
+
+    Best-effort: a failure is logged but does not block triage. Gives the
+    user immediate confirmation that the bot picked up the assignment,
+    before the triage agent and SDLC pipeline run. Uses the App's
+    installation token (no user-OBO needed — this is a system reaction).
+    """
+    repo = triage["repo"]
+    issue_number = triage["issue_number"]
+    try:
+        token = common_github.installation_token_for_repo(repo)
+        response = httpx.post(
+            f"{common_github.GITHUB_API}/repos/{repo}/issues/{issue_number}/reactions",
+            headers={
+                "Accept": common_github.ACCEPT_HEADER,
+                "Authorization": f"Bearer {token}",
+                "User-Agent": common_github.USER_AGENT,
+                "X-GitHub-Api-Version": common_github.API_VERSION,
+            },
+            json={"content": "eyes"},
+            timeout=common_github.HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+    except Exception as exc:
+        logger.warning(
+            "react_eyes failed",
+            error=str(exc),
+            repo=repo,
+            issue_number=issue_number,
+        )

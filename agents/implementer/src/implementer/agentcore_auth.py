@@ -13,7 +13,7 @@ The Implementer authenticates to GitHub two ways:
     every run takes when there's no human in the loop (Triage-driven runs)
     or the user hasn't authorized the App.
 
-We mirror :mod:`repo_helper.auth`'s shape rather than sharing code because
+We mirror :mod:`common.github_app`'s shape rather than sharing code because
 the Implementer ships as its own container and the auth surface is small.
 
 Required env vars:

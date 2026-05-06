@@ -2,9 +2,9 @@
 
 The GitHub API is mocked via ``httpx.MockTransport``. ``handler.github_client``
 is replaced with a client whose transport routes requests to a callback that
-asserts URL/method/body shape and returns canned JSON. The auth module's
-``installation_token_for_repo`` is monkeypatched so tests never touch
-Secrets Manager or the App-JWT machinery.
+asserts URL/method/body shape and returns canned JSON.
+``common.github_app.installation_token_for_repo`` is monkeypatched so tests
+never touch Secrets Manager or the App-JWT machinery.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
+import common.github_app as auth_mod
 import httpx
 import pytest
-import repo_helper.auth as auth_mod
 import repo_helper.handler as h
 from aws_lambda_powertools.utilities.typing import LambdaContext
 

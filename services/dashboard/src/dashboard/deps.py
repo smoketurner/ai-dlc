@@ -30,6 +30,7 @@ class Settings(BaseModel):
     artifacts_bucket: str
     hitl_handler_function: str
     triage_dispatcher_function: str
+    github_app_secret_id: str
     github_webhook_secret_id: str
     cognito_region: str
     cognito_user_pool_id: str
@@ -58,6 +59,7 @@ def settings() -> Settings:
         artifacts_bucket=os.environ["AIDLC_ARTIFACTS_BUCKET"],
         hitl_handler_function=os.environ["AIDLC_HITL_HANDLER_FUNCTION"],
         triage_dispatcher_function=os.environ["AIDLC_TRIAGE_DISPATCHER_FUNCTION"],
+        github_app_secret_id=os.environ["AIDLC_GITHUB_APP_SECRET_ARN"],
         github_webhook_secret_id=os.environ["AIDLC_GITHUB_WEBHOOK_SECRET_ID"],
         cognito_region=os.environ.get("AIDLC_COGNITO_REGION", os.environ["AWS_REGION"]),
         cognito_user_pool_id=os.environ["AIDLC_COGNITO_USER_POOL_ID"],

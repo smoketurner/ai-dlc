@@ -1,3 +1,5 @@
 aws-lambda-powertools[tracer,parser,aws-sdk]==3.29.0
+httpx==0.28.1
 pydantic==2.13.3
+pyjwt[crypto]==2.12.1
 uuid-utils==0.14.1

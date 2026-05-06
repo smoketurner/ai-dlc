@@ -7,7 +7,7 @@ dispatches on ``input.op``: ``open_pr``, ``comment_pr``, ``create_branch``,
 **Auth model**: a GitHub App is installed on each project repo. The Lambda
 holds the App's credentials in Secrets Manager (ARN passed via
 ``AIDLC_GITHUB_APP_SECRET_ARN``) and mints installation-scoped access
-tokens on demand via :mod:`repo_helper.auth`. The token never appears in
+tokens on demand via :mod:`common.github_app`. The token never appears in
 input — agents (and the gateway) only know the target repo, not its
 credentials.
 
@@ -28,7 +28,7 @@ from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from repo_helper.auth import (
+from common.github_app import (
     ACCEPT_HEADER,
     API_VERSION,
     GITHUB_API,
@@ -395,7 +395,7 @@ def mint_clone_token(req: MintCloneTokenInput, client: httpx.Client) -> dict[str
     """Resolve a PR's head SHA and return an authenticated clone URL.
 
     The token embedded in the URL is the same bearer that authenticated
-    this Lambda call (cached by :func:`repo_helper.auth.token_for_call`).
+    this Lambda call (cached by :func:`common.github_app.token_for_call`).
     The response carries the token in plaintext so the calling agent can
     hand it to a Code Interpreter sandbox; callers MUST treat the result
     as a credential and avoid logging it.
@@ -482,7 +482,7 @@ def github_client(*, repo: str, requestor_sub: str | None) -> httpx.Client:
 
     Picks a user-on-behalf-of token via AgentCore Identity if
     ``requestor_sub`` resolves to a linked user; otherwise falls back to
-    the App's installation token. See :func:`repo_helper.auth.token_for_call`.
+    the App's installation token. See :func:`common.github_app.token_for_call`.
     """
     token = token_for_call(repo=repo, requestor_sub=requestor_sub)
     return httpx.Client(
