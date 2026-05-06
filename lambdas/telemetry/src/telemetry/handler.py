@@ -134,9 +134,7 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     gate_ref = derive_gate_ref(envelope.type, payload)
     reason = payload.reason
     category = classify(reason, event_type=envelope.type, payload=payload)
-    record = build_record(
-        envelope=envelope, gate_ref=gate_ref, category=category
-    )
+    record = build_record(envelope=envelope, gate_ref=gate_ref, category=category)
     persist_record(run_id=run_id, gate_ref=gate_ref, record=record)
     update_counters(run_id=run_id, project_slug=payload.project_slug, category=category)
     logger.info(
