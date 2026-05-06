@@ -139,35 +139,42 @@ module "triage_dispatcher" {
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
   attach_policy_statements = true
-  policy_statements = {
-    put_events = {
-      effect    = "Allow"
-      actions   = ["events:PutEvents"]
-      resources = [var.bus_arn]
-    }
-    invoke_repo_helper = {
-      effect    = "Allow"
-      actions   = ["lambda:InvokeFunction"]
-      resources = [var.repo_helper_function_arn]
-    }
-    invoke_triage_runtime = {
-      # The triage agent runs as an AgentCore Runtime; the dispatcher
-      # invokes it synchronously and parses the returned TriageResult.
-      effect    = "Allow"
-      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
-      resources = compact([
-        var.triage_runtime_arn,
-        var.triage_runtime_arn != "" ? "${var.triage_runtime_arn}/runtime-endpoint/*" : "",
-      ])
-    }
-    read_triage_decision = {
-      # Read the agent's persisted TriageDecision JSON from the
-      # artifacts bucket so we can act on the ``ask`` path's questions.
-      effect    = "Allow"
-      actions   = ["s3:GetObject"]
-      resources = ["${var.artifacts_bucket_arn}/runs/*/triage.json"]
-    }
-  }
+  # invoke_triage_runtime is only attached once the triage runtime exists —
+  # during the bootstrap apply triage_runtime_arn is "" and IAM rejects a
+  # statement with an empty Resources list.
+  policy_statements = merge(
+    {
+      put_events = {
+        effect    = "Allow"
+        actions   = ["events:PutEvents"]
+        resources = [var.bus_arn]
+      }
+      invoke_repo_helper = {
+        effect    = "Allow"
+        actions   = ["lambda:InvokeFunction"]
+        resources = [var.repo_helper_function_arn]
+      }
+      read_triage_decision = {
+        # Read the agent's persisted TriageDecision JSON from the
+        # artifacts bucket so we can act on the ``ask`` path's questions.
+        effect    = "Allow"
+        actions   = ["s3:GetObject"]
+        resources = ["${var.artifacts_bucket_arn}/runs/*/triage.json"]
+      }
+    },
+    var.triage_runtime_arn != "" ? {
+      invoke_triage_runtime = {
+        # The triage agent runs as an AgentCore Runtime; the dispatcher
+        # invokes it synchronously and parses the returned TriageResult.
+        effect  = "Allow"
+        actions = ["bedrock-agentcore:InvokeAgentRuntime"]
+        resources = [
+          var.triage_runtime_arn,
+          "${var.triage_runtime_arn}/runtime-endpoint/*",
+        ]
+      }
+    } : {},
+  )
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-triage-dispatcher"

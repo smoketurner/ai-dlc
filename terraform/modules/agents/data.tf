@@ -38,9 +38,10 @@ data "aws_iam_policy_document" "gateway_assume" {
 }
 
 # Permissions granted to each per-agent gateway role: invoke the tool Lambdas
-# the agent is allowed to call.
+# the agent is allowed to call. Skipped for agents with no targets — IAM
+# rejects a statement with an empty Resources list.
 data "aws_iam_policy_document" "gateway_invoke" {
-  for_each = var.agents
+  for_each = { for k, v in var.agents : k => v if length(v.targets) > 0 }
 
   statement {
     sid       = "InvokeToolLambdas"

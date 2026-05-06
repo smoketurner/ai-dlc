@@ -60,7 +60,13 @@ class ArchitectInput(_Frozen):
 
 
 class ArchitectResult(_Frozen):
-    """Result the Architect returns. Becomes the SPEC.READY payload."""
+    """Result the Architect returns. Becomes the SPEC.READY payload.
+
+    ``one_way_task_count`` is the number of tasks the Architect classified
+    as one-way doors. Step Functions reads it (along with the Critic's
+    ``high_severity_count``) to decide whether the spec gate can auto-approve
+    or has to wait for a human.
+    """
 
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     spec_s3_prefix: str
@@ -68,6 +74,7 @@ class ArchitectResult(_Frozen):
     design_summary: Annotated[str, Field(max_length=1024)]
     task_count: Annotated[int, Field(ge=1)]
     task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
+    one_way_task_count: Annotated[int, Field(ge=0)] = 0
     proposed_adrs: list[str] = Field(default_factory=list)
     session_id: str
 

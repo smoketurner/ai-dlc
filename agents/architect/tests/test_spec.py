@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from architect.app import count_one_way_tasks
 from architect.spec import (
     AcceptanceCriterion,
     Design,
@@ -216,6 +217,40 @@ def test_render_tasks_surfaces_one_way_door() -> None:
     spec_with_one_way = spec.model_copy(update={"tasks": [*spec.tasks, one_way_task]})
     out = render_tasks(spec_with_one_way)
     assert "**Door:** ONE-WAY (schema_migration) — drops users.email; needs backup" in out
+
+
+def test_count_one_way_tasks_zero_when_all_two_way() -> None:
+    assert count_one_way_tasks(make_spec()) == 0
+
+
+def test_count_one_way_tasks_counts_only_one_way() -> None:
+    spec = make_spec()
+    one_way = Task(
+        id="T-002",
+        title="Migrate users table",
+        implements=["AC-R-001-a"],
+        done_when="users.email column dropped",
+        door=DoorAssessment(
+            door_class="one_way",
+            categories=["schema_migration"],
+            rationale="drops users.email; not reversible",
+        ),
+    )
+    another_one_way = Task(
+        id="T-003",
+        title="Drop legacy IAM role",
+        implements=["AC-R-001-a"],
+        done_when="role removed",
+        door=DoorAssessment(
+            door_class="one_way",
+            categories=["iam_authorization"],
+            rationale="role used by an external auditor",
+        ),
+    )
+    spec_with_doors = spec.model_copy(
+        update={"tasks": [*spec.tasks, one_way, another_one_way]},
+    )
+    assert count_one_way_tasks(spec_with_doors) == 2
 
 
 def test_render_tasks_surfaces_depends_on() -> None:

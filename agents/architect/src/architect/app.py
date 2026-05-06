@@ -55,6 +55,7 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         design_summary=spec.design.approach[:1024],
         task_count=len(spec.tasks),
         task_ids=[t.id for t in spec.tasks],
+        one_way_task_count=count_one_way_tasks(spec),
         proposed_adrs=spec.design.proposed_adrs,
         session_id=payload.run_id,
     )
@@ -72,6 +73,11 @@ def upload_spec(spec: SpecBundle) -> None:
     write_spec_doc(spec.spec_slug, "requirements", render_requirements(spec))
     write_spec_doc(spec.spec_slug, "design", render_design(spec))
     write_spec_doc(spec.spec_slug, "tasks", render_tasks(spec))
+
+
+def count_one_way_tasks(spec: SpecBundle) -> int:
+    """Number of tasks classified as one-way doors by the Architect."""
+    return sum(1 for t in spec.tasks if t.door.door_class == "one_way")
 
 
 if __name__ == "__main__":

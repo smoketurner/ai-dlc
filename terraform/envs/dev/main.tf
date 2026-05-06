@@ -37,6 +37,11 @@ locals {
   # `images-build` run. Held in a local so the improvement module can read
   # ``contains(keys(...), "proposer")`` at plan time (the runtime ARN itself
   # may be unknown when first being created, which would break ``count``).
+  # New agents land here only after their first image is pushed via the
+  # images-build workflow — the runtime resource's ECR data source fails
+  # if no image exists. Procedure: register the agent in var.agents,
+  # apply (creates ECR repo + IAM + gateway), trigger images-build, then
+  # add the agent here and re-apply (creates the runtime).
   agent_image_tags = {
     architect   = "latest"
     critic      = "latest"
@@ -44,7 +49,6 @@ locals {
     proposer    = "latest"
     reviewer    = "latest"
     tester      = "latest"
-    triage      = "latest"
   }
 }
 

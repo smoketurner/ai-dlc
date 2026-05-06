@@ -132,8 +132,36 @@
           }
         ]
       },
-      "Next": "WaitForSpecApproval",
+      "Next": "MaybeAutoApproveSpec",
       "Output": "{% $states.input %}"
+    },
+    "MaybeAutoApproveSpec": {
+      "Type": "Choice",
+      "Comment": "Auto-approve the spec gate when nothing in the spec is irreversible and the Critic flagged no high-severity findings. Otherwise wait for a human reviewer.",
+      "Default": "WaitForSpecApproval",
+      "Choices": [
+        {
+          "Condition": "{% $states.input.spec.one_way_task_count = 0 and $states.input.critique.high_severity_count = 0 %}",
+          "Next": "AutoApproveSpec"
+        }
+      ]
+    },
+    "AutoApproveSpec": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Comment": "Spec is reversible (no one-way tasks) and the Critic is clean — auto-approve, but always emit SPEC.APPROVED so the timeline shows the gate resolved.",
+      "Arguments": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "ai-dlc.system",
+            "DetailType": "SPEC.APPROVED",
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'SPEC.APPROVED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': 'auto', 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'reviewer': 'auto', 'comment': 'auto-approved: no one-way tasks and no high-severity critique findings' } }) %}"
+          }
+        ]
+      },
+      "Output": "{% $states.input %}",
+      "Next": "IterateTasks"
     },
     "WaitForSpecApproval": {
       "Type": "Task",
@@ -163,8 +191,27 @@
         "eval_mode": "{% $states.input.eval_mode %}",
         "requestor_sub": "{% $states.input.requestor_sub %}",
         "target_repo": "{% $states.input.target_repo %}",
-        "spec": "{% $states.input.spec %}"
+        "spec": "{% $states.input.spec %}",
+        "reviewer": "{% $exists($states.result.reviewer) ? $states.result.reviewer : 'human' %}",
+        "approval_comment": "{% $exists($states.result.reason) ? $states.result.reason : null %}"
       },
+      "Next": "PublishSpecApproved"
+    },
+    "PublishSpecApproved": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Comment": "Human approved the spec gate — emit SPEC.APPROVED with the reviewer attributed.",
+      "Arguments": {
+        "Entries": [
+          {
+            "EventBusName": "${bus_name}",
+            "Source": "ai-dlc.system",
+            "DetailType": "SPEC.APPROVED",
+            "Detail": "{% $string({ 'schema_version': '1.0', 'type': 'SPEC.APPROVED', 'run_id': $states.input.run_id, 'correlation_id': $states.input.correlation_id, 'actor_id': $states.input.reviewer, 'payload': { 'project_slug': $states.input.project_slug, 'spec_slug': $states.input.spec.spec_slug, 'spec_s3_prefix': $states.input.spec.spec_s3_prefix, 'reviewer': $states.input.reviewer, 'comment': $states.input.approval_comment } }) %}"
+          }
+        ]
+      },
+      "Output": "{% $states.input %}",
       "Next": "IterateTasks"
     },
     "IterateTasks": {

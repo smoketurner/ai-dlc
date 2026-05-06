@@ -23,7 +23,7 @@ resource "aws_iam_role" "gateway" {
 }
 
 resource "aws_iam_role_policy" "gateway_invoke" {
-  for_each = var.agents
+  for_each = { for k, v in var.agents : k => v if length(v.targets) > 0 }
 
   name   = "invoke-tools"
   role   = aws_iam_role.gateway[each.key].id
