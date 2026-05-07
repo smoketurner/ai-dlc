@@ -29,3 +29,15 @@ output "hitl_approvals_queue_arn" {
 output "eventbridge_dlq_arn" {
   value = aws_sqs_queue.eventbridge_dlq.arn
 }
+
+output "state_router_queue_url" {
+  value = aws_sqs_queue.state_router.url
+}
+
+output "state_router_queue_arn" {
+  value = aws_sqs_queue.state_router.arn
+}
+
+output "state_router_dlq_arn" {
+  value = aws_sqs_queue.state_router_dlq.arn
+}

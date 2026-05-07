@@ -210,6 +210,9 @@ module "pipeline" {
   cognito_issuer_url    = module.auth.issuer_url
 
   common_layer_arn = module.common_layer.lambda_layer_arn
+
+  beacon_queue_url = module.messaging.state_router_queue_url
+  beacon_queue_arn = module.messaging.state_router_queue_arn
 }
 
 module "dashboard" {

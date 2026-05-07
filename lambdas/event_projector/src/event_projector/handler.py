@@ -13,6 +13,11 @@ Two trigger sources, dispatched by event shape:
   poison record reports only itself as a partial failure rather than
   poison-pilling the whole batch.
 
+The projector is the **only writer** of the run + task state-machine
+cursors: it applies :func:`common.state_transitions.apply_run_transition`
+/ ``apply_task_transition`` and writes the new state via a conditional
+``UpdateItem``.
+
 The projector is idempotent: every write uses the event_id as a sort-key
 suffix or a ``ConditionExpression`` that keeps repeats from clobbering
 already-applied state.
@@ -40,8 +45,12 @@ from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import 
 from aws_lambda_powertools.utilities.parser import ValidationError, parse
 from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from botocore.exceptions import ClientError
 
+from common.events import EventType as PlatformEventType
 from common.events import UntypedEnvelope
+from common.state import RunState, TaskState
+from common.state_transitions import apply_run_transition, apply_task_transition
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
@@ -117,6 +126,7 @@ def handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
     event_type = envelope.type
     upsert_run_event(run_id=run_id, event_type=event_type, envelope=detail)
     update_run_state(run_id=run_id, event_type=event_type, envelope=detail)
+    apply_state_transition(run_id=run_id, event_type=event_type, envelope=detail)
     forward_to_memory(detail)
     metrics.add_metric(name="EventsProjected", unit=MetricUnit.Count, value=1)
     return {"ok": True, "run_id": run_id, "type": event_type}
@@ -248,6 +258,295 @@ def accumulate_usage(
     if duration:
         add_parts.append("total_duration_ms :dur")
         values[":dur"] = {"N": str(duration)}
+
+
+# ---------------------------------------------------------------------------
+# State-transition application (flag-gated; Phase 2 cutover)
+# ---------------------------------------------------------------------------
+
+# Events that advance task-level state. Anything else is treated as
+# run-level for transition purposes.
+TASK_LEVEL_EVENTS = frozenset(
+    {
+        "TASK.READY",
+        "TASK.APPROVED",
+        "TASK.REJECTED",
+        "TASK.ITERATION_REQUESTED",
+    },
+)
+
+
+@tracer.capture_method
+def apply_state_transition(
+    *,
+    run_id: str,
+    event_type: str,
+    envelope: dict[str, Any],
+) -> None:
+    """Compute the next state for ``event_type`` and apply it conditionally.
+
+    Run-level events update the STATE row's ``current_state``; task-level
+    events update the corresponding TASK row's ``status``. Idempotent
+    via DDB ``ConditionExpression`` on the previous state value.
+    """
+    if event_type in TASK_LEVEL_EVENTS:
+        apply_task_state_transition(run_id=run_id, event_type=event_type, envelope=envelope)
+    else:
+        apply_run_state_transition(run_id=run_id, event_type=event_type, envelope=envelope)
+
+
+def apply_run_state_transition(
+    *,
+    run_id: str,
+    event_type: str,
+    envelope: dict[str, Any],
+) -> None:
+    """Read run STATE, compute next state, write conditionally."""
+    current = read_run_state(run_id)
+    next_state = apply_run_transition(
+        event_type=cast("PlatformEventType", event_type),
+        current_state=current,
+    )
+    if next_state is None:
+        return
+    event_id = envelope.get("event_id", "")
+    timestamp = envelope.get("timestamp", "")
+    advance_run_state(
+        run_id=run_id,
+        from_state=current,
+        to_state=next_state,
+        event_id=event_id,
+        timestamp=timestamp,
+    )
+
+
+def apply_task_state_transition(
+    *,
+    run_id: str,
+    event_type: str,
+    envelope: dict[str, Any],
+) -> None:
+    """Read TASK row, compute next state, write conditionally.
+
+    For ``TASK.ITERATION_REQUESTED``, also append the delivery_id to the
+    task's ``delivery_ids`` set and the feedback item to
+    ``pending_feedback``. The state advance + accumulator update happen
+    in one ``UpdateItem`` so they're atomic.
+    """
+    payload = envelope.get("payload") or {}
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        logger.warning("task event missing task_id", extra={"event_type": event_type})
+        return
+    current = read_task_state(run_id, task_id)
+    if current is None:
+        logger.info(
+            "task row missing — projector skipping transition",
+            extra={"run_id": run_id, "task_id": task_id, "event_type": event_type},
+        )
+        return
+    next_state = apply_task_transition(
+        event_type=cast("PlatformEventType", event_type),
+        current_state=current,
+    )
+    if next_state is None:
+        return
+    advance_task_state(
+        run_id=run_id,
+        task_id=task_id,
+        from_state=current,
+        to_state=next_state,
+        event_id=envelope.get("event_id", ""),
+        timestamp=envelope.get("timestamp", ""),
+        payload=payload,
+        event_type=event_type,
+    )
+
+
+def read_run_state(run_id: str) -> RunState | None:
+    """Read ``current_state`` off the run's STATE row, or ``None``."""
+    item = ddb().get_item(
+        TableName=runs_table(),
+        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+        ProjectionExpression="current_state",
+    ).get("Item")
+    if not item:
+        return None
+    raw = item.get("current_state", {}).get("S")
+    if not raw:
+        return None
+    try:
+        return RunState(raw)
+    except ValueError:
+        logger.warning("unknown run state in DDB", extra={"raw": raw, "run_id": run_id})
+        return None
+
+
+def read_task_state(run_id: str, task_id: str) -> TaskState | None:
+    """Read ``status`` off a TASK row, or ``None`` if the row is missing."""
+    item = ddb().get_item(
+        TableName=runs_table(),
+        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
+        ProjectionExpression="#s",
+        ExpressionAttributeNames={"#s": "status"},
+    ).get("Item")
+    if not item:
+        return None
+    raw = item.get("status", {}).get("S")
+    if not raw:
+        return None
+    try:
+        return TaskState(raw)
+    except ValueError:
+        logger.warning("unknown task state in DDB", extra={"raw": raw, "task_id": task_id})
+        return None
+
+
+def advance_run_state(
+    *,
+    run_id: str,
+    from_state: RunState | None,
+    to_state: RunState,
+    event_id: str,
+    timestamp: str,
+) -> None:
+    """Conditional UpdateItem that advances ``current_state``."""
+    values: dict[str, dict[str, str | int]] = {
+        ":to": {"S": to_state.value},
+        ":eid": {"S": event_id},
+        ":ts": {"S": timestamp},
+        ":one": {"N": "1"},
+    }
+    if from_state is None:
+        condition = "attribute_not_exists(current_state)"
+    else:
+        condition = "current_state = :from"
+        values[":from"] = {"S": from_state.value}
+    try:
+        ddb().update_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            UpdateExpression=(
+                "SET current_state = :to, last_event_id = :eid, last_event_at = :ts "
+                "ADD state_transitions :one"
+            ),
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(
+                "run state already advanced (idempotent no-op)",
+                extra={"run_id": run_id, "to": to_state.value},
+            )
+            return
+        raise
+
+
+def advance_task_state(
+    *,
+    run_id: str,
+    task_id: str,
+    from_state: TaskState,
+    to_state: TaskState,
+    event_id: str,
+    timestamp: str,
+    payload: dict[str, Any],
+    event_type: str,
+) -> None:
+    """Conditional UpdateItem that advances ``status`` on a TASK row.
+
+    For ``TASK.ITERATION_REQUESTED``, also accumulates the delivery_id
+    set + pending_feedback list in the same call.
+    """
+    set_parts = [
+        "#s = :to",
+        "last_event_id = :eid",
+        "last_event_at = :ts",
+    ]
+    add_parts: list[str] = []
+    values: dict[str, Any] = {
+        ":from": {"S": from_state.value},
+        ":to": {"S": to_state.value},
+        ":eid": {"S": event_id},
+        ":ts": {"S": timestamp},
+    }
+    names = {"#s": "status"}
+    if event_type == "TASK.ITERATION_REQUESTED":
+        accumulate_iteration_data(payload=payload, set_parts=set_parts, values=values)
+        delivery_id = payload.get("delivery_id")
+        if isinstance(delivery_id, str) and delivery_id:
+            add_parts.append("delivery_ids :did")
+            values[":did"] = {"SS": [delivery_id]}
+    expression = "SET " + ", ".join(set_parts)
+    if add_parts:
+        expression += " ADD " + ", ".join(add_parts)
+    try:
+        ddb().update_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
+            UpdateExpression=expression,
+            ConditionExpression="#s = :from",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(
+                "task state already advanced (idempotent no-op)",
+                extra={"run_id": run_id, "task_id": task_id, "to": to_state.value},
+            )
+            return
+        raise
+
+
+def accumulate_iteration_data(
+    *,
+    payload: dict[str, Any],
+    set_parts: list[str],
+    values: dict[str, Any],
+) -> None:
+    """Append the iteration's feedback to ``pending_feedback`` on the task row.
+
+    DDB doesn't support set-of-maps, so feedback is a List of Maps. The
+    update uses ``list_append(if_not_exists(pending_feedback, :empty), :item)``
+    so first delivery seeds the list and subsequent ones extend it.
+    """
+    feedback = payload.get("feedback")
+    if not isinstance(feedback, dict):
+        return
+    set_parts.append(
+        "pending_feedback = list_append("
+        "if_not_exists(pending_feedback, :empty_list), :feedback_one"
+        ")",
+    )
+    values[":empty_list"] = {"L": []}
+    values[":feedback_one"] = {"L": [{"M": map_feedback(feedback)}]}
+
+
+def map_feedback(feedback: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Convert a flat feedback dict into a one-level DDB map.
+
+    All FeedbackItem fields are scalars (str / int / bool); nested
+    structures don't exist today. If a future FeedbackItem grows nested
+    state, extend this function.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in feedback.items():
+        if isinstance(v, str):
+            out[k] = {"S": v}
+        elif isinstance(v, bool):
+            out[k] = {"BOOL": v}
+        elif isinstance(v, int):
+            out[k] = {"N": str(v)}
+        elif v is None:
+            out[k] = {"NULL": True}
+    return out
+
+
+# ---------------------------------------------------------------------------
+# AgentCore Memory pass-through (unchanged)
+# ---------------------------------------------------------------------------
 
 
 @tracer.capture_method

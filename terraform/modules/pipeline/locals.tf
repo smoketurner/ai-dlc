@@ -20,4 +20,16 @@ locals {
     local.reviewer_runtime_arn,
     local.tester_runtime_arn,
   ])
+
+  # State-router runtimes — same agents plus triage. Distinct from
+  # ``runtime_arns`` because the router invokes triage too (the existing
+  # SDLC SFN does not).
+  state_router_runtime_arns = compact([
+    local.architect_runtime_arn,
+    local.critic_runtime_arn,
+    local.implementer_runtime_arn,
+    local.reviewer_runtime_arn,
+    local.tester_runtime_arn,
+    var.triage_runtime_arn,
+  ])
 }

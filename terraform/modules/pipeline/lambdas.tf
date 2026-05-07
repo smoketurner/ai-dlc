@@ -11,7 +11,7 @@ module "entry_adapter" {
   version = "~> 8.0"
 
   function_name = "${local.prefix}-entry-adapter"
-  description   = "POST /v1/runs → idempotency check → events:PutEvents REQUEST.RECEIVED."
+  description   = "POST /v1/runs → write run row → emit REQUEST.RECEIVED → enqueue state-router beacon."
   handler       = "entry_adapter.handler.handler"
   runtime       = "python3.13"
   architectures = ["arm64"]
@@ -32,6 +32,8 @@ module "entry_adapter" {
     AIDLC_BUS_NAME               = var.bus_name
     AIDLC_IDEMPOTENCY_TABLE      = var.idempotency_table
     AIDLC_IDEMPOTENCY_TTL        = "86400"
+    AIDLC_RUNS_TABLE             = var.runs_table
+    AIDLC_BEACON_QUEUE_URL       = var.beacon_queue_url
     POWERTOOLS_SERVICE_NAME      = "entry_adapter"
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     POWERTOOLS_LOG_LEVEL         = "INFO"
@@ -49,10 +51,20 @@ module "entry_adapter" {
       actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
       resources = [var.idempotency_table_arn]
     }
+    runs_table_put = {
+      effect    = "Allow"
+      actions   = ["dynamodb:PutItem"]
+      resources = [var.runs_table_arn]
+    }
     put_events = {
       effect    = "Allow"
       actions   = ["events:PutEvents"]
       resources = [var.bus_arn]
+    }
+    enqueue_beacon = {
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+      resources = [var.beacon_queue_arn]
     }
   }
 
@@ -385,6 +397,129 @@ resource "aws_lambda_permission" "events_invoke_iteration_reactor" {
   function_name = module.iteration_reactor.lambda_function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.iteration_committed.arn
+}
+
+module "state_router" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${local.prefix}-state-router"
+  description   = "SQS beacon → DDB state read → action dispatch (replaces SFN orchestration)."
+  handler       = "state_router.handler.handler"
+  runtime       = "python3.13"
+  architectures = ["arm64"]
+  memory_size   = 512
+  # 60s lambda timeout matches the SQS visibility timeout. Most invokes
+  # finish in <2s (DDB read + 2s read-timeout fire-and-forget), but the
+  # synthetic-spec write path does three S3 PutObjects sequentially.
+  timeout      = 60
+  publish      = true
+  tracing_mode = "Active"
+  layers       = [var.common_layer_arn]
+
+  source_path = [{
+    path             = "${local.source_dir}/state_router/src"
+    pip_requirements = "${local.source_dir}/state_router/requirements.txt"
+  }]
+  build_in_docker = true
+  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+
+  environment_variables = {
+    AIDLC_RUNS_TABLE                = var.runs_table
+    AIDLC_BEACON_QUEUE_URL          = var.beacon_queue_url
+    AIDLC_BUS_NAME                  = var.bus_name
+    AIDLC_ARTIFACTS_BUCKET          = var.artifacts_bucket
+    AIDLC_REPO_HELPER_FUNCTION_NAME = var.repo_helper_function_name
+    AIDLC_ARCHITECT_RUNTIME_ARN     = local.architect_runtime_arn
+    AIDLC_CRITIC_RUNTIME_ARN        = local.critic_runtime_arn
+    AIDLC_IMPLEMENTER_RUNTIME_ARN   = local.implementer_runtime_arn
+    AIDLC_REVIEWER_RUNTIME_ARN      = local.reviewer_runtime_arn
+    AIDLC_TESTER_RUNTIME_ARN        = local.tester_runtime_arn
+    AIDLC_TRIAGE_RUNTIME_ARN        = var.triage_runtime_arn
+    POWERTOOLS_SERVICE_NAME         = "state_router"
+    POWERTOOLS_METRICS_NAMESPACE    = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL            = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT     = "false"
+  }
+
+  cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      runs_table = {
+        # Query reads STATE + TASK rows; UpdateItem advances state
+        # conditionally; PutItem (rare) for seeding task rows after
+        # spec_approved.
+        effect = "Allow"
+        actions = [
+          "dynamodb:Query",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+        ]
+        resources = [var.runs_table_arn]
+      }
+      beacon_queue = {
+        # ReceiveMessage + DeleteMessage on the beacon queue. SendMessage
+        # too — the router emits new beacons when seeding task rows or
+        # other state advances need a follow-up dispatch.
+        effect = "Allow"
+        actions = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:SendMessage",
+        ]
+        resources = [var.beacon_queue_arn]
+      }
+      put_events = {
+        # RUN.COMPLETED + any synthetic state-advancement events.
+        effect    = "Allow"
+        actions   = ["events:PutEvents"]
+        resources = [var.bus_arn]
+      }
+      invoke_repo_helper = {
+        # Open spec / task PRs, post comments.
+        effect    = "Allow"
+        actions   = ["lambda:InvokeFunction"]
+        resources = [var.repo_helper_function_arn]
+      }
+      write_synthetic_spec = {
+        # 1-task synthetic specs for non-spec_driven workflows
+        # (bug_fix / upgrade / docs) — three .md files per spec.
+        effect    = "Allow"
+        actions   = ["s3:PutObject"]
+        resources = ["${var.artifacts_bucket_arn}/specs/*"]
+      }
+    },
+    length(local.state_router_runtime_arns) > 0 ? {
+      invoke_agent_runtime = {
+        effect  = "Allow"
+        actions = ["bedrock-agentcore:InvokeAgentRuntime"]
+        resources = concat(
+          local.state_router_runtime_arns,
+          [for arn in local.state_router_runtime_arns : "${arn}/runtime-endpoint/*"],
+        )
+      }
+    } : {},
+  )
+
+  # SQS event source mapping. Each receive batch is at most one message
+  # so a slow run can't head-of-line block other beacons; long-polling
+  # via the queue's ``receive_wait_time_seconds`` keeps idle cost down.
+  event_source_mapping = {
+    state_router_queue = {
+      event_source_arn = var.beacon_queue_arn
+      batch_size       = 1
+      enabled          = true
+    }
+  }
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-state-router"
+    Component = "pipeline"
+  })
 }
 
 module "event_projector" {

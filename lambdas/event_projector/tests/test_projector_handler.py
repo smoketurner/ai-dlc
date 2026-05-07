@@ -123,6 +123,188 @@ def test_run_state_row_upserted_with_status() -> None:
     assert state["spec_slug"]["S"] == "add-healthz"
 
 
+def test_request_received_writes_current_state_received() -> None:
+    """REQUEST.RECEIVED on a fresh run sets ``current_state=received``."""
+    received = envelope(
+        type="REQUEST.RECEIVED",
+        payload={
+            "project_slug": "demo",
+            "intent": "Add /version endpoint",
+            "requestor": "alice",
+        },
+    )
+    handler(eb_event(received), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "received"
+    assert state["last_event_id"]["S"] == "01J0000000000000000000000A"
+    assert state["state_transitions"]["N"] == "1"
+
+
+def test_two_request_received_events_only_transition_once() -> None:
+    """A second REQUEST.RECEIVED with a different event_id no-ops the state transition.
+
+    The projector's per-event timeline row is uniquely keyed on event_id
+    (raises on actual duplicates); this test exercises the state-machine
+    side, where the second event arrives after current_state has been
+    set so the conditional update fails and we silently no-op.
+    """
+    first = envelope(
+        type="REQUEST.RECEIVED",
+        event_id="01J0000000000000000000000A",
+        payload={"project_slug": "demo", "intent": "x", "requestor": "alice"},
+    )
+    second = envelope(
+        type="REQUEST.RECEIVED",
+        event_id="01J0000000000000000000000B",  # different event_id
+        payload={"project_slug": "demo", "intent": "x", "requestor": "alice"},
+    )
+    handler(eb_event(first), ctx())
+    handler(eb_event(second), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "received"
+    assert state["state_transitions"]["N"] == "1"  # not 2
+
+
+def test_spec_ready_advances_state_when_run_in_architect_running() -> None:
+    """SPEC.READY arriving in architect_running advances to spec_drafted."""
+    # Seed the state row at architect_running.
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+        },
+    )
+    handler(eb_event(envelope(type="SPEC.READY")), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "spec_drafted"
+
+
+def test_spec_ready_no_op_when_not_in_architect_running() -> None:
+    """SPEC.READY arriving in the wrong state is silently ignored."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "received"},
+        },
+    )
+    handler(eb_event(envelope(type="SPEC.READY")), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "received"
+
+
+def test_run_failed_advances_any_non_terminal_to_failed() -> None:
+    """RUN.FAILED short-circuits any state into failed."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "tasks_in_progress"},
+        },
+    )
+    failed = envelope(
+        type="RUN.FAILED",
+        payload={
+            "project_slug": "demo",
+            "failed_state": "tasks_in_progress",
+            "error_class": "Timeout",
+            "error_message": "agent stalled",
+            "retryable": False,
+        },
+    )
+    handler(eb_event(failed), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "failed"
+
+
+def test_task_ready_advances_task_status_to_pr_open() -> None:
+    """TASK.READY moves a TASK row from implementer_running to pr_open."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+        },
+    )
+    task_ready = envelope(
+        type="TASK.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "diff_summary": "x",
+            "session_id": "run-1-T-001",
+        },
+    )
+    handler(eb_event(task_ready), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["status"]["S"] == "pr_open"
+
+
+def test_task_iteration_requested_appends_feedback_and_delivery_id() -> None:
+    """TASK.ITERATION_REQUESTED adds delivery_id + feedback alongside state advance."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "pr_open"},
+        },
+    )
+    iteration = envelope(
+        type="TASK.ITERATION_REQUESTED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "delivery_id": "webhook-1",
+            "feedback": {
+                "kind": "ci_failure",
+                "workflow_name": "ci",
+                "conclusion": "failure",
+                "head_sha": "abcdef0",
+                "html_url": "https://github.com/o/r/actions/runs/1",
+            },
+        },
+    )
+    handler(eb_event(iteration), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["status"]["S"] == "iterating"
+    assert task["delivery_ids"]["SS"] == ["webhook-1"]
+    assert len(task["pending_feedback"]["L"]) == 1
+    feedback_entry = task["pending_feedback"]["L"][0]["M"]
+    assert feedback_entry["kind"]["S"] == "ci_failure"
+    assert feedback_entry["workflow_name"]["S"] == "ci"
+
+
 def test_request_received_with_source_issue_url_indexes_state_row() -> None:
     received = envelope(
         type="REQUEST.RECEIVED",

@@ -14,13 +14,16 @@ from common.events import (
     IssueTriaged,
     RequestReceived,
     ReviewReady,
+    RunCancelRequested,
     RunCompleted,
     TaskIterationCommitted,
+    TaskIterationRequested,
     TaskIterationStarted,
     TaskMaxIterationsReached,
     TestReportReady,
 )
 from common.ids import new_correlation_id, new_event_id, new_run_id
+from common.runtime import CiFailureFeedback, ReviewChangesRequestedFeedback
 
 
 def _env(payload: RequestReceived) -> EventEnvelope[RequestReceived]:
@@ -394,3 +397,106 @@ def test_task_max_iterations_reached_round_trip() -> None:
     )
     parsed = EventEnvelope[TaskMaxIterationsReached].model_validate_json(env.model_dump_json())
     assert parsed.payload.iteration_count == 3
+
+
+def test_task_iteration_requested_carries_ci_failure_feedback() -> None:
+    payload = TaskIterationRequested(
+        project_slug="demo",
+        spec_slug="add-healthz",
+        task_id="T-001",
+        pr_url="https://github.com/x/y/pull/1",
+        delivery_id="webhook-12345",
+        feedback=CiFailureFeedback(
+            workflow_name="ci",
+            conclusion="failure",
+            head_sha="abcdef0",
+            html_url="https://github.com/x/y/actions/runs/1",
+        ),
+    )
+    env = EventEnvelope[TaskIterationRequested](
+        type="TASK.ITERATION_REQUESTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="webhook",
+        payload=payload,
+    )
+    parsed = EventEnvelope[TaskIterationRequested].model_validate_json(env.model_dump_json())
+    assert parsed.payload.feedback.kind == "ci_failure"
+    assert parsed.payload.delivery_id == "webhook-12345"
+
+
+def test_task_iteration_requested_carries_review_feedback() -> None:
+    payload = TaskIterationRequested(
+        project_slug="demo",
+        spec_slug="add-healthz",
+        task_id="T-001",
+        pr_url="https://github.com/x/y/pull/1",
+        delivery_id="webhook-67890",
+        feedback=ReviewChangesRequestedFeedback(
+            reviewer="alice",
+            body="please refactor the parser",
+            review_id=42,
+        ),
+    )
+    env = EventEnvelope[TaskIterationRequested](
+        type="TASK.ITERATION_REQUESTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="webhook",
+        payload=payload,
+    )
+    parsed = EventEnvelope[TaskIterationRequested].model_validate_json(env.model_dump_json())
+    assert parsed.payload.feedback.kind == "review_changes_requested"
+
+
+def test_task_iteration_requested_rejects_unknown_feedback_kind() -> None:
+    with pytest.raises(ValidationError):
+        TaskIterationRequested.model_validate(
+            {
+                "project_slug": "demo",
+                "spec_slug": "add-healthz",
+                "task_id": "T-001",
+                "pr_url": "https://github.com/x/y/pull/1",
+                "delivery_id": "webhook-1",
+                "feedback": {"kind": "unknown_kind"},
+            },
+        )
+
+
+def test_run_cancel_requested_round_trip() -> None:
+    payload = RunCancelRequested(
+        project_slug="demo",
+        requestor="alice",
+        source="comment_command",
+        reason="duplicate work",
+    )
+    env = EventEnvelope[RunCancelRequested](
+        type="RUN.CANCEL_REQUESTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="webhook",
+        payload=payload,
+    )
+    parsed = EventEnvelope[RunCancelRequested].model_validate_json(env.model_dump_json())
+    assert parsed.payload.source == "comment_command"
+    assert parsed.payload.reason == "duplicate work"
+
+
+def test_run_cancel_requested_optional_reason() -> None:
+    payload = RunCancelRequested(
+        project_slug="demo",
+        requestor="github",
+        source="issue_unassigned",
+    )
+    assert payload.reason is None
+
+
+def test_run_cancel_requested_rejects_unknown_source() -> None:
+    with pytest.raises(ValidationError):
+        RunCancelRequested.model_validate(
+            {
+                "project_slug": "demo",
+                "requestor": "alice",
+                "source": "telepathy",
+            },
+        )

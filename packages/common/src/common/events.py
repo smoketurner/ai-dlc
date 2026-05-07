@@ -32,6 +32,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.ids import CorrelationId, EventId, RunId, new_event_id
+from common.runtime import FeedbackItem
 from common.validators import NoneSafeList
 
 EventType = Literal[
@@ -47,11 +48,13 @@ EventType = Literal[
     "TASK.REJECTED",
     "TASK.ITERATION_STARTED",
     "TASK.ITERATION_COMMITTED",
+    "TASK.ITERATION_REQUESTED",
     "TASK.MAX_ITERATIONS_REACHED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
     "RUN.COMPLETED",
     "RUN.FAILED",
+    "RUN.CANCEL_REQUESTED",
     "EVAL.DRIFT_DETECTED",
 ]
 
@@ -315,6 +318,47 @@ class TaskMaxIterationsReached(Payload):
     iteration_count: Annotated[int, Field(ge=1, le=16)]
 
 
+class TaskIterationRequested(Payload):
+    """A webhook reported a PR signal that should trigger the implementer.
+
+    Emitted by the dashboard webhook handler on CI failure, review
+    ``changes_requested``, or a bot @-mention in a review or PR comment.
+    Carries enough context (one :class:`FeedbackItem`) for the state
+    router to dispatch the implementer with concrete feedback when it
+    transitions the task to ``iterating``.
+
+    The event_projector appends ``delivery_id`` to the task row's
+    ``delivery_ids`` set for idempotency — duplicate webhook deliveries
+    do not stack triggers.
+    """
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
+    feedback: FeedbackItem
+
+
+class RunCancelRequested(Payload):
+    """A user or system requested cancellation of an in-flight run.
+
+    Emitted by the dashboard webhook on ``issues.unassigned`` (the bot
+    was unassigned from the source issue) or on an ``/aidlc cancel``
+    PR/issue comment, and may be emitted by other surfaces (dashboard
+    button) as the cancellation UX expands.
+    """
+
+    project_slug: str
+    requestor: Annotated[str, Field(min_length=1, max_length=128)]
+    source: Literal[
+        "issue_unassigned",
+        "comment_command",
+        "dashboard",
+    ]
+    reason: Annotated[str, Field(max_length=512)] | None = None
+
+
 class ReviewReady(UsagePayload):
     """Reviewer agent code-reviewed a task PR — advisory.
 
@@ -393,11 +437,13 @@ type AnyPayload = (
     | TaskRejected
     | TaskIterationStarted
     | TaskIterationCommitted
+    | TaskIterationRequested
     | TaskMaxIterationsReached
     | ReviewReady
     | TestReportReady
     | RunCompleted
     | RunFailed
+    | RunCancelRequested
 )
 
 
