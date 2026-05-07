@@ -10,8 +10,11 @@ from typing import Any, cast
 import boto3
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from entry_adapter.handler import ddb, events, handler, persistence, sqs
+from entry_adapter.handler import handler, persistence
 from moto import mock_aws
+
+from common.event_emit import events_client as events
+from common.runs import ddb, sqs
 
 BUS = "ai-dlc-test-bus"
 TABLE = "ai-dlc-test-idempotency"

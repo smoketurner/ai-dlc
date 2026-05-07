@@ -45,6 +45,7 @@ from state_router.actions import (
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
+    SeedTasks,
     WriteSyntheticSpec,
 )
 from state_router.dispatch import decide
@@ -256,6 +257,7 @@ EXECUTORS: dict[type[Action], Any] = {
     EmitEvent: execute_emit_event,
     InvokeRepoHelper: lambda _run, a: execute_invoke_repo_helper(a),
     WriteSyntheticSpec: lambda _run, a: execute_write_synthetic_spec(a),
+    SeedTasks: lambda _run, a: execute_seed_tasks(a),
     AdvanceState: lambda _run, a: execute_advance_state(a),
 }
 
@@ -307,10 +309,16 @@ def execute_invoke_repo_helper(action: InvokeRepoHelper) -> None:
 
 
 def build_extra_attrs(action: InvokeRepoHelper, body: dict[str, Any]) -> dict[str, str]:
-    """Extract the PR URL from a repo_helper open-PR response, if requested."""
+    """Extract the PR URL from a repo_helper open-PR response, if requested.
+
+    repo_helper wraps every successful response as
+    ``{"ok": true, "op": ..., "result": {...}}`` — so the PR URL lives
+    under ``result.pr_url``, not at the top level.
+    """
     if not action.record_pr_url_attr:
         return {}
-    pr_url = body.get("pr_url")
+    result = body.get("result") or {}
+    pr_url = result.get("pr_url") if isinstance(result, dict) else None
     if not isinstance(pr_url, str) or not pr_url:
         return {}
     return {action.record_pr_url_attr: pr_url}
@@ -353,6 +361,35 @@ def execute_advance_state(action: AdvanceState) -> None:
         advance_from=action.advance_from,
         advance_to=action.advance_to,
     )
+
+
+def execute_seed_tasks(action: SeedTasks) -> None:
+    """Write one TASK row per id in ``status=pending``.
+
+    Conditional on ``attribute_not_exists(pk)`` so a redelivered beacon
+    (or a router that lost the dispatch race) doesn't clobber a row that
+    already advanced beyond ``pending``. ``ConditionalCheckFailedException``
+    is treated as success — the row exists, that's what we wanted.
+    """
+    ts = now_iso()
+    for task_id in action.task_ids:
+        try:
+            ddb().put_item(
+                TableName=runs_table(),
+                Item={
+                    "pk": {"S": f"RUN#{action.run_id}"},
+                    "sk": {"S": f"TASK#{task_id}"},
+                    "status": {"S": "pending"},
+                    "iteration_count": {"N": "0"},
+                    "created_at": {"S": ts},
+                    "updated_at": {"S": ts},
+                },
+                ConditionExpression="attribute_not_exists(pk)",
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                continue
+            raise
 
 
 # ---------------------------------------------------------------------------

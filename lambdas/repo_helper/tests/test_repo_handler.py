@@ -953,3 +953,230 @@ def test_list_check_runs_truncates_long_summary(
     )
     assert out["ok"] is True
     assert len(out["result"]["check_runs"][0]["output"]["summary"]) == 4096
+
+
+SPEC_DOCS_S3 = {
+    "specs/add-healthz/requirements.md": b"# Requirements\n",
+    "specs/add-healthz/design.md": b"# Design\n",
+    "specs/add-healthz/tasks.md": b"# Tasks\n",
+}
+
+
+class _FakeS3Body:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    def read(self) -> bytes:
+        return self.content
+
+
+class _FakeS3:
+    def __init__(self, docs: dict[str, bytes]) -> None:
+        self.docs = docs
+        self.requested: list[tuple[str, str]] = []
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+        self.requested.append((Bucket, Key))
+        return {"Body": _FakeS3Body(self.docs[Key])}
+
+
+def _miss_404(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(404, json={"message": "Not Found"})
+
+
+def _ok_main_ref(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"object": {"sha": "mainsha"}})
+
+
+def _ok_base_commit(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"tree": {"sha": "basetree"}})
+
+
+def _ok_blob(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(201, json={"sha": "blob"})
+
+
+def _ok_new_tree(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(201, json={"sha": "newtree"})
+
+
+def _ok_new_commit(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(201, json={"sha": "newcommit"})
+
+
+def _ok_patched_ref(_: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={"object": {"sha": "newcommit"}})
+
+
+def _spec_pr_routes(
+    *, branch: str, base: str, slug: str, run_id: str
+) -> dict[
+    tuple[str, str],
+    Callable[[httpx.Request], httpx.Response],
+]:
+    """Build the GitHub-API responder map ``open_spec_pr`` should walk.
+
+    Lookup misses the branch first → falls back to ``base`` ref → tree /
+    commit / ref dance → PR open. ``create_branch_check`` and
+    ``open_pr_check`` assert their inbound shapes inline.
+    """
+    new_branch_ref = f"/repos/o/r/git/refs/heads/{branch}"
+    spec_files = {f"docs/specs/{slug}/{n}.md" for n in ("requirements", "design", "tasks")}
+
+    def create_branch_check(req: httpx.Request) -> httpx.Response:
+        assert json.loads(req.content) == {"ref": f"refs/heads/{branch}", "sha": "mainsha"}
+        return httpx.Response(201, json={"object": {"sha": "mainsha"}})
+
+    def tree_check(req: httpx.Request) -> httpx.Response:
+        assert {e["path"] for e in json.loads(req.content)["tree"]} == spec_files
+        return _ok_new_tree(req)
+
+    def commit_check(req: httpx.Request) -> httpx.Response:
+        assert json.loads(req.content)["message"] == f"spec: {slug}"
+        return _ok_new_commit(req)
+
+    def open_pr_check(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content)
+        assert body["head"] == branch
+        assert body["base"] == base
+        assert run_id in body["body"]
+        return httpx.Response(
+            201,
+            json={
+                "number": 5,
+                "html_url": "https://github.com/o/r/pull/5",
+                "state": "open",
+            },
+        )
+
+    return {
+        ("GET", new_branch_ref): _miss_404,
+        ("GET", f"/repos/o/r/git/refs/heads/{base}"): _ok_main_ref,
+        ("POST", "/repos/o/r/git/refs"): create_branch_check,
+        ("GET", "/repos/o/r/git/commits/mainsha"): _ok_base_commit,
+        ("POST", "/repos/o/r/git/blobs"): _ok_blob,
+        ("POST", "/repos/o/r/git/trees"): tree_check,
+        ("POST", "/repos/o/r/git/commits"): commit_check,
+        ("PATCH", new_branch_ref): _ok_patched_ref,
+        ("POST", "/repos/o/r/pulls"): open_pr_check,
+    }
+
+
+def _route_with(
+    routes: dict[tuple[str, str], Callable[[httpx.Request], httpx.Response]],
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Adapter that routes httpx requests via ``(method, path) → handler``."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        handler = routes.get((request.method, request.url.path))
+        if handler is None:
+            msg = f"unexpected request: {request.method} {request.url.path}"
+            raise AssertionError(msg)
+        return handler(request)
+
+    return respond
+
+
+def test_open_spec_pr_reads_s3_branches_commits_and_opens(
+    patch_client: Callable[[httpx.MockTransport], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The compound op walks: read S3 → branch → blobs → tree → commit → ref → PR."""
+    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
+    fake_s3 = _FakeS3(SPEC_DOCS_S3)
+    monkeypatch.setattr(h, "s3_client", lambda: fake_s3)
+
+    routes = _spec_pr_routes(
+        branch="aidlc/spec/add-healthz",
+        base="main",
+        slug="add-healthz",
+        run_id="run-xyz",
+    )
+    patch_client(httpx.MockTransport(_route_with(routes)))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_spec_pr",
+                "repo": "o/r",
+                "spec_slug": "add-healthz",
+                "spec_s3_prefix": "specs/add-healthz/",
+                "run_id": "run-xyz",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["op"] == "open_spec_pr"
+    assert out["result"]["pr_url"] == "https://github.com/o/r/pull/5"
+    assert out["result"]["pr_number"] == 5
+    assert out["result"]["branch"] == "aidlc/spec/add-healthz"
+    assert {key for _, key in fake_s3.requested} == set(SPEC_DOCS_S3)
+
+
+def _existing_branch_routes() -> dict[
+    tuple[str, str],
+    Callable[[httpx.Request], httpx.Response],
+]:
+    """Routes for the ``branch already exists`` happy path."""
+    branch_ref = "/repos/o/r/git/refs/heads/aidlc/spec/x"
+    return {
+        ("GET", branch_ref): lambda _: httpx.Response(
+            200,
+            json={"object": {"sha": "branchhead"}},
+        ),
+        ("GET", "/repos/o/r/git/commits/branchhead"): lambda _: httpx.Response(
+            200,
+            json={"tree": {"sha": "tree"}},
+        ),
+        ("POST", "/repos/o/r/git/blobs"): lambda _: httpx.Response(201, json={"sha": "blob"}),
+        ("POST", "/repos/o/r/git/trees"): lambda _: httpx.Response(201, json={"sha": "newtree"}),
+        ("POST", "/repos/o/r/git/commits"): lambda _: httpx.Response(
+            201,
+            json={"sha": "newcommit"},
+        ),
+        ("PATCH", branch_ref): lambda _: httpx.Response(
+            200,
+            json={"object": {"sha": "newcommit"}},
+        ),
+        ("POST", "/repos/o/r/pulls"): lambda _: httpx.Response(
+            201,
+            json={
+                "number": 7,
+                "html_url": "https://github.com/o/r/pull/7",
+                "state": "open",
+            },
+        ),
+    }
+
+
+def test_open_spec_pr_reuses_existing_branch(
+    patch_client: Callable[[httpx.MockTransport], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the branch ref already exists, ``open_spec_pr`` reuses it."""
+    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
+
+    class FakeBody:
+        def read(self) -> bytes:
+            return b"# doc\n"
+
+    class FakeS3:
+        def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+            return {"Body": FakeBody()}
+
+    monkeypatch.setattr(h, "s3_client", FakeS3)
+    patch_client(httpx.MockTransport(_route_with(_existing_branch_routes())))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_spec_pr",
+                "repo": "o/r",
+                "spec_slug": "x",
+                "spec_s3_prefix": "specs/x/",
+                "run_id": "rid",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["pr_number"] == 7

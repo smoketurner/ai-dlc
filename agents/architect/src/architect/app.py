@@ -24,6 +24,9 @@ from architect.agent import build_agent, generate_spec, model_id
 from architect.repo_grounding import clone_target_repo
 from architect.spec import SpecBundle, render_design, render_requirements, render_tasks
 from architect.tools import write_spec_doc
+from common.event_emit import publish
+from common.events import EventEnvelope, SpecReady
+from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ArchitectInput, ArchitectResult, usage_from_strands
 
 logger = structlog.get_logger()
@@ -69,7 +72,35 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         spec_slug=spec.spec_slug,
         task_count=result.task_count,
     )
+    publish_spec_ready(payload, result)
     return result.model_dump()
+
+
+def publish_spec_ready(payload: ArchitectInput, result: ArchitectResult) -> None:
+    """Emit SPEC.READY so the projector advances the run to ``spec_drafted``."""
+    envelope = EventEnvelope[SpecReady](
+        event_id=new_event_id(),
+        type="SPEC.READY",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="architect",
+        payload=SpecReady(
+            project_slug=payload.project_slug,
+            spec_slug=result.spec_slug,
+            spec_s3_prefix=result.spec_s3_prefix,
+            requirements_summary=result.requirements_summary,
+            design_summary=result.design_summary,
+            task_count=result.task_count,
+            task_ids=list(result.task_ids),
+            proposed_adrs=list(result.proposed_adrs),
+            session_id=result.session_id,
+            token_in=result.token_in,
+            token_out=result.token_out,
+            cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+        ),
+    )
+    publish(envelope)
 
 
 def upload_spec(spec: SpecBundle) -> None:

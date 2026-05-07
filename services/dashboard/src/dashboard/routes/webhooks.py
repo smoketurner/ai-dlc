@@ -49,7 +49,6 @@ from common import github_app as common_github
 from common.event_emit import publish
 from common.events import (
     EventEnvelope,
-    RequestReceived,
     RunCancelRequested,
     SpecApproved,
     SpecRejected,
@@ -61,10 +60,9 @@ from common.github_mentions import has_bot_mention
 from common.ids import (
     CorrelationId,
     RunId,
-    new_correlation_id,
     new_event_id,
-    new_run_id,
 )
+from common.runs import start_run
 from common.runtime import (
     CiFailureFeedback,
     FeedbackItem,
@@ -685,7 +683,7 @@ def emit_request_received(
     *,
     source_issue_url: str,
 ) -> dict[str, Any]:
-    """Mint a fresh run + emit REQUEST.RECEIVED for an issue-driven trigger.
+    """Mint a fresh run + start it for an issue-driven trigger.
 
     The state-router's ``received`` handler invokes the triage agent
     when ``source_issue_url`` is set; for programmatic runs (POST
@@ -695,23 +693,13 @@ def emit_request_received(
     repo = (payload.get("repository") or {}).get("full_name", "")
     requestor = (issue.get("user") or {}).get("login", "github")
     intent = issue.get("title") or "(no title)"
-    run_id = new_run_id()
-    correlation_id = new_correlation_id()
-    received = RequestReceived(
+    run_id, _ = start_run(
         project_slug=repo.split("/", 1)[-1] or "unknown",
         intent=intent,
         requestor=requestor,
         target_repo=repo or None,
         source_issue_url=source_issue_url or None,
-    )
-    emit(
-        envelope_for(
-            event_type="REQUEST.RECEIVED",
-            run_id=str(run_id),
-            correlation_id=str(correlation_id),
-            actor="webhook",
-            payload=received,
-        )
+        actor_id="webhook",
     )
     return {"ok": True, "triage": source_issue_url, "run_id": str(run_id)}
 

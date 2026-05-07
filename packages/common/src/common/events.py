@@ -182,6 +182,11 @@ class SpecReady(UsagePayload):
     The bundle is the three-document set (requirements, design, tasks) under
     ``s3://artifacts/specs/{spec_slug}/`` plus any new ADRs proposed in the
     design that are committed under ``docs/ADRs/`` when the spec is approved.
+
+    ``task_ids`` carries the per-task identifiers the Architect minted; the
+    event_projector persists them on the run STATE row so the state-router's
+    ``spec_approved`` handler can seed one TASK row per id without re-reading
+    the spec from S3.
     """
 
     project_slug: str
@@ -190,6 +195,7 @@ class SpecReady(UsagePayload):
     requirements_summary: Annotated[str, Field(max_length=1024)]
     design_summary: Annotated[str, Field(max_length=1024)]
     task_count: Annotated[int, Field(ge=1)]
+    task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
     proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
     session_id: str
 

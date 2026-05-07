@@ -18,6 +18,9 @@ from typing import Any
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from common.event_emit import publish
+from common.events import CritiqueReady, EventEnvelope
+from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import CriticInput, CriticResult, usage_from_strands
 from critic.agent import build_agent, critique_spec, model_id
 from critic.critique import Critique, render_critique, severity_counts
@@ -66,7 +69,35 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         issue_count=result.issue_count,
         high=result.high_severity_count,
     )
+    publish_critique_ready(payload, result)
     return result.model_dump()
+
+
+def publish_critique_ready(payload: CriticInput, result: CriticResult) -> None:
+    """Emit CRITIQUE.READY so the projector advances the run to ``spec_critiqued``."""
+    envelope = EventEnvelope[CritiqueReady](
+        event_id=new_event_id(),
+        type="CRITIQUE.READY",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="critic",
+        payload=CritiqueReady(
+            project_slug=payload.project_slug,
+            spec_slug=result.spec_slug,
+            critique_s3_key=result.critique_s3_key,
+            issue_count=result.issue_count,
+            high_severity_count=result.high_severity_count,
+            medium_severity_count=result.medium_severity_count,
+            low_severity_count=result.low_severity_count,
+            summary=result.summary,
+            session_id=result.session_id,
+            token_in=result.token_in,
+            token_out=result.token_out,
+            cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+        ),
+    )
+    publish(envelope)
 
 
 def upload_critique(critique: Critique, *, run_id: str) -> None:

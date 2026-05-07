@@ -116,6 +116,22 @@ class WriteSyntheticSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class SeedTasks:
+    """Write one ``pk=RUN#{run_id}, sk=TASK#{task_id}, status=pending`` row per id.
+
+    Emitted from ``handle_spec_approved`` once the architect has produced
+    a spec and a human has merged the spec PR. The router walks the
+    ``run.task_ids`` set (populated by the projector from the SPEC.READY
+    event) and writes each TASK row with ``status=pending``, conditional
+    on ``attribute_not_exists(pk)`` so a redelivered beacon doesn't
+    clobber a row that already exists in a later state.
+    """
+
+    run_id: str
+    task_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AdvanceState:
     """Conditionally advance state with no other side effect.
 
@@ -149,6 +165,7 @@ type Action = (
     | EmitEvent
     | InvokeRepoHelper
     | WriteSyntheticSpec
+    | SeedTasks
     | AdvanceState
     | CompoundAction
 )

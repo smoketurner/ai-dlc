@@ -20,6 +20,7 @@ from state_router.actions import (
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
+    SeedTasks,
     WriteSyntheticSpec,
 )
 from state_router.dispatch import RUN_DISPATCH, TASK_DISPATCH, decide, decide_task
@@ -34,6 +35,7 @@ def make_run(
     spec_slug: str | None = None,
     spec_s3_prefix: str | None = None,
     target_repo: str | None = "owner/repo",
+    task_ids: tuple[str, ...] = (),
     tasks: tuple[Task, ...] = (),
 ) -> Run:
     """Build a Run with sane defaults for tests."""
@@ -50,6 +52,7 @@ def make_run(
         source_issue_url=source_issue_url,
         spec_slug=spec_slug,
         spec_s3_prefix=spec_s3_prefix,
+        task_ids=task_ids,
         tasks=tasks,
     )
 
@@ -164,11 +167,25 @@ class TestRunSpecFlow:
         action = decide(run)
         assert isinstance(action, Noop)
 
-    def test_spec_approved_advances_to_tasks(self) -> None:
-        run = make_run(state=RunState.spec_approved)
+    def test_spec_approved_seeds_tasks_and_advances(self) -> None:
+        run = make_run(
+            state=RunState.spec_approved,
+            spec_slug="demo",
+            task_ids=("T-001", "T-002"),
+        )
         action = decide(run)
-        assert isinstance(action, AdvanceState)
-        assert action.advance_to == RunState.tasks_in_progress.value
+        assert isinstance(action, CompoundAction)
+        seeds = [a for a in action.actions if isinstance(a, SeedTasks)]
+        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
+        assert len(seeds) == 1
+        assert seeds[0].task_ids == ("T-001", "T-002")
+        assert len(advances) == 1
+        assert advances[0].advance_to == RunState.tasks_in_progress.value
+
+    def test_spec_approved_with_no_task_ids_is_noop(self) -> None:
+        run = make_run(state=RunState.spec_approved, spec_slug="demo")
+        action = decide(run)
+        assert isinstance(action, Noop)
 
 
 class TestRunTasksInProgress:

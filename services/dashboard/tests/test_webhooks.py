@@ -18,7 +18,8 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import HTTPException
 
-from common.events import EventEnvelope
+from common.events import EventEnvelope, RequestReceived
+from common.ids import CorrelationId, RunId, new_correlation_id, new_event_id, new_run_id
 from dashboard.routes.webhooks import (
     receive_github_webhook,
     verify_signature,
@@ -56,13 +57,48 @@ def stub_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture
 def captured_events(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]:
-    """Capture every envelope passed to the EventBridge publish helper."""
+    """Capture every envelope publish surface uses (direct + start_run)."""
     captured: list[EventEnvelope[Any]] = []
 
     def capture(envelope: EventEnvelope[Any]) -> None:
         captured.append(envelope)
 
     monkeypatch.setattr("dashboard.routes.webhooks.publish", capture)
+
+    def fake_start_run(  # noqa: PLR0913
+        *,
+        project_slug: str,
+        intent: str,
+        requestor: str,
+        requestor_sub: str | None = None,
+        target_repo: str | None = None,
+        source_issue_url: str | None = None,
+        actor_id: str | None = None,
+        run_id: RunId | None = None,
+        correlation_id: CorrelationId | None = None,
+    ) -> tuple[RunId, CorrelationId]:
+        rid = run_id or new_run_id()
+        cid = correlation_id or new_correlation_id()
+        captured.append(
+            EventEnvelope[RequestReceived](
+                event_id=new_event_id(),
+                type="REQUEST.RECEIVED",
+                run_id=rid,
+                correlation_id=cid,
+                actor_id=actor_id or requestor,
+                payload=RequestReceived(
+                    project_slug=project_slug,
+                    intent=intent,
+                    requestor=requestor,
+                    requestor_sub=requestor_sub,
+                    target_repo=target_repo,
+                    source_issue_url=source_issue_url,
+                ),
+            ),
+        )
+        return rid, cid
+
+    monkeypatch.setattr("dashboard.routes.webhooks.start_run", fake_start_run)
     return captured
 
 

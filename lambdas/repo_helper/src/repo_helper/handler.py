@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from collections.abc import Callable
-from typing import Any, Literal
+from functools import cache
+from typing import TYPE_CHECKING, Any, Literal
 
+import boto3
 import httpx
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
@@ -36,6 +39,9 @@ from common.github_app import (
     USER_AGENT,
     token_for_call,
 )
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="repo_helper")
 tracer = Tracer(service="repo_helper")
@@ -200,6 +206,25 @@ class ReplyPrReviewCommentInput(BaseOp):
     body: str = Field(min_length=1, max_length=65_536)
 
 
+class OpenSpecPrInput(BaseOp):
+    """Open the spec PR for a run.
+
+    Compound op: reads the three spec Markdown docs from S3
+    (``specs/{spec_slug}/{requirements,design,tasks}.md``), creates a
+    branch off ``base``, commits the docs into the repo under
+    ``docs/specs/{spec_slug}/``, and opens a PR. Returns the PR's URL +
+    number so the state-router can persist them on the run STATE row
+    (``spec_pr_url``) for the webhook to match against later.
+    """
+
+    op: Literal["open_spec_pr"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    spec_slug: str = Field(min_length=1, max_length=128)
+    spec_s3_prefix: str = Field(min_length=1, max_length=512)
+    run_id: str = Field(min_length=1, max_length=64)
+    base: str = Field(default="main", min_length=1, max_length=128)
+
+
 class ListCheckRunsInput(BaseOp):
     """List GitHub Checks API check runs for a commit / branch.
 
@@ -230,6 +255,7 @@ class ListCheckRunsInput(BaseOp):
 
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
+    "open_spec_pr": OpenSpecPrInput,
     "comment_pr": CommentPrInput,
     "create_branch": CreateBranchInput,
     "commit_files": CommitFilesInput,
@@ -244,6 +270,20 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "reply_pr_review_comment": ReplyPrReviewCommentInput,
     "list_check_runs": ListCheckRunsInput,
 }
+
+
+@cache
+def s3_client() -> S3Client:
+    """Process-cached boto3 S3 client (used by ``open_spec_pr``)."""
+    return boto3.client("s3")
+
+
+def artifacts_bucket() -> str:
+    """Bucket holding spec bundles + run artifacts."""
+    return os.environ["AIDLC_ARTIFACTS_BUCKET"]
+
+
+SPEC_DOCS = ("requirements", "design", "tasks")
 
 
 @logger.inject_lambda_context(log_event=False)
@@ -310,6 +350,94 @@ def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
         "pr_url": body["html_url"],
         "state": body["state"],
     }
+
+
+def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
+    """Read the three spec docs from S3, branch, commit them, open the PR."""
+    docs = read_spec_docs(req.spec_s3_prefix)
+    branch = f"aidlc/spec/{req.spec_slug}"
+    files = [
+        CommitFile(
+            path=f"docs/specs/{req.spec_slug}/{name}.md",
+            content=docs[name],
+        )
+        for name in SPEC_DOCS
+    ]
+    base_commit_sha = create_or_reuse_branch(req.repo, branch, req.base, client)
+    base_tree_sha = commit_tree_sha(req.repo, base_commit_sha, client)
+    tree_entries = [build_blob_entry(req.repo, f, client) for f in files]
+    new_tree_sha = create_tree(req.repo, base_tree_sha, tree_entries, client)
+    new_commit_sha = create_commit(
+        req.repo,
+        f"spec: {req.spec_slug}",
+        new_tree_sha,
+        base_commit_sha,
+        client,
+    )
+    update_ref(req.repo, branch, new_commit_sha, client)
+    title = f"spec: {req.spec_slug}"
+    body = render_spec_pr_body(req.spec_slug, req.run_id)
+    response = client.post(
+        f"/repos/{req.repo}/pulls",
+        json={"title": title, "body": body, "head": branch, "base": req.base},
+    )
+    response.raise_for_status()
+    pr = response.json()
+    return {
+        "pr_number": pr["number"],
+        "pr_url": pr["html_url"],
+        "state": pr["state"],
+        "branch": branch,
+        "commit_sha": new_commit_sha,
+    }
+
+
+def read_spec_docs(spec_s3_prefix: str) -> dict[str, str]:
+    """Read the three Markdown docs from ``s3://{bucket}/{prefix}{name}.md``."""
+    bucket = artifacts_bucket()
+    prefix = spec_s3_prefix if spec_s3_prefix.endswith("/") else f"{spec_s3_prefix}/"
+    docs: dict[str, str] = {}
+    for name in SPEC_DOCS:
+        obj = s3_client().get_object(Bucket=bucket, Key=f"{prefix}{name}.md")
+        docs[name] = obj["Body"].read().decode("utf-8")
+    return docs
+
+
+def create_or_reuse_branch(
+    repo: str,
+    branch: str,
+    base: str,
+    client: httpx.Client,
+) -> str:
+    """Create ``branch`` off ``base`` (or reuse it if it already exists).
+
+    Returns the branch's tip commit SHA — caller chains it into the
+    tree/commit/ref dance to land the spec docs on top.
+    """
+    existing = client.get(f"/repos/{repo}/git/refs/heads/{branch}")
+    if existing.status_code == httpx.codes.OK:
+        return str(existing.json()["object"]["sha"])
+    base_ref = client.get(f"/repos/{repo}/git/refs/heads/{base}")
+    base_ref.raise_for_status()
+    base_sha = str(base_ref.json()["object"]["sha"])
+    created = client.post(
+        f"/repos/{repo}/git/refs",
+        json={"ref": f"refs/heads/{branch}", "sha": base_sha},
+    )
+    created.raise_for_status()
+    return base_sha
+
+
+def render_spec_pr_body(spec_slug: str, run_id: str) -> str:
+    """PR body that links the spec docs and the dashboard run page."""
+    return (
+        f"ai-dlc spec for `{spec_slug}` (run `{run_id}`).\n\n"
+        f"This PR contains three docs under `docs/specs/{spec_slug}/`:\n\n"
+        f"- `requirements.md`\n"
+        f"- `design.md`\n"
+        f"- `tasks.md`\n\n"
+        f"Merging approves the spec; the platform will then dispatch each task as a separate PR.\n"
+    )
 
 
 def comment_pr(req: CommentPrInput, client: httpx.Client) -> dict[str, Any]:
@@ -685,6 +813,7 @@ def error(kind: str, detail: object) -> dict[str, Any]:
 OpHandler = Callable[[Any, httpx.Client], dict[str, Any]]
 OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     OpenPrInput: ("open_pr", open_pr),
+    OpenSpecPrInput: ("open_spec_pr", open_spec_pr),
     CommentPrInput: ("comment_pr", comment_pr),
     CreateBranchInput: ("create_branch", create_branch),
     CommitFilesInput: ("commit_files", commit_files),

@@ -185,7 +185,7 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
     set_parts = ["#s = :status", "updated_at = :ts"]
     add_parts: list[str] = []
     names = {"#s": "status"}
-    values = {
+    values: dict[str, dict[str, Any]] = {
         ":status": {"S": event_type or "UNKNOWN"},
         ":ts": {"S": envelope.get("timestamp", "")},
     }
@@ -210,9 +210,8 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
         values[":runref"] = {"S": f"RUN#{run_id}"}
         values[":issue_url"] = {"S": payload["source_issue_url"]}
     accumulate_usage(payload, add_parts=add_parts, values=values)
-    if event_type == "SPEC.READY" and isinstance(payload.get("task_count"), int):
-        set_parts.append("tasks_total = :tt")
-        values[":tt"] = {"N": str(payload["task_count"])}
+    if event_type == "SPEC.READY":
+        accumulate_spec_ready(payload, set_parts=set_parts, values=values)
     if event_type == "RUN.COMPLETED":
         set_parts.append("tasks_completed = :tc")
         values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
@@ -228,11 +227,33 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
     )
 
 
+def accumulate_spec_ready(
+    payload: dict[str, Any],
+    *,
+    set_parts: list[str],
+    values: dict[str, dict[str, Any]],
+) -> None:
+    """Persist ``tasks_total`` and ``task_ids`` from a SPEC.READY payload.
+
+    The state-router's ``handle_spec_approved`` reads ``task_ids`` off the
+    STATE row to seed pending TASK rows; without this projection the
+    seeder has no list to walk and the run hangs in ``tasks_in_progress``
+    with zero tasks.
+    """
+    if isinstance(payload.get("task_count"), int):
+        set_parts.append("tasks_total = :tt")
+        values[":tt"] = {"N": str(payload["task_count"])}
+    task_ids = payload.get("task_ids")
+    if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
+        set_parts.append("task_ids = :tids")
+        values[":tids"] = {"SS": list(task_ids)}
+
+
 def accumulate_usage(
     payload: dict[str, Any],
     *,
     add_parts: list[str],
-    values: dict[str, dict[str, str]],
+    values: dict[str, dict[str, Any]],
 ) -> None:
     """Append ADD clauses for any per-event usage fields the payload carries.
 

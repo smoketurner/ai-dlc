@@ -25,6 +25,9 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from common.event_emit import publish
+from common.events import EventEnvelope, IssueTriaged
+from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TriageInput, TriageResult
 from triage.agent import triage_issue
 
@@ -97,7 +100,32 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         missing_information=result.missing_information_count,
         confidence=result.confidence,
     )
+    publish_issue_triaged(payload, result)
     return result.model_dump()
+
+
+def publish_issue_triaged(payload: TriageInput, result: TriageResult) -> None:
+    """Emit ISSUE.TRIAGED so the projector advances the run to ``triage_decided``."""
+    envelope = EventEnvelope[IssueTriaged](
+        event_id=new_event_id(),
+        type="ISSUE.TRIAGED",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="triage",
+        payload=IssueTriaged(
+            project_slug=payload.project_slug,
+            target_repo=payload.target_repo,
+            issue_url=payload.issue_url,
+            issue_number=payload.issue_number,
+            action=result.action,
+            workflow_kind=result.workflow_kind,
+            decision_s3_key=result.decision_s3_key,
+            rationale=result.rationale,
+            confidence=result.confidence,
+            session_id=result.session_id,
+        ),
+    )
+    publish(envelope)
 
 
 if __name__ == "__main__":

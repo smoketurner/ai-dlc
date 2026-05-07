@@ -35,6 +35,7 @@ from state_router.actions import (
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
+    SeedTasks,
     WriteSyntheticSpec,
 )
 
@@ -219,14 +220,25 @@ def handle_spec_critiqued(run: Run) -> Action:
 def handle_spec_approved(run: Run) -> Action:
     """Spec PR merged — seed task rows and advance to ``tasks_in_progress``.
 
-    The actual task-row seeding happens in :mod:`.handler` because it
-    requires multiple DDB writes (one per task) plus a STATE advance.
+    Without seeded TASK rows, ``tasks_in_progress`` is a permanent Noop
+    (``handle_tasks_in_progress`` walks ``run.tasks`` and there's nothing
+    to walk). The projector populated ``run.task_ids`` off the SPEC.READY
+    event; if it's empty here, something earlier dropped the field —
+    Noop and let an operator investigate rather than silently advancing
+    to a dead-end state.
     """
-    return AdvanceState(
-        target_pk=f"RUN#{run.run_id}",
-        target_sk="STATE",
-        advance_from=RunState.spec_approved.value,
-        advance_to=RunState.tasks_in_progress.value,
+    if not run.task_ids:
+        return Noop("spec_approved with no task_ids — projector hasn't seeded them")
+    return CompoundAction(
+        actions=(
+            SeedTasks(run_id=run.run_id, task_ids=run.task_ids),
+            AdvanceState(
+                target_pk=f"RUN#{run.run_id}",
+                target_sk="STATE",
+                advance_from=RunState.spec_approved.value,
+                advance_to=RunState.tasks_in_progress.value,
+            ),
+        ),
     )
 
 
