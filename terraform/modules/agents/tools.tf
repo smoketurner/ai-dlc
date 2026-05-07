@@ -54,7 +54,7 @@ module "tool_lambda" {
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
-  attach_policy_statements = each.key == "artifact_tool" || (each.key == "repo_helper" && var.github_app_secret_name != null)
+  attach_policy_statements = each.key == "artifact_tool" || each.key == "repo_helper"
   policy_statements = each.key == "artifact_tool" ? {
     s3_artifacts = {
       effect = "Allow"
@@ -71,30 +71,44 @@ module "tool_lambda" {
         "${var.memory_md_bucket_arn}/*",
       ]
     }
-    } : (each.key == "repo_helper" && var.github_app_secret_name != null ? {
-      read_app_secret = {
-        effect    = "Allow"
-        actions   = ["secretsmanager:GetSecretValue"]
-        resources = [data.aws_secretsmanager_secret.github_app[0].arn]
-      }
-      # AgentCore Identity uses Forward-Access Session to read its own
-      # internal credential-vault secret on behalf of the caller, so the
-      # repo_helper role must hold GetSecretValue on the service-managed
-      # ``bedrock-agentcore-identity!default/*`` secret pattern.
-      read_agentcore_identity_secret = {
-        effect    = "Allow"
-        actions   = ["secretsmanager:GetSecretValue"]
-        resources = ["arn:aws:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
-      }
-      agentcore_user_obo = {
-        effect = "Allow"
-        actions = [
-          "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
-          "bedrock-agentcore:GetResourceOauth2Token",
-        ]
-        resources = ["*"]
-      }
-  } : {})
+    } : (each.key == "repo_helper" ? merge(
+      {
+        # ``open_spec_pr`` reads the architect's three Markdown docs out
+        # of the artifacts bucket before committing them to the target
+        # repo. Read-only — the spec lives in S3, repo_helper never
+        # writes back to the bucket.
+        read_artifacts = {
+          effect    = "Allow"
+          actions   = ["s3:GetObject"]
+          resources = ["${var.artifacts_bucket_arn}/*"]
+        }
+      },
+      var.github_app_secret_name == null ? {} : {
+        read_app_secret = {
+          effect    = "Allow"
+          actions   = ["secretsmanager:GetSecretValue"]
+          resources = [data.aws_secretsmanager_secret.github_app[0].arn]
+        }
+        # AgentCore Identity uses Forward-Access Session to read its
+        # own internal credential-vault secret on behalf of the caller,
+        # so the repo_helper role must hold GetSecretValue on the
+        # service-managed ``bedrock-agentcore-identity!default/*``
+        # secret pattern.
+        read_agentcore_identity_secret = {
+          effect    = "Allow"
+          actions   = ["secretsmanager:GetSecretValue"]
+          resources = ["arn:aws:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
+        }
+        agentcore_user_obo = {
+          effect = "Allow"
+          actions = [
+            "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
+            "bedrock-agentcore:GetResourceOauth2Token",
+          ]
+          resources = ["*"]
+        }
+      },
+  ) : {})
 
   tags = merge(var.tags, {
     Name      = "${local.prefix}-${each.key}"

@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import boto3
 import structlog
@@ -78,6 +79,22 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@dataclass(frozen=True, slots=True)
+class IssueContext:
+    """Issue-driven trigger context persisted on the STATE row.
+
+    The Triage agent's ``TriageInput`` requires every one of these fields,
+    so the webhook captures them at trigger time and the state-router's
+    ``invoke_triage`` reads them off the STATE row when dispatching.
+    """
+
+    issue_url: str
+    issue_number: int
+    issue_title: str
+    issue_body: str
+    issue_labels: tuple[str, ...] = ()
+
+
 def start_run(  # noqa: PLR0913
     *,
     project_slug: str,
@@ -85,7 +102,7 @@ def start_run(  # noqa: PLR0913
     requestor: str,
     requestor_sub: str | None = None,
     target_repo: str | None = None,
-    source_issue_url: str | None = None,
+    issue: IssueContext | None = None,
     actor_id: str | None = None,
     run_id: RunId | None = None,
     correlation_id: CorrelationId | None = None,
@@ -100,6 +117,11 @@ def start_run(  # noqa: PLR0913
     ``run_id`` and ``correlation_id`` are accepted to support callers
     that already minted them (e.g., for idempotent reservation in the
     dashboard); they default to fresh UUID7s.
+
+    For issue-driven runs, the caller supplies an :class:`IssueContext`
+    carrying every field the Triage agent's ``TriageInput`` requires —
+    those land on the STATE row so the router can rebuild the triage
+    payload without re-reading the GitHub API.
     """
     rid = run_id or new_run_id()
     cid = correlation_id or new_correlation_id()
@@ -113,7 +135,7 @@ def start_run(  # noqa: PLR0913
         actor_id=actor,
         target_repo=target_repo,
         requestor_sub=requestor_sub,
-        source_issue_url=source_issue_url,
+        issue=issue,
     )
     envelope = EventEnvelope[RequestReceived](
         event_id=new_event_id(),
@@ -127,7 +149,7 @@ def start_run(  # noqa: PLR0913
             requestor=requestor,
             requestor_sub=requestor_sub,
             target_repo=target_repo,
-            source_issue_url=source_issue_url,
+            source_issue_url=issue.issue_url if issue else None,
         ),
     )
     publish(envelope)
@@ -136,7 +158,7 @@ def start_run(  # noqa: PLR0913
         "run started",
         run_id=str(rid),
         project_slug=project_slug,
-        source_issue_url=source_issue_url,
+        source_issue_url=issue.issue_url if issue else None,
     )
     return rid, cid
 
@@ -151,7 +173,7 @@ def write_state_row(  # noqa: PLR0913
     actor_id: str,
     target_repo: str | None,
     requestor_sub: str | None,
-    source_issue_url: str | None,
+    issue: IssueContext | None,
 ) -> None:
     """Write the run's STATE row at ``pk=RUN#{run_id}, sk=STATE``.
 
@@ -163,7 +185,7 @@ def write_state_row(  # noqa: PLR0913
     overwrite).
     """
     ts = now_iso()
-    item: dict[str, dict[str, str]] = {
+    item: dict[str, dict[str, Any]] = {
         "pk": {"S": f"RUN#{run_id}"},
         "sk": {"S": "STATE"},
         "run_id": {"S": run_id},
@@ -180,8 +202,13 @@ def write_state_row(  # noqa: PLR0913
         item["target_repo"] = {"S": target_repo}
     if requestor_sub:
         item["requestor_sub"] = {"S": requestor_sub}
-    if source_issue_url:
-        item["source_issue_url"] = {"S": source_issue_url}
+    if issue is not None:
+        item["source_issue_url"] = {"S": issue.issue_url}
+        item["issue_number"] = {"N": str(issue.issue_number)}
+        item["issue_title"] = {"S": issue.issue_title}
+        item["issue_body"] = {"S": issue.issue_body}
+        if issue.issue_labels:
+            item["issue_labels"] = {"SS": list(issue.issue_labels)}
     ddb().put_item(
         TableName=runs_table(),
         Item=item,

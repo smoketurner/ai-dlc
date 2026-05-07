@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from common.events import EventEnvelope, RequestReceived
 from common.ids import CorrelationId, RunId, new_correlation_id, new_event_id, new_run_id
+from common.runs import IssueContext
 from dashboard.routes.webhooks import (
     receive_github_webhook,
     verify_signature,
@@ -51,6 +52,10 @@ def stub_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         return client
 
     monkeypatch.setattr("dashboard.routes.webhooks.secrets", fake_secrets)
+    # Powertools' idempotency layer needs DynamoDB. We're not exercising
+    # idempotency in these tests (start_run is stubbed); disabling here
+    # keeps the layer from reaching for the real table.
+    monkeypatch.setenv("POWERTOOLS_IDEMPOTENCY_DISABLED", "1")
     yield
     webhook_secret.cache_clear()
 
@@ -72,7 +77,7 @@ def captured_events(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]
         requestor: str,
         requestor_sub: str | None = None,
         target_repo: str | None = None,
-        source_issue_url: str | None = None,
+        issue: IssueContext | None = None,
         actor_id: str | None = None,
         run_id: RunId | None = None,
         correlation_id: CorrelationId | None = None,
@@ -92,7 +97,7 @@ def captured_events(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]
                     requestor=requestor,
                     requestor_sub=requestor_sub,
                     target_repo=target_repo,
-                    source_issue_url=source_issue_url,
+                    source_issue_url=issue.issue_url if issue else None,
                 ),
             ),
         )

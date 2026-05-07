@@ -214,7 +214,7 @@ class OpenSpecPrInput(BaseOp):
     branch off ``base``, commits the docs into the repo under
     ``docs/specs/{spec_slug}/``, and opens a PR. Returns the PR's URL +
     number so the state-router can persist them on the run STATE row
-    (``spec_pr_url``) for the webhook to match against later.
+    (``pr_url``) for the webhook ``gsi_pr`` lookup.
     """
 
     op: Literal["open_spec_pr"]

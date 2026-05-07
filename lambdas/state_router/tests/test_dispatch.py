@@ -27,11 +27,16 @@ from state_router.dispatch import RUN_DISPATCH, TASK_DISPATCH, decide, decide_ta
 from state_router.model import Run, Task
 
 
-def make_run(
+def make_run(  # noqa: PLR0913
     *,
     state: RunState | None,
     workflow_kind: str | None = "spec_driven",
+    triage_action: str | None = None,
     source_issue_url: str | None = None,
+    issue_number: int | None = None,
+    issue_title: str | None = None,
+    issue_body: str | None = None,
+    issue_labels: tuple[str, ...] = (),
     spec_slug: str | None = None,
     spec_s3_prefix: str | None = None,
     target_repo: str | None = "owner/repo",
@@ -48,8 +53,13 @@ def make_run(
         actor_id="alice",
         current_state=state,
         workflow_kind=workflow_kind,
+        triage_action=triage_action,
         target_repo=target_repo,
         source_issue_url=source_issue_url,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        issue_body=issue_body,
+        issue_labels=issue_labels,
         spec_slug=spec_slug,
         spec_s3_prefix=spec_s3_prefix,
         task_ids=task_ids,
@@ -82,11 +92,25 @@ class TestRunReceived:
         run = make_run(
             state=RunState.received,
             source_issue_url="https://github.com/o/r/issues/1",
+            issue_number=1,
+            issue_title="bug: foo",
+            issue_body="describe",
         )
         action = decide(run)
         assert isinstance(action, InvokeAgent)
         assert "triage" in action.runtime_arn
         assert action.advance_to == RunState.triaging.value
+        assert action.payload["issue_number"] == 1
+        assert action.payload["issue_title"] == "bug: foo"
+        assert action.payload["issue_body"] == "describe"
+
+    def test_received_with_issue_url_only_is_noop(self) -> None:
+        run = make_run(
+            state=RunState.received,
+            source_issue_url="https://github.com/o/r/issues/1",
+        )
+        action = decide(run)
+        assert isinstance(action, Noop)
 
     def test_received_without_issue_invokes_architect(self) -> None:
         run = make_run(state=RunState.received)
@@ -128,18 +152,25 @@ class TestRunTriageDecided:
         assert isinstance(action, InvokeAgent)
         assert "architect" in action.runtime_arn
 
-    def test_bug_fix_writes_synthetic_spec(self) -> None:
+    def test_bug_fix_writes_synthetic_spec_and_seeds_task(self) -> None:
         run = make_run(state=RunState.triage_decided, workflow_kind="bug_fix")
         action = decide(run)
-        assert isinstance(action, WriteSyntheticSpec)
-        assert "Requirements" in action.requirements_md
-        assert action.advance_to == RunState.tasks_in_progress.value
+        assert isinstance(action, CompoundAction)
+        synthetics = [a for a in action.actions if isinstance(a, WriteSyntheticSpec)]
+        seeds = [a for a in action.actions if isinstance(a, SeedTasks)]
+        assert len(synthetics) == 1
+        assert "Requirements" in synthetics[0].requirements_md
+        assert synthetics[0].advance_to == RunState.tasks_in_progress.value
+        assert len(seeds) == 1
+        assert seeds[0].task_ids == ("T-001",)
 
     @pytest.mark.parametrize("kind", ["upgrade", "docs"])
     def test_other_synthetic_kinds_write_spec(self, kind: str) -> None:
         run = make_run(state=RunState.triage_decided, workflow_kind=kind)
         action = decide(run)
-        assert isinstance(action, WriteSyntheticSpec)
+        assert isinstance(action, CompoundAction)
+        assert any(isinstance(a, WriteSyntheticSpec) for a in action.actions)
+        assert any(isinstance(a, SeedTasks) for a in action.actions)
 
 
 class TestRunSpecFlow:

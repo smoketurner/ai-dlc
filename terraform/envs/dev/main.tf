@@ -237,6 +237,9 @@ module "dashboard" {
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
 
+  beacon_queue_url = module.messaging.state_router_queue_url
+  beacon_queue_arn = module.messaging.state_router_queue_arn
+
   github_webhook_secret_id  = aws_secretsmanager_secret.github_webhook.name
   github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn
   github_app_secret_arn     = module.agents.github_app_secret_arn

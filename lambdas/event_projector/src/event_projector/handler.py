@@ -212,6 +212,8 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
     accumulate_usage(payload, add_parts=add_parts, values=values)
     if event_type == "SPEC.READY":
         accumulate_spec_ready(payload, set_parts=set_parts, values=values)
+    if event_type == "ISSUE.TRIAGED":
+        accumulate_issue_triaged(payload, set_parts=set_parts, values=values)
     if event_type == "RUN.COMPLETED":
         set_parts.append("tasks_completed = :tc")
         values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
@@ -225,6 +227,29 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
     )
+
+
+def accumulate_issue_triaged(
+    payload: dict[str, Any],
+    *,
+    set_parts: list[str],
+    values: dict[str, dict[str, Any]],
+) -> None:
+    """Persist ``workflow_kind`` + ``triage_action`` from ISSUE.TRIAGED.
+
+    The router's ``handle_triage_decided`` branches first on the action
+    (``proceed`` / ``ask`` / ``defer`` / ``decline``), then on
+    ``workflow_kind`` for the proceed case. Without these projections
+    every issue-driven run falls into the ``spec_driven`` proceed path.
+    """
+    workflow_kind = payload.get("workflow_kind")
+    if isinstance(workflow_kind, str) and workflow_kind:
+        set_parts.append("workflow_kind = :wk")
+        values[":wk"] = {"S": workflow_kind}
+    action = payload.get("action")
+    if isinstance(action, str) and action:
+        set_parts.append("triage_action = :ta")
+        values[":ta"] = {"S": action}
 
 
 def accumulate_spec_ready(
@@ -507,6 +532,10 @@ def advance_task_state(
         if isinstance(delivery_id, str) and delivery_id:
             add_parts.append("delivery_ids :did")
             values[":did"] = {"SS": [delivery_id]}
+    pr_url = payload.get("pr_url")
+    if isinstance(pr_url, str) and pr_url:
+        set_parts.append("pr_url = :pr_url")
+        values[":pr_url"] = {"S": pr_url}
     expression = "SET " + ", ".join(set_parts)
     if add_parts:
         expression += " ADD " + ", ".join(add_parts)

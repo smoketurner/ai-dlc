@@ -106,6 +106,7 @@ resource "aws_ecs_task_definition" "this" {
         { name = "AIDLC_BUS_NAME", value = var.bus_name },
         { name = "AIDLC_RUNS_TABLE", value = var.runs_table },
         { name = "AIDLC_IDEMPOTENCY_TABLE", value = var.idempotency_table },
+        { name = "AIDLC_BEACON_QUEUE_URL", value = var.beacon_queue_url },
         { name = "AIDLC_ARTIFACTS_BUCKET", value = var.artifacts_bucket },
         { name = "AIDLC_GITHUB_APP_SECRET_ARN", value = var.github_app_secret_arn },
         { name = "AIDLC_GITHUB_WEBHOOK_SECRET_ID", value = var.github_webhook_secret_id },

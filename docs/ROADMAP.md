@@ -62,25 +62,25 @@ Ordered by blast radius. Each batch is independently shippable.
 - [x] **`SpecReady` event carries `task_ids`.** Add the field to the payload + Architect's emit code; without it the seeder has to fetch the spec from S3.
 - [x] **State router can open spec PRs.** Today it calls `op="open_spec_pr"` which doesn't exist on `repo_helper`. Either add a compound op (read 3 S3 docs → `create_branch` → `commit_files` → `open_pr`) or have the router orchestrate those primitives directly.
 
-### Issue-driven path 🟡
+### Issue-driven path ✅
 
-- [ ] **`target_repo` persisted on STATE row.** `entry_adapter`'s `RunRequest` model accepts it; webhook writes it; dashboard already has it. Otherwise the Architect can't clone and the Implementer can't commit.
-- [ ] **`intent` persisted on STATE row** for issue-driven and dashboard runs. Architect requires `min_length=1`.
-- [ ] **`invoke_triage` carries full issue context.** Persist `issue_number`, `issue_title`, `issue_body`, `issue_labels` on the run STATE row when the webhook writes it; pass them through in the router's triage payload. `TriageInput` requires all of these.
-- [ ] **`workflow_kind` persisted on `ISSUE.TRIAGED`.** Projector's `update_run_state` extracts it from the payload. Without this, `handle_triage_decided` falls into the `spec_driven` default for every run, even bug_fix/upgrade/docs.
-- [ ] **`handle_triage_decided` handles `action ∈ {ask, defer, decline}`.** Today only `proceed` is handled. The old `triage_dispatcher` posted issue comments + labels for `ask`; marked the issue `aidlc:declined` / `aidlc:deferred` for the others.
+- [x] **`target_repo` persisted on STATE row.** `entry_adapter`'s `RunRequest` model accepts it; webhook writes it; dashboard already has it. Otherwise the Architect can't clone and the Implementer can't commit.
+- [x] **`intent` persisted on STATE row** for issue-driven and dashboard runs. Architect requires `min_length=1`.
+- [x] **`invoke_triage` carries full issue context.** Persist `issue_number`, `issue_title`, `issue_body`, `issue_labels` on the run STATE row when the webhook writes it; pass them through in the router's triage payload. `TriageInput` requires all of these.
+- [x] **`workflow_kind` persisted on `ISSUE.TRIAGED`.** Projector's `update_run_state` extracts it from the payload. Without this, `handle_triage_decided` falls into the `spec_driven` default for every run, even bug_fix/upgrade/docs.
+- [x] **`handle_triage_decided` handles `action ∈ {ask, defer, decline}`.** Today only `proceed` is handled. The old `triage_dispatcher` posted issue comments + labels for `ask`; marked the issue `aidlc:declined` / `aidlc:deferred` for the others.
 
-### PR matching 🟡
+### PR matching ✅
 
-- [ ] **`gsi_pr` GSI gets populated.** State router writes `pr_url` (not `spec_pr_url`) on STATE rows when opening the spec PR; projector writes `pr_url` on TASK rows when applying `TASK.READY`. The webhook's `lookup_pr` returns nothing today because the attribute is never written.
-- [ ] **Webhook idempotency.** Use Powertools `idempotent_function` keyed on `X-GitHub-Delivery` so a re-delivered event doesn't mint a duplicate `run_id`.
-- [ ] **`project_slug` consistent across entry paths.** Webhook currently uses `repo.split("/", 1)[-1]` (just the name). Switch to `slug_from_repo` (lowercase + `/` → `-`) so the same repo gets the same slug from every entry path.
+- [x] **`gsi_pr` GSI gets populated.** State router writes `pr_url` (not `spec_pr_url`) on STATE rows when opening the spec PR; projector writes `pr_url` on TASK rows when applying `TASK.READY`. The webhook's `lookup_pr` returns nothing today because the attribute is never written.
+- [x] **Webhook idempotency.** Use Powertools `idempotent_function` keyed on `X-GitHub-Delivery` so a re-delivered event doesn't mint a duplicate `run_id`.
+- [x] **`project_slug` consistent across entry paths.** Webhook currently uses `repo.split("/", 1)[-1]` (just the name). Switch to `slug_from_repo` (lowercase + `/` → `-`) so the same repo gets the same slug from every entry path.
 
 ### Robustness 🟡
 
-- [ ] **`parse_run` falls back to pk parsing for `run_id`.** Projector-created rows don't set the `run_id` attribute explicitly; should derive from `pk = "RUN#{id}"` when the attribute is missing.
-- [ ] **TASK row creation precedes `TASK.READY`.** Either seed the TASK row before dispatching the implementer, or have the projector upsert the row on `TASK.READY` arrival rather than skipping silently.
-- [ ] **State advance triggers a fresh beacon.** Current 60s visibility-timeout cadence adds up to 60s of latency to every state transition. Have the projector send a `DelaySeconds=0` beacon on each transition; or the router self-enqueues a short-delay follow-up after each AdvanceState.
+- [x] **`parse_run` falls back to pk parsing for `run_id`.** Projector-created rows don't set the `run_id` attribute explicitly; should derive from `pk = "RUN#{id}"` when the attribute is missing.
+- [x] **TASK row creation precedes `TASK.READY`.** Either seed the TASK row before dispatching the implementer, or have the projector upsert the row on `TASK.READY` arrival rather than skipping silently.
+- ~~**State advance triggers a fresh beacon.**~~ Rejected — would create multiple in-flight beacons per run, violating the single-beacon-per-run design. State lives in DDB; the 60s visibility-timeout cadence is the cost of the recycle pattern.
 
 **Out of scope for this round:**
 

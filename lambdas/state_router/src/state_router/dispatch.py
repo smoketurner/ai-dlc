@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from common.events import (
     EventEnvelope,
+    RunCancelRequested,
     RunCompleted,
 )
 from common.ids import CorrelationId, RunId, new_event_id
@@ -44,6 +45,10 @@ if TYPE_CHECKING:
 
 type RunHandler = Callable[["Run"], Action]
 type TaskHandler = Callable[["Run", "Task"], Action]
+
+
+SYNTHETIC_TASK_ID = "T-001"
+"""Single task id used by the synthetic-spec (bug_fix / upgrade / docs) flow."""
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +98,21 @@ def handle_received(run: Run) -> Action:
     return invoke_architect(run, arn, advance_from=RunState.received)
 
 
-def invoke_triage(run: Run, arn: str) -> InvokeAgent:
-    """Dispatch the triage agent and advance to ``triaging``."""
+def invoke_triage(run: Run, arn: str) -> Action:
+    """Dispatch the triage agent and advance to ``triaging``.
+
+    ``TriageInput`` requires every field below; if the row is missing
+    the issue number/title/body/labels (e.g., the trigger preceded the
+    issue-context plumbing), Noop and let an operator fix the row
+    rather than dispatching an agent that will only ``ValidationError``.
+    """
+    if (
+        not run.target_repo
+        or not run.source_issue_url
+        or run.issue_number is None
+        or not run.issue_title
+    ):
+        return Noop("triage: STATE row missing issue context")
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-triage",
@@ -102,6 +120,10 @@ def invoke_triage(run: Run, arn: str) -> InvokeAgent:
             "project_slug": run.project_slug,
             "target_repo": run.target_repo,
             "issue_url": run.source_issue_url,
+            "issue_number": run.issue_number,
+            "issue_title": run.issue_title,
+            "issue_body": run.issue_body or "",
+            "issue_labels": list(run.issue_labels),
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,
@@ -136,29 +158,118 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
 
 
 def handle_triage_decided(run: Run) -> Action:
-    """Branch on the triage's ``workflow_kind``.
+    """Branch on the triage's ``action`` (and ``workflow_kind`` for proceed).
 
-    ``spec_driven`` → run the architect → critic → spec-PR flow.
-    ``bug_fix`` / ``upgrade`` / ``docs`` → write a synthetic spec and
-    skip straight to ``tasks_in_progress``.
+    ``proceed`` + ``spec_driven`` → architect → critic → spec-PR flow.
+    ``proceed`` + ``bug_fix``/``upgrade``/``docs`` → synthetic spec.
+    ``ask`` → comment + label ``aidlc:awaiting-response`` on the issue;
+    cancel this run (the webhook mints a fresh run on the user's reply).
+    ``defer`` / ``decline`` → label the issue and cancel this run.
     """
+    action = run.triage_action or "proceed"
+    if action == "proceed":
+        return handle_triage_proceed(run)
+    if action == "ask":
+        return triage_ask_action(run)
+    if action == "defer":
+        return triage_close_action(run, label="aidlc:deferred", reason="triage deferred")
+    if action == "decline":
+        return triage_close_action(run, label="aidlc:declined", reason="triage declined")
+    return Noop(f"unknown triage action: {action}")
+
+
+def handle_triage_proceed(run: Run) -> Action:
+    """Triage said ``proceed`` — fork on workflow_kind."""
     if run.workflow_kind == "spec_driven" or run.workflow_kind is None:
         arn = runtime_arn("architect")
         if not arn:
             return Noop("architect runtime ARN not yet provisioned")
         return invoke_architect(run, arn, advance_from=RunState.triage_decided)
     if run.workflow_kind in {"bug_fix", "upgrade", "docs"}:
-        return WriteSyntheticSpec(
-            s3_key_prefix=f"specs/{run.synthetic_spec_slug or run.run_id}/",
-            requirements_md=render_synthetic_requirements(run),
-            design_md=render_synthetic_design(run),
-            tasks_md=render_synthetic_tasks(run),
-            target_pk=f"RUN#{run.run_id}",
-            target_sk="STATE",
-            advance_from=RunState.triage_decided.value,
-            advance_to=RunState.tasks_in_progress.value,
+        return CompoundAction(
+            actions=(
+                WriteSyntheticSpec(
+                    s3_key_prefix=f"specs/{run.synthetic_spec_slug or run.run_id}/",
+                    requirements_md=render_synthetic_requirements(run),
+                    design_md=render_synthetic_design(run),
+                    tasks_md=render_synthetic_tasks(run),
+                    target_pk=f"RUN#{run.run_id}",
+                    target_sk="STATE",
+                    advance_from=RunState.triage_decided.value,
+                    advance_to=RunState.tasks_in_progress.value,
+                ),
+                # Synthetic specs always have one task; seed its row before
+                # tasks_in_progress walks the (otherwise empty) task list.
+                SeedTasks(run_id=run.run_id, task_ids=(SYNTHETIC_TASK_ID,)),
+            ),
         )
     return Noop(f"unknown workflow_kind: {run.workflow_kind}")
+
+
+def triage_ask_action(run: Run) -> Action:
+    """Post a clarifying comment + ``aidlc:awaiting-response`` label, then cancel."""
+    if not run.target_repo or run.issue_number is None:
+        return Noop("triage ask: missing target_repo / issue_number")
+    actions: list[Action] = [
+        InvokeRepoHelper(
+            op="comment_issue",
+            args={
+                "repo": run.target_repo,
+                "issue_number": run.issue_number,
+                "body": (
+                    "Triage needs more information before I can start. "
+                    "Reply with the missing details and add `/aidlc go` to retry."
+                ),
+            },
+        ),
+        InvokeRepoHelper(
+            op="label_issue",
+            args={
+                "repo": run.target_repo,
+                "issue_number": run.issue_number,
+                "labels": ["aidlc:awaiting-response"],
+            },
+        ),
+        emit_run_cancel(run, source="comment_command", reason="triage asked for clarification"),
+    ]
+    return CompoundAction(actions=tuple(actions))
+
+
+def triage_close_action(run: Run, *, label: str, reason: str) -> Action:
+    """Label the issue (defer / decline), then cancel the run."""
+    if not run.target_repo or run.issue_number is None:
+        return Noop(f"{reason}: missing target_repo / issue_number")
+    actions: list[Action] = [
+        InvokeRepoHelper(
+            op="label_issue",
+            args={
+                "repo": run.target_repo,
+                "issue_number": run.issue_number,
+                "labels": [label],
+            },
+        ),
+        emit_run_cancel(run, source="comment_command", reason=reason),
+    ]
+    return CompoundAction(actions=tuple(actions))
+
+
+def emit_run_cancel(run: Run, *, source: str, reason: str) -> EmitEvent:
+    """Build a ``RUN.CANCEL_REQUESTED`` envelope so the projector cancels the run."""
+    return EmitEvent(
+        envelope=EventEnvelope[RunCancelRequested](
+            event_id=new_event_id(),
+            type="RUN.CANCEL_REQUESTED",
+            run_id=RunId(run.run_id),
+            correlation_id=CorrelationId(run.correlation_id),
+            actor_id="state_router",
+            payload=RunCancelRequested(
+                project_slug=run.project_slug,
+                requestor=run.requestor,
+                source=source,  # ty: ignore[invalid-argument-type]
+                reason=reason,
+            ),
+        ),
+    )
 
 
 def handle_spec_pending(run: Run) -> Action:
@@ -213,7 +324,7 @@ def handle_spec_critiqued(run: Run) -> Action:
         target_sk="STATE",
         advance_from=RunState.spec_critiqued.value,
         advance_to=RunState.spec_pr_open.value,
-        record_pr_url_attr="spec_pr_url",
+        record_pr_url_attr="pr_url",
     )
 
 
@@ -486,10 +597,10 @@ def render_synthetic_design(run: Run) -> str:
 
 
 def render_synthetic_tasks(run: Run) -> str:
-    """Render a one-task tasks doc."""
+    """Render a one-task tasks doc keyed on :data:`SYNTHETIC_TASK_ID`."""
     return (
         f"# Tasks\n\n"
-        f"## T-001 — {run.workflow_kind}: address the request\n\n"
+        f"## {SYNTHETIC_TASK_ID} — {run.workflow_kind}: address the request\n\n"
         f"Implement the change described in the requirements. Open one PR.\n"
     )
 

@@ -39,12 +39,17 @@ class Run:
     actor_id: str
     current_state: RunState | None
     workflow_kind: str | None = None
+    triage_action: str | None = None
     target_repo: str | None = None
     requestor_sub: str | None = None
     source_issue_url: str | None = None
+    issue_number: int | None = None
+    issue_title: str | None = None
+    issue_body: str | None = None
+    issue_labels: tuple[str, ...] = ()
     spec_slug: str | None = None
     spec_s3_prefix: str | None = None
-    spec_pr_url: str | None = None
+    pr_url: str | None = None
     synthetic_spec_slug: str | None = None
     task_ids: tuple[str, ...] = ()
     tasks: tuple[Task, ...] = ()
@@ -59,8 +64,10 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
     if not item:
         return None
     state_str = ddb_str(item.get("current_state"))
+    pk = ddb_str(item.get("pk")) or ""
+    run_id = ddb_str(item.get("run_id")) or pk.removeprefix("RUN#")
     return Run(
-        run_id=ddb_str(item.get("run_id")) or "",
+        run_id=run_id,
         correlation_id=ddb_str(item.get("correlation_id")) or "",
         project_slug=ddb_str(item.get("project_slug")) or "",
         intent=ddb_str(item.get("intent")) or "",
@@ -68,12 +75,17 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         actor_id=ddb_str(item.get("actor_id")) or "system",
         current_state=RunState(state_str) if state_str else None,
         workflow_kind=ddb_str(item.get("workflow_kind")),
+        triage_action=ddb_str(item.get("triage_action")),
         target_repo=ddb_str(item.get("target_repo")),
         requestor_sub=ddb_str(item.get("requestor_sub")),
         source_issue_url=ddb_str(item.get("source_issue_url")),
+        issue_number=ddb_int(item.get("issue_number")),
+        issue_title=ddb_str(item.get("issue_title")),
+        issue_body=ddb_str(item.get("issue_body")),
+        issue_labels=tuple(ddb_str_set(item.get("issue_labels"))),
         spec_slug=ddb_str(item.get("spec_slug")),
         spec_s3_prefix=ddb_str(item.get("spec_s3_prefix")),
-        spec_pr_url=ddb_str(item.get("spec_pr_url")),
+        pr_url=ddb_str(item.get("pr_url")),
         synthetic_spec_slug=ddb_str(item.get("synthetic_spec_slug")),
         task_ids=tuple(ddb_str_set(item.get("task_ids"))),
         tasks=tuple(parse_task(t) for t in task_items),

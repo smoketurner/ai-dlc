@@ -76,6 +76,16 @@ variable "idempotency_table" {
   type        = string
 }
 
+variable "beacon_queue_url" {
+  description = "SQS state-router beacon queue URL — the dashboard sends a beacon when accepting a new run."
+  type        = string
+}
+
+variable "beacon_queue_arn" {
+  description = "SQS state-router beacon queue ARN."
+  type        = string
+}
+
 variable "artifacts_bucket" {
   description = "Artifacts S3 bucket name (read-only access for ADR/spec presigned URLs)."
   type        = string

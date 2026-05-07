@@ -37,12 +37,18 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 from functools import cache
 from typing import Any
 
 import httpx
 import structlog
+from aws_lambda_powertools.utilities.idempotency import (
+    DynamoDBPersistenceLayer,
+    IdempotencyConfig,
+    idempotent_function,
+)
 from fastapi import APIRouter, HTTPException, Request, status
 
 from common import github_app as common_github
@@ -62,7 +68,7 @@ from common.ids import (
     RunId,
     new_event_id,
 )
-from common.runs import start_run
+from common.runs import IssueContext, start_run
 from common.runtime import (
     CiFailureFeedback,
     FeedbackItem,
@@ -70,10 +76,26 @@ from common.runtime import (
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
 )
+from common.slug import slug_from_repo
 from dashboard.deps import ddb, secrets, settings
 
 router = APIRouter()
 logger = structlog.get_logger()
+
+# Powertools' idempotency utility deduplicates issue-trigger
+# REQUEST.RECEIVED emits keyed on the GitHub-supplied X-GitHub-Delivery
+# header. Re-deliveries (network blip, GitHub retry) within the TTL
+# return the cached run_id rather than minting a fresh run.
+idempotency_persistence = DynamoDBPersistenceLayer(
+    table_name=os.environ["AIDLC_IDEMPOTENCY_TABLE"],
+    key_attr="idempotency_key",
+    expiry_attr="expires_at",
+)
+idempotency_config = IdempotencyConfig(
+    event_key_jmespath="delivery_id",
+    expires_after_seconds=86_400,
+    raise_on_no_idempotency_key=True,
+)
 
 APPROVE_RE = re.compile(r"/aidlc\s+approve\b", re.IGNORECASE)
 REJECT_RE = re.compile(r"/aidlc\s+reject\s*(.*)", re.IGNORECASE)
@@ -410,7 +432,7 @@ def handle_issue_comment(payload: dict[str, Any], delivery_id: str) -> dict[str,
     body = (comment.get("body") or "").strip()
     if issue.get("pull_request") is not None:
         return handle_pr_comment(payload, body, delivery_id=delivery_id)
-    return handle_issue_only_comment(payload, body)
+    return handle_issue_only_comment(payload, body, delivery_id=delivery_id)
 
 
 def handle_pr_comment(
@@ -497,7 +519,12 @@ def emit_task_reject_from_comment(
     return {"ok": True, "decision": "task_rejected"}
 
 
-def handle_issue_only_comment(payload: dict[str, Any], body: str) -> dict[str, Any]:
+def handle_issue_only_comment(
+    payload: dict[str, Any],
+    body: str,
+    *,
+    delivery_id: str = "",
+) -> dict[str, Any]:
     """Comments on a non-PR issue: ``/aidlc go``, awaiting-response, ``/aidlc cancel``."""
     issue = payload.get("issue") or {}
     label_names = [label.get("name", "") for label in issue.get("labels", [])]
@@ -511,9 +538,9 @@ def handle_issue_only_comment(payload: dict[str, Any], body: str) -> dict[str, A
         commenter = (payload.get("comment", {}).get("user") or {}).get("login", "unknown")
         return emit_run_cancel(state, requestor=commenter, source="comment_command")
     if AWAITING_RESPONSE_LABEL in label_names and is_human_comment(payload.get("comment", {})):
-        return emit_request_received(payload, source_issue_url=issue_url)
+        return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
     if GO_RE.search(body):
-        return emit_request_received(payload, source_issue_url=issue_url)
+        return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
     return {"ok": True, "ignored": "no match"}
 
 
@@ -564,7 +591,7 @@ def handle_workflow_run(payload: dict[str, Any], delivery_id: str) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 
-def handle_issues(payload: dict[str, Any], _delivery_id: str) -> dict[str, Any]:
+def handle_issues(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
     """Branch on action: triage triggers vs cancel."""
     action = payload.get("action")
     if action == "unassigned":
@@ -573,7 +600,7 @@ def handle_issues(payload: dict[str, Any], _delivery_id: str) -> dict[str, Any]:
         issue = payload.get("issue") or {}
         issue_url = issue.get("html_url") or ""
         react_eyes(payload.get("repository") or {}, issue)
-        return emit_request_received(payload, source_issue_url=issue_url)
+        return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
     return {"ok": True, "ignored": True}
 
 
@@ -678,30 +705,92 @@ def emit_run_cancel(
     return {"ok": True, "cancel_run": run_id}
 
 
+@idempotent_function(
+    data_keyword_argument="trigger",
+    config=idempotency_config,
+    persistence_store=idempotency_persistence,
+)
+def trigger_request_received(*, trigger: dict[str, Any]) -> dict[str, Any]:
+    """Idempotent shell that mints a run for an issue-driven trigger.
+
+    Keyed on ``trigger.delivery_id`` (the GitHub-supplied
+    ``X-GitHub-Delivery`` header). Re-deliveries within the TTL return
+    the cached response without minting a duplicate ``run_id``.
+    """
+    payload = trigger["payload"]
+    source_issue_url = trigger["source_issue_url"]
+    issue_payload = payload.get("issue") or {}
+    repo = (payload.get("repository") or {}).get("full_name", "")
+    requestor = (issue_payload.get("user") or {}).get("login", "github")
+    intent = issue_payload.get("title") or "(no title)"
+    issue_ctx = build_issue_context(issue_payload, source_issue_url)
+    run_id, _ = start_run(
+        project_slug=slug_from_repo(repo) if repo else "unknown",
+        intent=intent,
+        requestor=requestor,
+        target_repo=repo or None,
+        issue=issue_ctx,
+        actor_id="webhook",
+    )
+    return {"ok": True, "triage": source_issue_url, "run_id": str(run_id)}
+
+
 def emit_request_received(
     payload: dict[str, Any],
     *,
     source_issue_url: str,
+    delivery_id: str = "",
 ) -> dict[str, Any]:
-    """Mint a fresh run + start it for an issue-driven trigger.
+    """Mint a fresh run for an issue-driven trigger.
 
-    The state-router's ``received`` handler invokes the triage agent
-    when ``source_issue_url`` is set; for programmatic runs (POST
-    /v1/runs) it skips straight to the architect.
+    Delegates to the idempotent inner function keyed on the
+    ``X-GitHub-Delivery`` header so retries from GitHub don't mint
+    duplicate runs. When ``delivery_id`` is missing (legacy callers,
+    tests) we skip the idempotency layer.
     """
-    issue = payload.get("issue") or {}
-    repo = (payload.get("repository") or {}).get("full_name", "")
-    requestor = (issue.get("user") or {}).get("login", "github")
-    intent = issue.get("title") or "(no title)"
-    run_id, _ = start_run(
-        project_slug=repo.split("/", 1)[-1] or "unknown",
-        intent=intent,
-        requestor=requestor,
-        target_repo=repo or None,
-        source_issue_url=source_issue_url or None,
-        actor_id="webhook",
+    if not delivery_id:
+        return trigger_request_received.__wrapped__(
+            trigger={
+                "delivery_id": "",
+                "payload": payload,
+                "source_issue_url": source_issue_url,
+            },
+        )
+    return trigger_request_received(
+        trigger={
+            "delivery_id": delivery_id,
+            "payload": payload,
+            "source_issue_url": source_issue_url,
+        },
     )
-    return {"ok": True, "triage": source_issue_url, "run_id": str(run_id)}
+
+
+def build_issue_context(
+    issue_payload: dict[str, Any],
+    source_issue_url: str,
+) -> IssueContext | None:
+    """Pack the GitHub ``issue`` payload into an :class:`IssueContext`.
+
+    Returns ``None`` for triggers without an issue number — caller treats
+    this as a programmatic run rather than an issue-driven one.
+    """
+    if not source_issue_url:
+        return None
+    raw_number = issue_payload.get("number")
+    if not isinstance(raw_number, int):
+        return None
+    labels = tuple(
+        label.get("name", "")
+        for label in (issue_payload.get("labels") or [])
+        if isinstance(label, dict) and label.get("name")
+    )
+    return IssueContext(
+        issue_url=source_issue_url,
+        issue_number=raw_number,
+        issue_title=issue_payload.get("title") or "(no title)",
+        issue_body=issue_payload.get("body") or "",
+        issue_labels=labels,
+    )
 
 
 # ---------------------------------------------------------------------------

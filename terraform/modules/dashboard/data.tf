@@ -57,6 +57,12 @@ data "aws_iam_policy_document" "task_inline" {
   }
 
   statement {
+    sid       = "EnqueueBeacon"
+    actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+    resources = [var.beacon_queue_arn]
+  }
+
+  statement {
     sid       = "ReadGithubAppSecret"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [var.github_app_secret_arn]

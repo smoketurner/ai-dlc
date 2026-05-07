@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Response, status
 
 from common.ids import new_correlation_id, new_run_id
 from common.runs import start_run
+from common.slug import slug_from_repo
 from dashboard.auth import CurrentUser
 from dashboard.deps import ddb, settings
 from dashboard.models import SubmitRunRequest, SubmitRunResponse
@@ -54,11 +55,6 @@ async def submit_run(req: SubmitRunRequest, user: CurrentUser) -> SubmitRunRespo
         correlation_id=str(correlation_id),
         project_slug=project_slug,
     )
-
-
-def slug_from_repo(target_repo: str) -> str:
-    """``owner/name`` -> ``owner-name`` (lowercased). One slug per repo, stable across runs."""
-    return target_repo.lower().replace("/", "-")
 
 
 def reserve_idempotency(key: str, run_id: str, table: str) -> bool:
