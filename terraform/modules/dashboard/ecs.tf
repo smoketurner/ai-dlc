@@ -129,7 +129,7 @@ resource "aws_ecs_task_definition" "this" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "python -c 'import socket,sys; s=socket.socket(); s.settimeout(2); s.connect((\"127.0.0.1\",8080)); sys.exit(0)'"]
+        command     = ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/healthz"]
         interval    = 15
         timeout     = 5
         retries     = 3
