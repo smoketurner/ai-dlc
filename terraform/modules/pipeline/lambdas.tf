@@ -101,7 +101,6 @@ module "state_router" {
 
   environment_variables = {
     AIDLC_RUNS_TABLE                = var.runs_table
-    AIDLC_BEACON_QUEUE_URL          = var.beacon_queue_url
     AIDLC_BUS_NAME                  = var.bus_name
     AIDLC_ARTIFACTS_BUCKET          = var.artifacts_bucket
     AIDLC_REPO_HELPER_FUNCTION_NAME = var.repo_helper_function_name
@@ -136,15 +135,17 @@ module "state_router" {
         resources = [var.runs_table_arn]
       }
       beacon_queue = {
-        # ReceiveMessage + DeleteMessage on the beacon queue. SendMessage
-        # too — the router emits new beacons when seeding task rows or
-        # other state advances need a follow-up dispatch.
+        # The Lambda event source mapping handles ReceiveMessage and
+        # message deletion (via the function execution role). The
+        # state_router itself doesn't call SQS APIs — beacons that
+        # should keep cycling are reported via ``batchItemFailures`` in
+        # the handler return value, which Lambda translates to
+        # ChangeMessageVisibility / leave-visible.
         effect = "Allow"
         actions = [
           "sqs:ReceiveMessage",
           "sqs:DeleteMessage",
           "sqs:GetQueueAttributes",
-          "sqs:SendMessage",
         ]
         resources = [var.beacon_queue_arn]
       }
@@ -183,11 +184,15 @@ module "state_router" {
   # SQS event source mapping. Each receive batch is at most one message
   # so a slow run can't head-of-line block other beacons; long-polling
   # via the queue's ``receive_wait_time_seconds`` keeps idle cost down.
+  # ``ReportBatchItemFailures`` lets the handler keep a beacon visible
+  # after dispatch by returning its messageId in ``batchItemFailures`` —
+  # that's how the state machine ticks between events.
   event_source_mapping = {
     state_router_queue = {
-      event_source_arn = var.beacon_queue_arn
-      batch_size       = 1
-      enabled          = true
+      event_source_arn        = var.beacon_queue_arn
+      batch_size              = 1
+      enabled                 = true
+      function_response_types = ["ReportBatchItemFailures"]
     }
   }
 

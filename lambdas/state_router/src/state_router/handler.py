@@ -56,7 +56,6 @@ if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
     from mypy_boto3_lambda.client import LambdaClient
     from mypy_boto3_s3.client import S3Client
-    from mypy_boto3_sqs.client import SQSClient
 
 logger = Logger(service="state_router")
 tracer = Tracer(service="state_router")
@@ -70,12 +69,6 @@ DISPATCH_CONNECT_TIMEOUT_SECONDS = 10.0
 def ddb() -> DynamoDBClient:
     """Process-cached DynamoDB client."""
     return boto3.client("dynamodb")
-
-
-@cache
-def sqs() -> SQSClient:
-    """Process-cached SQS client."""
-    return boto3.client("sqs")
 
 
 @cache
@@ -114,11 +107,6 @@ def runs_table() -> str:
     return os.environ["AIDLC_RUNS_TABLE"]
 
 
-def beacon_queue_url() -> str:
-    """Beacon queue URL — the router's input."""
-    return os.environ["AIDLC_BEACON_QUEUE_URL"]
-
-
 def artifacts_bucket() -> str:
     """Artifacts S3 bucket — for synthetic spec uploads."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
@@ -135,45 +123,61 @@ def artifacts_bucket() -> str:
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Process every SQS record in the batch.
 
-    Per-record: read run, decide action, execute. We never report
-    partial batch failures — the router tolerates duplicate work
-    (idempotent conditional updates) and the visibility timeout takes
-    care of retries.
+    Each beacon is processed once per Lambda invocation, then either:
+
+    * **Reported as a batch-item failure** (the default for non-terminal
+      runs) — Lambda's SQS event source mapping leaves the message
+      visible after the queue's visibility timeout, redelivering it on
+      the next poll. This is how the state machine ticks forward
+      between agent completion / webhook events.
+    * **Returned as a successful record** (terminal, orphan, or malformed
+      beacons) — Lambda auto-deletes those messages on success, so the
+      beacon is gone for good.
+
+    Requires ``function_response_types=["ReportBatchItemFailures"]`` on
+    the event source mapping. ``maxReceiveCount`` on the queue caps how
+    long a single beacon can cycle before going to DLQ; the stuck-run
+    detector re-injects beacons for runs that lose theirs.
     """
     records = event.get("Records") or []
+    failures: list[dict[str, str]] = []
     for record in records:
-        process_record(record)
+        if process_record(record):
+            failures.append({"itemIdentifier": record["messageId"]})
     metrics.add_metric(name="BeaconsProcessed", unit=MetricUnit.Count, value=len(records))
-    return {"ok": True, "count": len(records)}
+    return {"batchItemFailures": failures}
 
 
-def process_record(record: dict[str, Any]) -> None:
-    """Decode + dispatch one beacon."""
+def process_record(record: dict[str, Any]) -> bool:
+    """Decode + dispatch one beacon.
+
+    Returns ``True`` when the beacon should remain in the queue (active
+    run, must keep cycling) and ``False`` when SQS should delete it
+    (terminal / orphan / malformed). The handler reports the ``True``
+    cases as ``batchItemFailures`` to keep them visible.
+    """
     try:
         body = json.loads(record.get("body") or "{}")
     except json.JSONDecodeError:
         logger.warning("malformed beacon body", extra={"messageId": record.get("messageId")})
-        delete_beacon(record)
-        return
+        return False
     run_id = body.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         logger.warning("beacon missing run_id", extra={"body": body})
-        delete_beacon(record)
-        return
+        return False
     run = read_run(run_id)
     if run is None:
         logger.info("orphan beacon — no run row", extra={"run_id": run_id})
-        delete_beacon(record)
-        return
+        return False
     if run.current_state in TERMINAL_RUN_STATES:
         logger.info(
-            "terminal run, deleting beacon",
+            "terminal run, releasing beacon",
             extra={"run_id": run_id, "state": str(run.current_state)},
         )
-        delete_beacon(record)
-        return
+        return False
     action = decide(run)
     execute(run, action)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -199,22 +203,6 @@ def read_run(run_id: str) -> Run | None:
         elif sk.startswith("TASK#"):
             task_items.append(item)
     return parse_run(state_item, task_items)
-
-
-# ---------------------------------------------------------------------------
-# Beacon lifecycle
-# ---------------------------------------------------------------------------
-
-
-def delete_beacon(record: dict[str, Any]) -> None:
-    """Delete a beacon (orphan, terminal, or malformed)."""
-    receipt = record.get("receiptHandle")
-    if not receipt:
-        return
-    try:
-        sqs().delete_message(QueueUrl=beacon_queue_url(), ReceiptHandle=receipt)
-    except ClientError as exc:
-        logger.warning("delete beacon failed", extra={"err": str(exc)})
 
 
 # ---------------------------------------------------------------------------
