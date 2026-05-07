@@ -267,9 +267,7 @@ class TestTaskDispatch:
             TaskState.iterating,
             pr_url="https://github.com/o/r/pull/1",
             iteration_count=1,
-            pending_feedback=(
-                {"kind": "ci_failure", "workflow_name": "ci"},
-            ),
+            pending_feedback=({"kind": "ci_failure", "workflow_name": "ci"},),
         )
         action = decide_task(run, task)
         assert isinstance(action, InvokeAgent)

@@ -211,18 +211,21 @@ class ListCheckRunsInput(BaseOp):
     op: Literal["list_check_runs"]
     repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
     ref: str = Field(min_length=1, max_length=256)
-    filter_conclusions: list[
-        Literal[
-            "success",
-            "failure",
-            "neutral",
-            "cancelled",
-            "skipped",
-            "timed_out",
-            "action_required",
-            "stale",
+    filter_conclusions: (
+        list[
+            Literal[
+                "success",
+                "failure",
+                "neutral",
+                "cancelled",
+                "skipped",
+                "timed_out",
+                "action_required",
+                "stale",
+            ]
         ]
-    ] | None = Field(default=None, max_length=8)
+        | None
+    ) = Field(default=None, max_length=8)
 
 
 DISPATCH: dict[str, type[BaseOp]] = {

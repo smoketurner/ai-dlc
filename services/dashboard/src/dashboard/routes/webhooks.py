@@ -162,10 +162,14 @@ def lookup_run_by_issue(issue_url: str) -> dict[str, Any] | None:
     if not items:
         return None
     pk = items[0]["pk"]["S"]
-    state = ddb().get_item(
-        TableName=settings().runs_table,
-        Key={"pk": {"S": pk}, "sk": {"S": "STATE"}},
-    ).get("Item")
+    state = (
+        ddb()
+        .get_item(
+            TableName=settings().runs_table,
+            Key={"pk": {"S": pk}, "sk": {"S": "STATE"}},
+        )
+        .get("Item")
+    )
     return state
 
 
@@ -260,27 +264,31 @@ def emit_pr_close(
                 spec_s3_prefix=spec_s3_prefix,
                 reviewer=reviewer,
             )
-            emit(envelope_for(
-                event_type="SPEC.APPROVED",
+            emit(
+                envelope_for(
+                    event_type="SPEC.APPROVED",
+                    run_id=run_id,
+                    correlation_id=correlation_id,
+                    actor="webhook",
+                    payload=payload,
+                )
+            )
+            return {"ok": True, "decision": "spec_approved"}
+        emit(
+            envelope_for(
+                event_type="SPEC.REJECTED",
                 run_id=run_id,
                 correlation_id=correlation_id,
                 actor="webhook",
-                payload=payload,
-            ))
-            return {"ok": True, "decision": "spec_approved"}
-        emit(envelope_for(
-            event_type="SPEC.REJECTED",
-            run_id=run_id,
-            correlation_id=correlation_id,
-            actor="webhook",
-            payload=SpecRejected(
-                project_slug=project_slug,
-                spec_slug=spec_slug,
-                spec_s3_prefix=spec_s3_prefix,
-                reviewer=reviewer,
-                reason="PR closed without merge",
-            ),
-        ))
+                payload=SpecRejected(
+                    project_slug=project_slug,
+                    spec_slug=spec_slug,
+                    spec_s3_prefix=spec_s3_prefix,
+                    reviewer=reviewer,
+                    reason="PR closed without merge",
+                ),
+            )
+        )
         return {"ok": True, "decision": "spec_rejected"}
     return emit_task_close(row, pr_url=pr_url, merged=merged, reviewer=reviewer)
 
@@ -306,21 +314,25 @@ def emit_task_close(
         "reviewer": reviewer,
     }
     if merged:
-        emit(envelope_for(
-            event_type="TASK.APPROVED",
+        emit(
+            envelope_for(
+                event_type="TASK.APPROVED",
+                run_id=run_id,
+                correlation_id=correlation_id,
+                actor="webhook",
+                payload=TaskApproved(**common),
+            )
+        )
+        return {"ok": True, "decision": "task_approved", "task_id": task_id}
+    emit(
+        envelope_for(
+            event_type="TASK.REJECTED",
             run_id=run_id,
             correlation_id=correlation_id,
             actor="webhook",
-            payload=TaskApproved(**common),
-        ))
-        return {"ok": True, "decision": "task_approved", "task_id": task_id}
-    emit(envelope_for(
-        event_type="TASK.REJECTED",
-        run_id=run_id,
-        correlation_id=correlation_id,
-        actor="webhook",
-        payload=TaskRejected(**common, reason="PR closed without merge"),
-    ))
+            payload=TaskRejected(**common, reason="PR closed without merge"),
+        )
+    )
     return {"ok": True, "decision": "task_rejected", "task_id": task_id}
 
 
@@ -421,8 +433,12 @@ def handle_pr_comment(
     comment = payload.get("comment") or {}
     commenter = (comment.get("user") or {}).get("login", "unknown")
     return classify_pr_comment(
-        row=row, body=body, comment=comment, pr_url=pr_url,
-        commenter=commenter, delivery_id=delivery_id,
+        row=row,
+        body=body,
+        comment=comment,
+        pr_url=pr_url,
+        commenter=commenter,
+        delivery_id=delivery_id,
     )
 
 
@@ -464,20 +480,22 @@ def emit_task_reject_from_comment(
     """Build + publish a TASK.REJECTED event from a /aidlc reject comment."""
     run_id = run_id_of(row)
     correlation_id = attr(row, "correlation_id")
-    emit(envelope_for(
-        event_type="TASK.REJECTED",
-        run_id=run_id,
-        correlation_id=correlation_id,
-        actor="webhook",
-        payload=TaskRejected(
-            project_slug=attr(row, "project_slug"),
-            spec_slug=attr(row, "spec_slug"),
-            task_id=task_id_of(row),
-            pr_url=pr_url,
-            reviewer=commenter,
-            reason=match.group(1).strip() or "rejected via /aidlc",
-        ),
-    ))
+    emit(
+        envelope_for(
+            event_type="TASK.REJECTED",
+            run_id=run_id,
+            correlation_id=correlation_id,
+            actor="webhook",
+            payload=TaskRejected(
+                project_slug=attr(row, "project_slug"),
+                spec_slug=attr(row, "spec_slug"),
+                task_id=task_id_of(row),
+                pr_url=pr_url,
+                reviewer=commenter,
+                reason=match.group(1).strip() or "rejected via /aidlc",
+            ),
+        )
+    )
     return {"ok": True, "decision": "task_rejected"}
 
 
@@ -622,13 +640,15 @@ def emit_iteration(
         delivery_id=delivery_id,
         feedback=feedback,
     )
-    emit(envelope_for(
-        event_type="TASK.ITERATION_REQUESTED",
-        run_id=run_id,
-        correlation_id=correlation_id,
-        actor="webhook",
-        payload=payload,
-    ))
+    emit(
+        envelope_for(
+            event_type="TASK.ITERATION_REQUESTED",
+            run_id=run_id,
+            correlation_id=correlation_id,
+            actor="webhook",
+            payload=payload,
+        )
+    )
     return {"ok": True, "iteration": feedback.kind, "task_id": payload.task_id}
 
 
@@ -648,13 +668,15 @@ def emit_run_cancel(
         source=source,  # ty: ignore[invalid-argument-type]
         reason=reason,
     )
-    emit(envelope_for(
-        event_type="RUN.CANCEL_REQUESTED",
-        run_id=run_id,
-        correlation_id=correlation_id,
-        actor="webhook",
-        payload=payload,
-    ))
+    emit(
+        envelope_for(
+            event_type="RUN.CANCEL_REQUESTED",
+            run_id=run_id,
+            correlation_id=correlation_id,
+            actor="webhook",
+            payload=payload,
+        )
+    )
     return {"ok": True, "cancel_run": run_id}
 
 
@@ -682,13 +704,15 @@ def emit_request_received(
         target_repo=repo or None,
         source_issue_url=source_issue_url or None,
     )
-    emit(envelope_for(
-        event_type="REQUEST.RECEIVED",
-        run_id=str(run_id),
-        correlation_id=str(correlation_id),
-        actor="webhook",
-        payload=received,
-    ))
+    emit(
+        envelope_for(
+            event_type="REQUEST.RECEIVED",
+            run_id=str(run_id),
+            correlation_id=str(correlation_id),
+            actor="webhook",
+            payload=received,
+        )
+    )
     return {"ok": True, "triage": source_issue_url, "run_id": str(run_id)}
 
 

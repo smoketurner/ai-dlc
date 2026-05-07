@@ -365,11 +365,15 @@ def apply_task_state_transition(
 
 def read_run_state(run_id: str) -> RunState | None:
     """Read ``current_state`` off the run's STATE row, or ``None``."""
-    item = ddb().get_item(
-        TableName=runs_table(),
-        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-        ProjectionExpression="current_state",
-    ).get("Item")
+    item = (
+        ddb()
+        .get_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            ProjectionExpression="current_state",
+        )
+        .get("Item")
+    )
     if not item:
         return None
     raw = item.get("current_state", {}).get("S")
@@ -384,12 +388,16 @@ def read_run_state(run_id: str) -> RunState | None:
 
 def read_task_state(run_id: str, task_id: str) -> TaskState | None:
     """Read ``status`` off a TASK row, or ``None`` if the row is missing."""
-    item = ddb().get_item(
-        TableName=runs_table(),
-        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
-        ProjectionExpression="#s",
-        ExpressionAttributeNames={"#s": "status"},
-    ).get("Item")
+    item = (
+        ddb()
+        .get_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
+            ProjectionExpression="#s",
+            ExpressionAttributeNames={"#s": "status"},
+        )
+        .get("Item")
+    )
     if not item:
         return None
     raw = item.get("status", {}).get("S")
