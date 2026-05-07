@@ -44,6 +44,22 @@ class TestResult(BaseModel):
     status: Literal["pass", "fail", "skip"]
 
 
+class InlineReply(BaseModel):
+    """One PR-review-thread reply the agent wants posted in iteration mode.
+
+    The Implementer's wrapper (after the SDK loop) walks
+    :attr:`FinishReport.inline_replies` and posts each via
+    ``repo_helper.reply_pr_review_comment``. Only meaningful on iteration
+    runs — on the initial PR (iteration_count == 0) there are no review
+    threads yet so the agent leaves this list empty.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+    comment_id: Annotated[int, Field(ge=1)]
+    body: Annotated[str, Field(min_length=1, max_length=8192)]
+
+
 class FinishReport(BaseModel):
     """Structured summary the agent submits when finishing a task.
 
@@ -64,6 +80,9 @@ class FinishReport(BaseModel):
         NoneSafeList[Annotated[str, Field(min_length=1, max_length=256)]],
         Field(max_length=8),
     ] = Field(default_factory=list)
+    inline_replies: Annotated[NoneSafeList[InlineReply], Field(max_length=32)] = Field(
+        default_factory=list,
+    )
     status: Literal["done", "blocked"]
     blocked_reason: Annotated[str, Field(min_length=1, max_length=512)] | None = None
 

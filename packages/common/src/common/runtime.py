@@ -134,6 +134,56 @@ class CriticResult(_UsageMixin):
     session_id: str
 
 
+class CiFailureFeedback(_Frozen):
+    """One failed CI workflow run, fed to the implementer on iteration."""
+
+    kind: Literal["ci_failure"] = "ci_failure"
+    workflow_name: Annotated[str, Field(min_length=1, max_length=256)]
+    conclusion: Literal["failure", "timed_out", "cancelled", "action_required", "stale"]
+    head_sha: Annotated[str, Field(min_length=7, max_length=40)]
+    html_url: Annotated[str, Field(max_length=512)]
+
+
+class ReviewChangesRequestedFeedback(_Frozen):
+    """A reviewer submitted a changes_requested review on the PR."""
+
+    kind: Literal["review_changes_requested"] = "review_changes_requested"
+    reviewer: Annotated[str, Field(min_length=1, max_length=128)]
+    body: Annotated[str, Field(max_length=8192)] = ""
+    review_id: Annotated[int, Field(ge=1)]
+
+
+class ReviewCommentMentionFeedback(_Frozen):
+    """A line-anchored PR review comment that @-mentions the bot."""
+
+    kind: Literal["review_comment_mention"] = "review_comment_mention"
+    path: Annotated[str, Field(min_length=1, max_length=1024)]
+    line: int | None = None
+    commit_id: Annotated[str, Field(min_length=7, max_length=40)]
+    comment_id: Annotated[int, Field(ge=1)]
+    in_reply_to_id: int | None = None
+    body: Annotated[str, Field(max_length=8192)]
+    commenter: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class IssueCommentMentionFeedback(_Frozen):
+    """A PR-conversation comment that @-mentions the bot."""
+
+    kind: Literal["issue_comment_mention"] = "issue_comment_mention"
+    comment_id: Annotated[int, Field(ge=1)]
+    body: Annotated[str, Field(max_length=8192)]
+    commenter: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+type FeedbackItem = Annotated[
+    CiFailureFeedback
+    | ReviewChangesRequestedFeedback
+    | ReviewCommentMentionFeedback
+    | IssueCommentMentionFeedback,
+    Field(discriminator="kind"),
+]
+
+
 class ImplementerInput(_Frozen):
     """Input passed to the Implementer's ``/invocations`` endpoint, per task.
 
@@ -142,6 +192,10 @@ class ImplementerInput(_Frozen):
     ``requestor_sub`` is set, the Implementer fetches that user's GitHub
     OAuth token via AgentCore Identity and configures git author identity
     accordingly so commits attribute to the requestor.
+
+    On iteration runs (``iteration_count > 0``), the implementer is invoked
+    by the iteration_reactor (no ``task_token``) and consults the existing
+    PR branch + ``iteration_feedback`` rather than starting from ``main``.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -151,7 +205,19 @@ class ImplementerInput(_Frozen):
     run_id: str
     correlation_id: str
     actor_id: str = "system"
-    prior_feedback: str | None = None
+    iteration_count: Annotated[int, Field(ge=0, le=16)] = 0
+    iteration_feedback: Annotated[list[FeedbackItem], Field(max_length=32)] | None = None
+    # Set by the iteration_reactor on iteration runs (iteration_count > 0)
+    # so the implementer can post inline replies + status updates against
+    # the existing PR. ``None`` on iteration_count == 0 (PR doesn't exist
+    # yet — implementer opens it).
+    pr_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+        ]
+        | None
+    ) = None
     requestor_sub: str | None = None
     target_repo: (
         Annotated[
@@ -164,7 +230,9 @@ class ImplementerInput(_Frozen):
     # ``states:SendTaskSuccess`` / ``SendTaskFailure`` directly when
     # done. Sessions longer than the SDK's HTTP read timeout (~60s) need
     # this; the synchronous /invocations response body is ignored when
-    # ``task_token`` is set.
+    # ``task_token`` is set. When invoked by the iteration_reactor (not by
+    # SFN), this is ``None`` and the implementer emits its own
+    # ``TASK.ITERATION_COMMITTED`` event before returning.
     task_token: str | None = None
 
 

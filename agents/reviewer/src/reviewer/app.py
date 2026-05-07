@@ -26,6 +26,9 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from common.event_emit import publish
+from common.events import EventEnvelope, ReviewReady
+from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ReviewerInput, ReviewerResult, usage_from_strands
 from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from reviewer.agent import build_agent, model_id, review_pr
@@ -101,12 +104,48 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
     if payload.task_token is not None:
         send_task_success(task_token=payload.task_token, output=output)
         return {"task_token_dispatched": True, "ok": True}
+    publish_review_ready(payload, result)
     return output
 
 
 def upload_review(review: Review, *, run_id: str, task_id: str) -> None:
     """Render and upload the review Markdown to S3."""
     write_review(run_id=run_id, task_id=task_id, content=render_review(review))
+
+
+def publish_review_ready(payload: ReviewerInput, result: ReviewerResult) -> None:
+    """Emit REVIEW.READY ourselves when invoked without a SF task_token.
+
+    On the SFN-driven path the ``PublishReviewReady`` ASL state emits this
+    event after SendTaskSuccess. On the iteration_reactor path there's no
+    SFN, so the agent must publish so downstream consumers (event_projector,
+    iteration_reactor's second-stage dispatch) see the completion.
+    """
+    envelope = EventEnvelope[ReviewReady](
+        event_id=new_event_id(),
+        type="REVIEW.READY",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="reviewer",
+        payload=ReviewReady(
+            project_slug=payload.project_slug,
+            spec_slug=payload.spec_slug,
+            task_id=result.task_id,
+            pr_url=result.pr_url,
+            verdict=result.verdict,
+            comment_count=result.comment_count,
+            high_severity_count=result.high_severity_count,
+            medium_severity_count=result.medium_severity_count,
+            low_severity_count=result.low_severity_count,
+            summary=result.summary,
+            session_id=result.session_id,
+            token_in=result.token_in,
+            token_out=result.token_out,
+            cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+        ),
+    )
+    publish(envelope)
 
 
 @cache

@@ -43,6 +43,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request, status
 
 from common import github_app as common_github
+from common.github_mentions import has_bot_mention
 from dashboard.deps import ddb, lambda_client, secrets, settings
 
 router = APIRouter()
@@ -91,6 +92,16 @@ async def receive_github_webhook(request: Request) -> dict[str, Any]:
         invoke_hitl(decision)
         return {"ok": True, "decision": decision["decision"], "gate_ref": decision["gate_ref"]}
 
+    delivery_id = request.headers.get("x-github-delivery", "")
+    iteration = parse_iteration(event_type, payload, delivery_id=delivery_id)
+    if iteration is not None:
+        invoke_reactor(iteration)
+        return {
+            "ok": True,
+            "iteration": iteration["trigger_kind"],
+            "task_id": iteration["task_id"],
+        }
+
     cancel = parse_cancellation(event_type, payload)
     if cancel is not None:
         invoke_hitl(cancel)
@@ -117,21 +128,24 @@ def parse_decision(event_type: str, payload: dict[str, Any]) -> dict[str, str] |
 
 
 def decision_from_review(payload: dict[str, Any]) -> dict[str, str] | None:
-    """Parse a ``pull_request_review.submitted`` payload."""
+    """Parse a ``pull_request_review.submitted state=approved`` payload.
+
+    ``state=changes_requested`` reviews used to short-circuit the run as
+    a HITL ``reject`` — they now route to :func:`parse_iteration` so the
+    implementer can address the requested changes with a fix commit.
+    """
     review = payload.get("review", {})
-    state = review.get("state")
-    if state not in {"approved", "changes_requested"}:
+    if review.get("state") != "approved":
         return None
     pr = payload.get("pull_request", {})
     run_id, gate_ref = parse_run_meta(pr.get("body", "") or "")
     if run_id is None or gate_ref is None:
         return None
-    decision = "approve" if state == "approved" else "reject"
     return {
         "op": "DECIDE",
         "run_id": run_id,
         "gate_ref": gate_ref,
-        "decision": decision,
+        "decision": "approve",
         "reviewer": review.get("user", {}).get("login", "unknown"),
         "reason": review.get("body") or "",
     }
@@ -209,6 +223,10 @@ def decision_from_comment(payload: dict[str, Any]) -> dict[str, str] | None:
 
 
 RUN_META_RE = re.compile(r"_run_id:\s*([\w-]+)_.*?gate_ref:\s*([\w:.-]+)", re.DOTALL)
+PROJECT_META_RE = re.compile(r"_project:\s*([\w-]+)_")
+SPEC_META_RE = re.compile(r"_spec:\s*`docs/specs/([\w-]+)/`_")
+CORRELATION_META_RE = re.compile(r"_correlation_id:\s*([\w-]+)_")
+TASK_GATE_REF_RE = re.compile(r"^task:(T-\d+)$")
 
 
 def parse_run_meta(body: str) -> tuple[str | None, str | None]:
@@ -217,6 +235,31 @@ def parse_run_meta(body: str) -> tuple[str | None, str | None]:
     if match is None:
         return None, None
     return match.group(1), match.group(2)
+
+
+def parse_iteration_meta(body: str) -> dict[str, str | None]:
+    """Extract every metadata field the iteration_reactor needs from a PR body.
+
+    Returns a flat dict (project_slug, spec_slug, correlation_id) — each
+    value is ``None`` when the corresponding marker is missing. The PR
+    body footer is written by ``implementer.client.pr_body_footer``;
+    if the implementer was rebuilt before this rolled out, some markers
+    will be absent and the iteration trigger silently no-ops.
+    """
+    project_match = PROJECT_META_RE.search(body)
+    spec_match = SPEC_META_RE.search(body)
+    correlation_match = CORRELATION_META_RE.search(body)
+    return {
+        "project_slug": project_match.group(1) if project_match else None,
+        "spec_slug": spec_match.group(1) if spec_match else None,
+        "correlation_id": correlation_match.group(1) if correlation_match else None,
+    }
+
+
+def task_id_from_gate_ref(gate_ref: str) -> str | None:
+    """Extract the task_id (``T-NNN``) from a ``task:T-NNN`` gate ref."""
+    match = TASK_GATE_REF_RE.match(gate_ref)
+    return match.group(1) if match else None
 
 
 def invoke_hitl(payload: dict[str, Any]) -> None:
@@ -272,6 +315,231 @@ def lookup_run_by_issue(issue_url: str) -> str | None:
     if not items:
         return None
     return items[0]["pk"]["S"].removeprefix("RUN#")
+
+
+def parse_iteration(
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    delivery_id: str,
+) -> dict[str, Any] | None:
+    """Return an iteration-trigger payload, or ``None`` if no trigger fires.
+
+    Four event paths land here:
+
+    * ``pull_request_review.submitted`` with ``state=changes_requested``
+      (formerly a HITL ``reject``)
+    * ``pull_request_review_comment.created`` with a bot @-mention
+    * ``issue_comment.created`` on a PR with a bot @-mention (and not
+      a ``/aidlc approve|reject`` magic-string — those still go to HITL)
+    * ``workflow_run.completed`` with a non-success conclusion
+
+    All four require the PR body footer's metadata; PRs not opened by
+    the implementer (no footer) silently no-op.
+    """
+    if not delivery_id:
+        return None
+    if event_type == "pull_request_review":
+        return iteration_from_review(payload, delivery_id=delivery_id)
+    if event_type == "pull_request_review_comment":
+        return iteration_from_review_comment(payload, delivery_id=delivery_id)
+    if event_type == "issue_comment":
+        return iteration_from_pr_comment(payload, delivery_id=delivery_id)
+    if event_type == "workflow_run":
+        return iteration_from_workflow_run(payload, delivery_id=delivery_id)
+    return None
+
+
+def iteration_from_review(payload: dict[str, Any], *, delivery_id: str) -> dict[str, Any] | None:
+    """A reviewer asked for changes — re-invoke the implementer with the review body."""
+    review = payload.get("review", {})
+    if review.get("state") != "changes_requested":
+        return None
+    pr = payload.get("pull_request", {})
+    base = build_iteration_base(pr, payload, delivery_id=delivery_id)
+    if base is None:
+        return None
+    return {
+        **base,
+        "trigger_kind": "review_changes_requested",
+        "trigger_payload": {
+            "reviewer": review.get("user", {}).get("login", "unknown"),
+            "body": review.get("body") or "",
+            "review_id": int(review.get("id", 0)),
+        },
+    }
+
+
+def iteration_from_review_comment(
+    payload: dict[str, Any],
+    *,
+    delivery_id: str,
+) -> dict[str, Any] | None:
+    """An inline review comment that @-mentions the bot."""
+    if payload.get("action") != "created":
+        return None
+    comment = payload.get("comment", {})
+    if not has_bot_mention(comment.get("body"), settings().github_bot_login):
+        return None
+    pr = payload.get("pull_request", {})
+    base = build_iteration_base(pr, payload, delivery_id=delivery_id)
+    if base is None:
+        return None
+    return {
+        **base,
+        "trigger_kind": "review_comment_mention",
+        "trigger_payload": {
+            "path": comment.get("path", ""),
+            "line": comment.get("line"),
+            "commit_id": comment.get("commit_id", base["head_sha"]),
+            "comment_id": int(comment.get("id", 0)),
+            "in_reply_to_id": comment.get("in_reply_to_id"),
+            "body": comment.get("body") or "",
+            "commenter": comment.get("user", {}).get("login", "unknown"),
+        },
+    }
+
+
+def iteration_from_pr_comment(
+    payload: dict[str, Any],
+    *,
+    delivery_id: str,
+) -> dict[str, Any] | None:
+    """A PR-conversation comment that @-mentions the bot.
+
+    Skipped when the comment also matches ``/aidlc approve|reject`` —
+    those still flow through ``decision_from_comment`` to HITL so a
+    human's explicit gate decision wins over an iteration request.
+    """
+    if payload.get("action") != "created":
+        return None
+    if payload.get("issue", {}).get("pull_request") is None:
+        return None
+    comment = payload.get("comment", {})
+    body = comment.get("body") or ""
+    if APPROVE_RE.search(body) or REJECT_RE.search(body):
+        return None
+    if not has_bot_mention(body, settings().github_bot_login):
+        return None
+    issue = payload.get("issue", {})
+    issue_pr = issue.get("pull_request") or {}
+    synthetic_pr = {
+        "body": issue.get("body") or "",
+        "html_url": issue_pr.get("html_url") or issue.get("html_url", ""),
+        "number": issue.get("number"),
+    }
+    base = build_iteration_base(synthetic_pr, payload, delivery_id=delivery_id)
+    if base is None:
+        return None
+    return {
+        **base,
+        "trigger_kind": "issue_comment_mention",
+        "trigger_payload": {
+            "comment_id": int(comment.get("id", 0)),
+            "body": body,
+            "commenter": comment.get("user", {}).get("login", "unknown"),
+        },
+    }
+
+
+def iteration_from_workflow_run(
+    payload: dict[str, Any],
+    *,
+    delivery_id: str,
+) -> dict[str, Any] | None:
+    """A CI workflow run finished with a failing conclusion."""
+    if payload.get("action") != "completed":
+        return None
+    workflow_run = payload.get("workflow_run", {})
+    conclusion = workflow_run.get("conclusion")
+    failing = {"failure", "timed_out", "cancelled", "action_required", "stale"}
+    if conclusion not in failing:
+        return None
+    pull_requests = workflow_run.get("pull_requests") or []
+    if not pull_requests:
+        return None
+    # workflow_run.pull_requests doesn't carry the body — fetch from the
+    # event's pull_request when present, else accept the limited subset.
+    pr = pull_requests[0]
+    pr_body = pr.get("body") or workflow_run.get("head_commit", {}).get("message", "") or ""
+    pr_url = (
+        pr.get("html_url")
+        or f"{(payload.get('repository') or {}).get('html_url', '')}/pull/{pr.get('number', 0)}"
+    )
+    pr_for_meta = {"body": pr_body, "html_url": pr_url, "number": pr.get("number", 0)}
+    base = build_iteration_base(
+        pr_for_meta,
+        payload,
+        delivery_id=delivery_id,
+        head_sha_override=workflow_run.get("head_sha"),
+    )
+    if base is None:
+        return None
+    return {
+        **base,
+        "trigger_kind": "ci_failure",
+        "trigger_payload": {
+            "workflow_name": workflow_run.get("name", "(unknown)"),
+            "conclusion": conclusion,
+            "html_url": workflow_run.get("html_url", ""),
+        },
+    }
+
+
+def build_iteration_base(
+    pr: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    delivery_id: str,
+    head_sha_override: str | None = None,
+) -> dict[str, Any] | None:
+    """Build the common fields every iteration trigger needs.
+
+    Returns ``None`` when the PR body lacks the implementer-written
+    metadata footer or when the gate_ref isn't a task gate (e.g. the
+    spec gate has no task to iterate on).
+    """
+    body = pr.get("body") or ""
+    run_id, gate_ref = parse_run_meta(body)
+    if run_id is None or gate_ref is None:
+        return None
+    task_id = task_id_from_gate_ref(gate_ref)
+    if task_id is None:
+        return None
+    extras = parse_iteration_meta(body)
+    if not (extras["project_slug"] and extras["spec_slug"] and extras["correlation_id"]):
+        return None
+    pr_url = pr.get("html_url")
+    pr_number = pr.get("number")
+    # head_sha is empty for issue_comment webhooks (GitHub doesn't include
+    # it in the comment payload). The reactor + implementer recompute it
+    # from the branch HEAD on checkout, so an empty value here is OK.
+    head_sha = head_sha_override or (pr.get("head") or {}).get("sha") or ""
+    target_repo = (payload.get("repository") or {}).get("full_name")
+    if not (pr_url and isinstance(pr_number, int) and target_repo):
+        return None
+    return {
+        "run_id": run_id,
+        "task_id": task_id,
+        "correlation_id": extras["correlation_id"],
+        "project_slug": extras["project_slug"],
+        "spec_slug": extras["spec_slug"],
+        "spec_s3_prefix": f"specs/{extras['spec_slug']}/",
+        "target_repo": target_repo,
+        "pr_url": pr_url,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "delivery_id": delivery_id,
+    }
+
+
+def invoke_reactor(payload: dict[str, Any]) -> None:
+    """Synchronously invoke the iteration_reactor Lambda."""
+    lambda_client().invoke(
+        FunctionName=settings().iteration_reactor_function,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
 
 
 def parse_triage(event_type: str, payload: dict[str, Any]) -> dict[str, Any] | None:

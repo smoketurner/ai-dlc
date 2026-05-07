@@ -116,6 +116,16 @@ variable "triage_dispatcher_function_arn" {
   type        = string
 }
 
+variable "iteration_reactor_function_name" {
+  description = "Name of the iteration_reactor Lambda the dashboard invokes on PR iteration triggers."
+  type        = string
+}
+
+variable "iteration_reactor_function_arn" {
+  description = "ARN of the iteration_reactor Lambda."
+  type        = string
+}
+
 variable "github_app_secret_arn" {
   description = <<-EOT
     Secrets Manager ARN of the GitHub App credentials. The dashboard

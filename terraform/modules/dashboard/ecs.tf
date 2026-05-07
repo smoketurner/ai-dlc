@@ -110,6 +110,7 @@ resource "aws_ecs_task_definition" "this" {
         { name = "AIDLC_ARTIFACTS_BUCKET", value = var.artifacts_bucket },
         { name = "AIDLC_HITL_HANDLER_FUNCTION", value = var.hitl_handler_function_name },
         { name = "AIDLC_TRIAGE_DISPATCHER_FUNCTION", value = var.triage_dispatcher_function_name },
+        { name = "AIDLC_ITERATION_REACTOR_FUNCTION", value = var.iteration_reactor_function_name },
         { name = "AIDLC_GITHUB_APP_SECRET_ARN", value = var.github_app_secret_arn },
         { name = "AIDLC_GITHUB_WEBHOOK_SECRET_ID", value = var.github_webhook_secret_id },
         { name = "AIDLC_COGNITO_REGION", value = local.aws_region },

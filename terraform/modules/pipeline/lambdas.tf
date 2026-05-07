@@ -265,6 +265,128 @@ module "runtime_invoker" {
   })
 }
 
+module "iteration_reactor" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${local.prefix}-iteration-reactor"
+  description   = "PR-iteration side-loop: re-invokes Implementer/Reviewer/Tester on PR feedback."
+  handler       = "iteration_reactor.handler.handler"
+  runtime       = "python3.13"
+  architectures = ["arm64"]
+  memory_size   = 256
+  # Returns ~immediately (2s read-timeout for the agent dispatch + DDB
+  # update). 60s lambda timeout covers cold-start and the worst-case
+  # case-of-three sequential dispatches.
+  timeout      = 60
+  publish      = true
+  tracing_mode = "Active"
+  layers       = [var.common_layer_arn]
+
+  source_path = [{
+    path             = "${local.source_dir}/iteration_reactor/src"
+    pip_requirements = "${local.source_dir}/iteration_reactor/requirements.txt"
+  }]
+  build_in_docker = true
+  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+
+  environment_variables = {
+    AIDLC_RUNS_TABLE                = var.runs_table
+    AIDLC_BUS_NAME                  = var.bus_name
+    AIDLC_IMPLEMENTER_RUNTIME_ARN   = local.implementer_runtime_arn
+    AIDLC_REVIEWER_RUNTIME_ARN      = local.reviewer_runtime_arn
+    AIDLC_TESTER_RUNTIME_ARN        = local.tester_runtime_arn
+    AIDLC_REPO_HELPER_FUNCTION_NAME = var.repo_helper_function_name
+    POWERTOOLS_SERVICE_NAME         = "iteration_reactor"
+    POWERTOOLS_METRICS_NAMESPACE    = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL            = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT     = "false"
+  }
+
+  cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
+
+  attach_policy_statements = true
+  policy_statements = merge(
+    {
+      runs_table = {
+        # GetItem to read prior iteration counter; UpdateItem to bump
+        # the counter + record the new delivery_id for dedup.
+        effect    = "Allow"
+        actions   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+        resources = [var.runs_table_arn]
+      }
+      put_events = {
+        # TASK.ITERATION_STARTED + TASK.MAX_ITERATIONS_REACHED.
+        effect    = "Allow"
+        actions   = ["events:PutEvents"]
+        resources = [var.bus_arn]
+      }
+      invoke_repo_helper = {
+        # post_iteration_comment(): drop a "starting iteration N" comment
+        # on the PR so the human knows the agent is working.
+        effect    = "Allow"
+        actions   = ["lambda:InvokeFunction"]
+        resources = [var.repo_helper_function_arn]
+      }
+    },
+    length(local.runtime_arns) > 0 ? {
+      invoke_agent_runtime = {
+        effect  = "Allow"
+        actions = ["bedrock-agentcore:InvokeAgentRuntime"]
+        resources = concat(
+          [
+            local.implementer_runtime_arn,
+            local.reviewer_runtime_arn,
+            local.tester_runtime_arn,
+          ],
+          [
+            "${local.implementer_runtime_arn}/runtime-endpoint/*",
+            "${local.reviewer_runtime_arn}/runtime-endpoint/*",
+            "${local.tester_runtime_arn}/runtime-endpoint/*",
+          ],
+        )
+      }
+    } : {},
+  )
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-iteration-reactor"
+    Component = "pipeline"
+  })
+}
+
+# EventBridge rule that hands TASK.ITERATION_COMMITTED events back to the
+# reactor so it can dispatch Reviewer + Tester for the new commit.
+
+resource "aws_cloudwatch_event_rule" "iteration_committed" {
+  name           = "${local.prefix}-iteration-committed"
+  description    = "Route TASK.ITERATION_COMMITTED to iteration_reactor for advisory dispatch."
+  event_bus_name = var.bus_name
+  event_pattern = jsonencode({
+    source      = ["ai-dlc.implementer"]
+    detail-type = ["TASK.ITERATION_COMMITTED"]
+  })
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-iteration-committed"
+    Component = "pipeline"
+  })
+}
+
+resource "aws_cloudwatch_event_target" "iteration_reactor_advisory" {
+  rule           = aws_cloudwatch_event_rule.iteration_committed.name
+  event_bus_name = var.bus_name
+  arn            = module.iteration_reactor.lambda_function_arn
+}
+
+resource "aws_lambda_permission" "events_invoke_iteration_reactor" {
+  statement_id  = "AllowEventBridgeInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = module.iteration_reactor.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.iteration_committed.arn
+}
+
 module "event_projector" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"

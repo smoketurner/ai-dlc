@@ -26,7 +26,18 @@ output "lambda_arns" {
     event_projector   = module.event_projector.lambda_function_arn
     triage_dispatcher = module.triage_dispatcher.lambda_function_arn
     runtime_invoker   = module.runtime_invoker.lambda_function_arn
+    iteration_reactor = module.iteration_reactor.lambda_function_arn
   }
+}
+
+output "iteration_reactor_function_name" {
+  description = "Name of the iteration_reactor Lambda — needed by the dashboard webhook handler."
+  value       = module.iteration_reactor.lambda_function_name
+}
+
+output "iteration_reactor_function_arn" {
+  description = "ARN of the iteration_reactor Lambda."
+  value       = module.iteration_reactor.lambda_function_arn
 }
 
 output "triage_dispatcher_function_name" {

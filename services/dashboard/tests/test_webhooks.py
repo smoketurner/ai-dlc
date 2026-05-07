@@ -13,13 +13,21 @@ import pytest
 from fastapi import HTTPException
 
 from dashboard.routes.webhooks import (
+    build_iteration_base,
     decision_from_comment,
     decision_from_pr_close,
     decision_from_review,
+    iteration_from_pr_comment,
+    iteration_from_review,
+    iteration_from_review_comment,
+    iteration_from_workflow_run,
     parse_cancellation,
     parse_decision,
+    parse_iteration,
+    parse_iteration_meta,
     parse_run_meta,
     parse_triage,
+    task_id_from_gate_ref,
     triage_from_issue_comment,
     triage_from_issues,
     verify_signature,
@@ -100,14 +108,13 @@ def test_decision_from_review_approved() -> None:
     assert decision["reviewer"] == "alice"
 
 
-def test_decision_from_review_changes_requested_maps_to_reject() -> None:
+def test_decision_from_review_changes_requested_no_longer_rejects() -> None:
+    """changes_requested reviews now route to iteration_reactor instead of HITL reject."""
     payload = {
         "review": {"state": "changes_requested", "user": {"login": "alice"}, "body": "nope"},
         "pull_request": {"body": "_run_id: r1_\ngate_ref: spec"},
     }
-    decision = decision_from_review(payload)
-    assert decision is not None
-    assert decision["decision"] == "reject"
+    assert decision_from_review(payload) is None
 
 
 def test_decision_from_review_ignores_dismissed() -> None:
@@ -505,3 +512,266 @@ def test_parse_cancellation_ignores_non_unassign_actions(
     payload = unassign_payload()
     payload["action"] = "assigned"
     assert parse_cancellation("issues", payload) is None
+
+
+# ---------------------------------------------------------------------------
+# Iteration trigger parsers
+# ---------------------------------------------------------------------------
+
+PR_BODY_FOOTER = (
+    "_run_id: r1_  ·  _correlation_id: c1_  ·  "
+    "_project: demo_  ·  _spec: `docs/specs/add-healthz/`_\n\n"
+    "gate_ref: task:T-001"
+)
+
+
+def pr_envelope(*, body: str = PR_BODY_FOOTER) -> dict[str, Any]:
+    return {
+        "body": body,
+        "html_url": "https://github.com/owner/repo/pull/42",
+        "number": 42,
+        "head": {"sha": "abcdef0123"},
+    }
+
+
+def repo_envelope() -> dict[str, Any]:
+    return {"full_name": "owner/repo", "html_url": "https://github.com/owner/repo"}
+
+
+def test_parse_iteration_meta_extracts_all_fields() -> None:
+    extras = parse_iteration_meta(PR_BODY_FOOTER)
+    assert extras["project_slug"] == "demo"
+    assert extras["spec_slug"] == "add-healthz"
+    assert extras["correlation_id"] == "c1"
+
+
+def test_parse_iteration_meta_returns_none_when_missing() -> None:
+    extras = parse_iteration_meta("no markers here")
+    assert extras["project_slug"] is None
+    assert extras["spec_slug"] is None
+    assert extras["correlation_id"] is None
+
+
+def test_task_id_from_gate_ref_extracts() -> None:
+    assert task_id_from_gate_ref("task:T-001") == "T-001"
+
+
+def test_task_id_from_gate_ref_rejects_non_task_gate() -> None:
+    assert task_id_from_gate_ref("spec") is None
+
+
+def test_build_iteration_base_minimal_path() -> None:
+    payload = {"repository": repo_envelope()}
+    base = build_iteration_base(pr_envelope(), payload, delivery_id="d-1")
+    assert base is not None
+    assert base["task_id"] == "T-001"
+    assert base["project_slug"] == "demo"
+    assert base["spec_slug"] == "add-healthz"
+    assert base["spec_s3_prefix"] == "specs/add-healthz/"
+    assert base["target_repo"] == "owner/repo"
+    assert base["pr_url"] == "https://github.com/owner/repo/pull/42"
+    assert base["pr_number"] == 42
+    assert base["head_sha"] == "abcdef0123"
+    assert base["delivery_id"] == "d-1"
+
+
+def test_build_iteration_base_returns_none_when_footer_missing() -> None:
+    payload = {"repository": repo_envelope()}
+    assert build_iteration_base(pr_envelope(body="no footer"), payload, delivery_id="d-1") is None
+
+
+def test_build_iteration_base_returns_none_when_gate_ref_isnt_task() -> None:
+    body = (
+        "_run_id: r1_  ·  _correlation_id: c1_  ·  "
+        "_project: demo_  ·  _spec: `docs/specs/add-healthz/`_\n\n"
+        "gate_ref: spec"
+    )
+    payload = {"repository": repo_envelope()}
+    assert build_iteration_base(pr_envelope(body=body), payload, delivery_id="d-1") is None
+
+
+def test_iteration_from_review_changes_requested_builds_trigger() -> None:
+    payload = {
+        "review": {
+            "id": 99,
+            "state": "changes_requested",
+            "user": {"login": "alice"},
+            "body": "Fix the null check.",
+        },
+        "pull_request": pr_envelope(),
+        "repository": repo_envelope(),
+    }
+    out = iteration_from_review(payload, delivery_id="d-1")
+    assert out is not None
+    assert out["trigger_kind"] == "review_changes_requested"
+    assert out["trigger_payload"]["review_id"] == 99
+    assert out["trigger_payload"]["reviewer"] == "alice"
+
+
+def test_iteration_from_review_skips_approved() -> None:
+    payload = {
+        "review": {"state": "approved", "user": {"login": "alice"}},
+        "pull_request": pr_envelope(),
+        "repository": repo_envelope(),
+    }
+    assert iteration_from_review(payload, delivery_id="d-1") is None
+
+
+def test_iteration_from_review_comment_requires_bot_mention() -> None:
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 7,
+            "path": "src/x.py",
+            "line": 42,
+            "commit_id": "abcdef0123",
+            "body": "Just a regular comment.",  # no @-mention
+            "user": {"login": "alice"},
+        },
+        "pull_request": pr_envelope(),
+        "repository": repo_envelope(),
+    }
+    assert iteration_from_review_comment(payload, delivery_id="d-1") is None
+
+
+def test_iteration_from_review_comment_with_mention_builds_trigger() -> None:
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 7,
+            "path": "src/x.py",
+            "line": 42,
+            "commit_id": "abcdef0123",
+            "body": f"@{BOT_LOGIN} please fix this null-check",
+            "user": {"login": "alice"},
+        },
+        "pull_request": pr_envelope(),
+        "repository": repo_envelope(),
+    }
+    out = iteration_from_review_comment(payload, delivery_id="d-1")
+    assert out is not None
+    assert out["trigger_kind"] == "review_comment_mention"
+    assert out["trigger_payload"]["comment_id"] == 7
+    assert out["trigger_payload"]["path"] == "src/x.py"
+
+
+def test_iteration_from_pr_comment_requires_bot_mention_on_pr() -> None:
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 12,
+            "body": f"@{BOT_LOGIN} take another look",
+            "user": {"login": "alice"},
+        },
+        "issue": {
+            "pull_request": {"html_url": "https://github.com/owner/repo/pull/42"},
+            "body": PR_BODY_FOOTER,
+            "number": 42,
+        },
+        "repository": repo_envelope(),
+    }
+    out = iteration_from_pr_comment(payload, delivery_id="d-1")
+    assert out is not None
+    assert out["trigger_kind"] == "issue_comment_mention"
+
+
+def test_iteration_from_pr_comment_aidlc_magic_string_takes_precedence() -> None:
+    """A `/aidlc approve` comment that ALSO @-mentions the bot routes to HITL, not iteration."""
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 13,
+            "body": f"/aidlc approve — @{BOT_LOGIN}",
+            "user": {"login": "alice"},
+        },
+        "issue": {"pull_request": {}, "body": PR_BODY_FOOTER},
+        "repository": repo_envelope(),
+    }
+    assert iteration_from_pr_comment(payload, delivery_id="d-1") is None
+
+
+def test_iteration_from_pr_comment_skips_non_pr_comments() -> None:
+    payload = {
+        "action": "created",
+        "comment": {"id": 1, "body": f"@{BOT_LOGIN}", "user": {"login": "alice"}},
+        "issue": {"body": PR_BODY_FOOTER},  # no pull_request key
+        "repository": repo_envelope(),
+    }
+    assert iteration_from_pr_comment(payload, delivery_id="d-1") is None
+
+
+def test_iteration_from_workflow_run_failure_builds_trigger() -> None:
+    payload = {
+        "action": "completed",
+        "workflow_run": {
+            "name": "CI / test",
+            "conclusion": "failure",
+            "html_url": "https://github.com/owner/repo/actions/runs/1",
+            "head_sha": "deadbeef00",
+            "pull_requests": [
+                {"number": 42, "html_url": "https://github.com/owner/repo/pull/42",
+                 "body": PR_BODY_FOOTER},
+            ],
+        },
+        "repository": repo_envelope(),
+    }
+    out = iteration_from_workflow_run(payload, delivery_id="d-1")
+    assert out is not None
+    assert out["trigger_kind"] == "ci_failure"
+    assert out["trigger_payload"]["workflow_name"] == "CI / test"
+    assert out["head_sha"] == "deadbeef00"
+
+
+def test_iteration_from_workflow_run_skips_success() -> None:
+    payload = {
+        "action": "completed",
+        "workflow_run": {
+            "name": "CI",
+            "conclusion": "success",
+            "head_sha": "deadbeef00",
+            "pull_requests": [{"number": 42, "html_url": "https://github.com/x/y/pull/42",
+                               "body": PR_BODY_FOOTER}],
+        },
+        "repository": repo_envelope(),
+    }
+    assert iteration_from_workflow_run(payload, delivery_id="d-1") is None
+
+
+def test_iteration_from_workflow_run_skips_when_no_pr_attached() -> None:
+    payload = {
+        "action": "completed",
+        "workflow_run": {
+            "name": "CI",
+            "conclusion": "failure",
+            "head_sha": "deadbeef00",
+            "pull_requests": [],
+        },
+        "repository": repo_envelope(),
+    }
+    assert iteration_from_workflow_run(payload, delivery_id="d-1") is None
+
+
+def test_parse_iteration_routes_correctly() -> None:
+    review_payload = {
+        "review": {"id": 99, "state": "changes_requested", "user": {"login": "alice"}, "body": "x"},
+        "pull_request": pr_envelope(),
+        "repository": repo_envelope(),
+    }
+    out = parse_iteration("pull_request_review", review_payload, delivery_id="d-1")
+    assert out is not None
+    assert out["trigger_kind"] == "review_changes_requested"
+
+
+def test_parse_iteration_returns_none_for_unknown_event() -> None:
+    out = parse_iteration("ping", {}, delivery_id="d-1")
+    assert out is None
+
+
+def test_parse_iteration_returns_none_when_no_delivery_id() -> None:
+    """Without an ``X-GitHub-Delivery`` header we can't dedupe — skip the trigger."""
+    review_payload = {
+        "review": {"id": 99, "state": "changes_requested", "user": {"login": "alice"}, "body": "x"},
+        "pull_request": pr_envelope(),
+        "repository": repo_envelope(),
+    }
+    assert parse_iteration("pull_request_review", review_payload, delivery_id="") is None

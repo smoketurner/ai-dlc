@@ -677,3 +677,279 @@ def test_mint_clone_token_requires_positive_pr_number() -> None:
     )
     assert out["ok"] is False
     assert out["error"]["kind"] == "validation_error"
+
+
+def test_list_pr_comments_calls_issue_comments_endpoint(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    seen: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/issues/42/comments"
+        assert request.url.params.get("per_page") == "100"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1001,
+                    "user": {"login": "alice", "type": "User"},
+                    "body": "@ai-dlc[bot] please fix",
+                    "created_at": "2026-05-06T12:00:00Z",
+                    "updated_at": "2026-05-06T12:00:00Z",
+                    "html_url": "https://github.com/o/r/pull/42#issuecomment-1001",
+                },
+                {
+                    "id": 1002,
+                    "user": {"login": "ai-dlc[bot]", "type": "Bot"},
+                    "body": "ack",
+                    "created_at": "2026-05-06T12:01:00Z",
+                    "updated_at": "2026-05-06T12:01:00Z",
+                    "html_url": "https://github.com/o/r/pull/42#issuecomment-1002",
+                },
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "list_pr_comments", "repo": "o/r", "pr_number": 42}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    comments = out["result"]["comments"]
+    assert len(comments) == 2
+    assert comments[0]["user"] == "alice"
+    assert comments[0]["user_type"] == "User"
+    assert comments[1]["user_type"] == "Bot"
+
+
+def test_list_pr_comments_passes_since_filter(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    captured: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=[])
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "list_pr_comments",
+                "repo": "o/r",
+                "pr_number": 1,
+                "since": "2026-01-01T00:00:00Z",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert captured[0].url.params.get("since") == "2026-01-01T00:00:00Z"
+
+
+def test_list_pr_review_comments_calls_pulls_endpoint(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/pulls/42/comments"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 7,
+                    "user": {"login": "alice", "type": "User"},
+                    "body": "this branch is wrong",
+                    "path": "src/handler.py",
+                    "line": 42,
+                    "original_line": 40,
+                    "commit_id": "abcdef0",
+                    "in_reply_to_id": None,
+                    "pull_request_review_id": 999,
+                    "created_at": "2026-05-06T12:00:00Z",
+                    "html_url": "https://github.com/o/r/pull/42#discussion_r7",
+                },
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "list_pr_review_comments", "repo": "o/r", "pr_number": 42}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    comment = out["result"]["comments"][0]
+    assert comment["path"] == "src/handler.py"
+    assert comment["line"] == 42
+    assert comment["commit_id"] == "abcdef0"
+    assert comment["pull_request_review_id"] == 999
+
+
+def test_reply_pr_review_comment_posts_to_replies_endpoint(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/o/r/pulls/42/comments/7/replies"
+        assert json.loads(request.content) == {"body": "fixed in next commit"}
+        return httpx.Response(
+            201,
+            json={
+                "id": 8,
+                "html_url": "https://github.com/o/r/pull/42#discussion_r8",
+                "in_reply_to_id": 7,
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "reply_pr_review_comment",
+                "repo": "o/r",
+                "pr_number": 42,
+                "comment_id": 7,
+                "body": "fixed in next commit",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"] == {
+        "comment_id": 8,
+        "comment_url": "https://github.com/o/r/pull/42#discussion_r8",
+        "in_reply_to_id": 7,
+    }
+
+
+def test_reply_pr_review_comment_requires_body() -> None:
+    out = h.handler(
+        {
+            "input": {
+                "op": "reply_pr_review_comment",
+                "repo": "o/r",
+                "pr_number": 1,
+                "comment_id": 1,
+                "body": "",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"
+
+
+def test_list_check_runs_calls_commits_endpoint(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/commits/abcdef0/check-runs"
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 2,
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "name": "CI / lint",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "html_url": "https://github.com/o/r/runs/1",
+                        "details_url": "https://example.com/1",
+                        "started_at": "2026-05-06T12:00:00Z",
+                        "completed_at": "2026-05-06T12:01:00Z",
+                        "output": {"title": "ok", "summary": "no issues"},
+                    },
+                    {
+                        "id": 2,
+                        "name": "CI / test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "html_url": "https://github.com/o/r/runs/2",
+                        "details_url": "https://example.com/2",
+                        "started_at": "2026-05-06T12:00:00Z",
+                        "completed_at": "2026-05-06T12:02:00Z",
+                        "output": {"title": "test failed", "summary": "1 of 50 failed"},
+                    },
+                ],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "list_check_runs", "repo": "o/r", "ref": "abcdef0"}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    runs = out["result"]["check_runs"]
+    assert len(runs) == 2
+    assert runs[1]["conclusion"] == "failure"
+    assert runs[1]["output"]["summary"] == "1 of 50 failed"
+
+
+def test_list_check_runs_filters_by_conclusion(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 3,
+                "check_runs": [
+                    {"id": 1, "name": "a", "status": "completed", "conclusion": "success"},
+                    {"id": 2, "name": "b", "status": "completed", "conclusion": "failure"},
+                    {"id": 3, "name": "c", "status": "completed", "conclusion": "timed_out"},
+                ],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "list_check_runs",
+                "repo": "o/r",
+                "ref": "main",
+                "filter_conclusions": ["failure", "timed_out"],
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    runs = out["result"]["check_runs"]
+    assert len(runs) == 2
+    assert {r["id"] for r in runs} == {2, 3}
+
+
+def test_list_check_runs_truncates_long_summary(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    long_summary = "x" * 10_000
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total_count": 1,
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "name": "CI",
+                        "status": "completed",
+                        "conclusion": "failure",
+                        "output": {"title": "fail", "summary": long_summary},
+                    },
+                ],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "list_check_runs", "repo": "o/r", "ref": "main"}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert len(out["result"]["check_runs"][0]["output"]["summary"]) == 4096

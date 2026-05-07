@@ -72,6 +72,12 @@ data "aws_iam_policy_document" "task_inline" {
   }
 
   statement {
+    sid       = "InvokeIterationReactor"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [var.iteration_reactor_function_arn]
+  }
+
+  statement {
     sid       = "ReadGithubAppSecret"
     actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
     resources = [var.github_app_secret_arn]

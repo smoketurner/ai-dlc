@@ -19,13 +19,15 @@ no module-level env-var reads in this code path.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import boto3
 import httpx
@@ -40,6 +42,7 @@ from common.github_app import (
 logger = structlog.get_logger()
 
 if TYPE_CHECKING:
+    from mypy_boto3_lambda.client import LambdaClient
     from mypy_boto3_s3.client import S3Client
 
 GIT_BIN = "/usr/bin/git"
@@ -428,3 +431,132 @@ def short_diff_summary() -> str:
 def shell_safe_join(args: list[str]) -> str:
     """Re-join ``args`` for log lines without breaking shell quoting."""
     return " ".join(shlex.quote(a) for a in args)
+
+
+# ----------------------------------------------------------------------
+# Iteration-mode helpers (iteration_count > 0).
+#
+# On iteration runs the implementer doesn't clone main + create a new
+# branch — the task branch already exists on origin from the prior
+# implementer run. Instead we fetch the existing branch and check it
+# out, let Claude make fix commits, then post inline replies via
+# repo_helper.
+# ----------------------------------------------------------------------
+
+PR_NUMBER_PATTERN = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)$")
+
+
+@cache
+def lambda_client() -> LambdaClient:
+    """Process-cached boto3 Lambda client (for invoking ``repo_helper``)."""
+    return boto3.client("lambda")
+
+
+def repo_helper_function_name() -> str | None:
+    """Lambda function name for ``repo_helper`` — empty when not wired in this env."""
+    return os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME") or None
+
+
+def parse_pr_number(pr_url: str) -> int:
+    """Extract the PR number from a github.com pull URL.
+
+    Raises ``ValueError`` if the URL doesn't match the expected shape —
+    the iteration_reactor only emits validated URLs so this is a
+    defensive check, not user input.
+    """
+    match = PR_NUMBER_PATTERN.match(pr_url)
+    if match is None:
+        msg = f"unparseable pr_url: {pr_url!r}"
+        raise ValueError(msg)
+    return int(match.group(1))
+
+
+def checkout_task_branch(branch: str) -> None:
+    """Fetch + check out an existing task branch (iteration mode).
+
+    Used when ``iteration_count > 0``. The branch exists on origin from
+    the prior implementer run; we want HEAD to land on top of it (rather
+    than recreating from main, which is what ``create_branch`` does for
+    iteration_count == 0). Idempotent — ``-B`` recreates the local ref.
+    """
+    run_git("fetch", "origin", branch)
+    run_git("checkout", "-B", branch, f"origin/{branch}")
+
+
+def invoke_repo_helper(*, op: str, requestor_sub: str | None, **fields: Any) -> dict[str, Any]:
+    """Synchronously invoke the ``repo_helper`` Lambda and return its result.
+
+    Mirrors the Proposer's pattern (``proposer.app:lambda_client().invoke``).
+    Raises ``RuntimeError`` on transport failure or when ``repo_helper``
+    returns ``{"ok": false, ...}`` — iteration-mode callers want to fail
+    loud rather than silently dropping a comment-reply or a check-runs
+    fetch.
+    """
+    fn = repo_helper_function_name()
+    if fn is None:
+        msg = "AIDLC_REPO_HELPER_FUNCTION_NAME unset; cannot invoke repo_helper"
+        raise RuntimeError(msg)
+    payload: dict[str, Any] = {"input": {"op": op, "requestor_sub": requestor_sub, **fields}}
+    response = lambda_client().invoke(
+        FunctionName=fn,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read())
+    if not body.get("ok"):
+        msg = f"repo_helper.{op} failed: {body.get('error')}"
+        raise RuntimeError(msg)
+    return body.get("result", {})
+
+
+def post_inline_replies(
+    *,
+    repo: str,
+    pr_number: int,
+    requestor_sub: str | None,
+    replies: list[tuple[int, str]],
+) -> None:
+    """Post a batch of PR-review-thread replies, one repo_helper call per reply.
+
+    ``replies`` is a list of ``(comment_id, body)`` tuples. Failures on
+    individual replies are logged but don't abort the batch — a single
+    deleted upstream comment shouldn't drop the rest.
+    """
+    for comment_id, body in replies:
+        try:
+            invoke_repo_helper(
+                op="reply_pr_review_comment",
+                requestor_sub=requestor_sub,
+                repo=repo,
+                pr_number=pr_number,
+                comment_id=comment_id,
+                body=body,
+            )
+        except Exception as exc:
+            logger.warning(
+                "reply_pr_review_comment failed",
+                repo=repo,
+                pr_number=pr_number,
+                comment_id=comment_id,
+                error=str(exc),
+            )
+
+
+def fetch_failed_check_runs(
+    *,
+    repo: str,
+    head_sha: str,
+    requestor_sub: str | None,
+) -> list[dict[str, Any]]:
+    """Return only the failing check runs for ``head_sha`` — for prompt context."""
+    result = invoke_repo_helper(
+        op="list_check_runs",
+        requestor_sub=requestor_sub,
+        repo=repo,
+        ref=head_sha,
+        filter_conclusions=["failure", "timed_out", "cancelled", "action_required", "stale"],
+    )
+    runs = result.get("check_runs", [])
+    if not isinstance(runs, list):
+        return []
+    return [run for run in runs if isinstance(run, dict)]

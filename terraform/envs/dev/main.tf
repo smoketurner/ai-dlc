@@ -103,6 +103,9 @@ module "agents" {
 
   env = var.env
 
+  bus_name = module.messaging.bus_name
+  bus_arn  = module.messaging.bus_arn
+
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
   memory_md_bucket     = module.state.memory_md_bucket
@@ -241,6 +244,9 @@ module "dashboard" {
 
   triage_dispatcher_function_name = module.pipeline.triage_dispatcher_function_name
   triage_dispatcher_function_arn  = module.pipeline.triage_dispatcher_function_arn
+
+  iteration_reactor_function_name = module.pipeline.iteration_reactor_function_name
+  iteration_reactor_function_arn  = module.pipeline.iteration_reactor_function_arn
 
   github_webhook_secret_id  = aws_secretsmanager_secret.github_webhook.name
   github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn

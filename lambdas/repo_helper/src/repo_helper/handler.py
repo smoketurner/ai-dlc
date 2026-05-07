@@ -172,6 +172,59 @@ class MintCloneTokenInput(BaseOp):
     pr_number: int = Field(ge=1)
 
 
+class ListPrCommentsInput(BaseOp):
+    """List PR-conversation comments (issue-style) for a pull request."""
+
+    op: Literal["list_pr_comments"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+    # ISO-8601 timestamp; only comments updated at/after this are returned.
+    since: str | None = Field(default=None, max_length=32)
+
+
+class ListPrReviewCommentsInput(BaseOp):
+    """List inline review-thread comments (line-anchored) on a pull request."""
+
+    op: Literal["list_pr_review_comments"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+
+
+class ReplyPrReviewCommentInput(BaseOp):
+    """Post a threaded reply under an existing PR review comment."""
+
+    op: Literal["reply_pr_review_comment"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+    comment_id: int = Field(ge=1)
+    body: str = Field(min_length=1, max_length=65_536)
+
+
+class ListCheckRunsInput(BaseOp):
+    """List GitHub Checks API check runs for a commit / branch.
+
+    ``ref`` is a SHA, branch name, or tag the checks attach to.
+    ``filter_conclusions`` narrows results to specific outcomes (e.g.
+    ``["failure", "timed_out"]``); ``None`` returns every check.
+    """
+
+    op: Literal["list_check_runs"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    ref: str = Field(min_length=1, max_length=256)
+    filter_conclusions: list[
+        Literal[
+            "success",
+            "failure",
+            "neutral",
+            "cancelled",
+            "skipped",
+            "timed_out",
+            "action_required",
+            "stale",
+        ]
+    ] | None = Field(default=None, max_length=8)
+
+
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
     "comment_pr": CommentPrInput,
@@ -183,6 +236,10 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "get_issue": GetIssueInput,
     "list_issues": ListIssuesInput,
     "mint_clone_token": MintCloneTokenInput,
+    "list_pr_comments": ListPrCommentsInput,
+    "list_pr_review_comments": ListPrReviewCommentsInput,
+    "reply_pr_review_comment": ReplyPrReviewCommentInput,
+    "list_check_runs": ListCheckRunsInput,
 }
 
 
@@ -391,6 +448,110 @@ def list_issues(req: ListIssuesInput, client: httpx.Client) -> dict[str, Any]:
     }
 
 
+def list_pr_comments(req: ListPrCommentsInput, client: httpx.Client) -> dict[str, Any]:
+    """List PR-conversation comments (issue-style)."""
+    params: dict[str, str] = {"per_page": "100"}
+    if req.since:
+        params["since"] = req.since
+    response = client.get(f"/repos/{req.repo}/issues/{req.pr_number}/comments", params=params)
+    response.raise_for_status()
+    return {
+        "comments": [
+            {
+                "id": item["id"],
+                "user": (item.get("user") or {}).get("login", ""),
+                "user_type": (item.get("user") or {}).get("type", ""),
+                "body": item.get("body") or "",
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                "html_url": item.get("html_url"),
+            }
+            for item in response.json()
+        ],
+    }
+
+
+def list_pr_review_comments(
+    req: ListPrReviewCommentsInput,
+    client: httpx.Client,
+) -> dict[str, Any]:
+    """List inline review-thread comments on a PR (line-anchored)."""
+    response = client.get(
+        f"/repos/{req.repo}/pulls/{req.pr_number}/comments",
+        params={"per_page": "100"},
+    )
+    response.raise_for_status()
+    return {
+        "comments": [
+            {
+                "id": item["id"],
+                "user": (item.get("user") or {}).get("login", ""),
+                "user_type": (item.get("user") or {}).get("type", ""),
+                "body": item.get("body") or "",
+                "path": item.get("path"),
+                "line": item.get("line"),
+                "original_line": item.get("original_line"),
+                "commit_id": item.get("commit_id"),
+                "in_reply_to_id": item.get("in_reply_to_id"),
+                "pull_request_review_id": item.get("pull_request_review_id"),
+                "created_at": item.get("created_at"),
+                "html_url": item.get("html_url"),
+            }
+            for item in response.json()
+        ],
+    }
+
+
+def reply_pr_review_comment(
+    req: ReplyPrReviewCommentInput,
+    client: httpx.Client,
+) -> dict[str, Any]:
+    """Reply in-thread to an existing PR review comment."""
+    response = client.post(
+        f"/repos/{req.repo}/pulls/{req.pr_number}/comments/{req.comment_id}/replies",
+        json={"body": req.body},
+    )
+    response.raise_for_status()
+    body = response.json()
+    return {
+        "comment_id": body["id"],
+        "comment_url": body["html_url"],
+        "in_reply_to_id": body.get("in_reply_to_id"),
+    }
+
+
+def list_check_runs(req: ListCheckRunsInput, client: httpx.Client) -> dict[str, Any]:
+    """List GitHub Checks API check runs for a commit / branch / tag."""
+    response = client.get(
+        f"/repos/{req.repo}/commits/{req.ref}/check-runs",
+        params={"per_page": "100"},
+    )
+    response.raise_for_status()
+    runs = response.json().get("check_runs", [])
+    if req.filter_conclusions is not None:
+        keep = set(req.filter_conclusions)
+        runs = [r for r in runs if r.get("conclusion") in keep]
+    return {
+        "check_runs": [
+            {
+                "id": run["id"],
+                "name": run.get("name", ""),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "html_url": run.get("html_url"),
+                "details_url": run.get("details_url"),
+                "started_at": run.get("started_at"),
+                "completed_at": run.get("completed_at"),
+                "output": {
+                    "title": (run.get("output") or {}).get("title"),
+                    "summary": ((run.get("output") or {}).get("summary") or "")[:4096],
+                },
+            }
+            for run in runs
+        ],
+    }
+
+
 def mint_clone_token(req: MintCloneTokenInput, client: httpx.Client) -> dict[str, Any]:
     """Resolve a PR's head SHA and return an authenticated clone URL.
 
@@ -530,4 +691,8 @@ OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     GetIssueInput: ("get_issue", get_issue),
     ListIssuesInput: ("list_issues", list_issues),
     MintCloneTokenInput: ("mint_clone_token", mint_clone_token),
+    ListPrCommentsInput: ("list_pr_comments", list_pr_comments),
+    ListPrReviewCommentsInput: ("list_pr_review_comments", list_pr_review_comments),
+    ReplyPrReviewCommentInput: ("reply_pr_review_comment", reply_pr_review_comment),
+    ListCheckRunsInput: ("list_check_runs", list_check_runs),
 }

@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "TASK.ITERATION_STARTED",
+  "description": "The iteration reactor dispatched the implementer for a new iteration on a task PR.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "type",
+    "timestamp",
+    "run_id",
+    "correlation_id",
+    "actor_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "enum": ["1.0"] },
+    "event_id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["TASK.ITERATION_STARTED"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "causation_id": { "type": ["string", "null"], "format": "uuid" },
+    "actor_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_slug",
+        "spec_slug",
+        "task_id",
+        "pr_url",
+        "iteration_count",
+        "trigger_kinds"
+      ],
+      "properties": {
+        "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "pr_url": { "type": "string", "format": "uri" },
+        "iteration_count": { "type": "integer", "minimum": 1, "maximum": 16 },
+        "trigger_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "enum": [
+              "ci_failure",
+              "review_changes_requested",
+              "review_comment_mention",
+              "issue_comment_mention"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

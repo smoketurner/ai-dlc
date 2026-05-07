@@ -203,6 +203,23 @@ variable "common_layer_arn" {
   type        = string
 }
 
+variable "bus_name" {
+  description = <<-EOT
+    EventBridge platform bus name. Threaded into the Implementer / Reviewer /
+    Tester runtimes as ``AIDLC_BUS_NAME`` so agents invoked by the
+    iteration_reactor (no SF task token) can emit their own
+    ``REVIEW.READY`` / ``TEST_REPORT.READY`` / ``TASK.ITERATION_COMMITTED``
+    events. SFN-driven invocations don't read this variable — the SFN
+    state machine emits the events itself.
+  EOT
+  type        = string
+}
+
+variable "bus_arn" {
+  description = "ARN of the EventBridge platform bus (target of events:PutEvents IAM grant)."
+  type        = string
+}
+
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

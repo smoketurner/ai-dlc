@@ -25,6 +25,9 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from common.event_emit import publish
+from common.events import EventEnvelope, TestReportReady
+from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TesterInput, TesterResult, usage_from_strands
 from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from tester.agent import analyze_gaps, build_agent, model_id
@@ -95,12 +98,45 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
     if payload.task_token is not None:
         send_task_success(task_token=payload.task_token, output=output)
         return {"task_token_dispatched": True, "ok": True}
+    publish_test_report_ready(payload, result)
     return output
 
 
 def upload_report(report: Report, *, run_id: str, task_id: str) -> None:
     """Render and upload the report Markdown to S3."""
     write_report(run_id=run_id, task_id=task_id, content=render_report(report))
+
+
+def publish_test_report_ready(payload: TesterInput, result: TesterResult) -> None:
+    """Emit TEST_REPORT.READY ourselves when invoked without a SF task_token.
+
+    On the SFN-driven path the ``PublishTestReportReady`` ASL state emits
+    this event after SendTaskSuccess. On the iteration_reactor path there's
+    no SFN, so the agent must publish so the dashboard timeline + memory
+    projector see the iteration's tester output.
+    """
+    envelope = EventEnvelope[TestReportReady](
+        event_id=new_event_id(),
+        type="TEST_REPORT.READY",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="tester",
+        payload=TestReportReady(
+            project_slug=payload.project_slug,
+            spec_slug=payload.spec_slug,
+            task_id=result.task_id,
+            pr_url=result.pr_url,
+            gap_count=result.gap_count,
+            suggested_test_count=result.suggested_test_count,
+            summary=result.summary,
+            session_id=result.session_id,
+            token_in=result.token_in,
+            token_out=result.token_out,
+            cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+        ),
+    )
+    publish(envelope)
 
 
 @cache

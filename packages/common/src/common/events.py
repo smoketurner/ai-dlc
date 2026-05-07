@@ -45,6 +45,9 @@ EventType = Literal[
     "TASK.READY",
     "TASK.APPROVED",
     "TASK.REJECTED",
+    "TASK.ITERATION_STARTED",
+    "TASK.ITERATION_COMMITTED",
+    "TASK.MAX_ITERATIONS_REACHED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
     "RUN.COMPLETED",
@@ -259,6 +262,59 @@ class TaskRejected(Payload):
     reason: str
 
 
+IterationTriggerKind = Literal[
+    "ci_failure",
+    "review_changes_requested",
+    "review_comment_mention",
+    "issue_comment_mention",
+]
+
+
+class TaskIterationStarted(Payload):
+    """The iteration reactor dispatched the implementer for a new iteration.
+
+    Emitted by ``iteration_reactor`` immediately before invoking the
+    implementer. ``trigger_kinds`` lists every webhook trigger that fed into
+    this iteration (typically one, but multiple CI failures can coalesce).
+    """
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    iteration_count: Annotated[int, Field(ge=1, le=16)]
+    trigger_kinds: Annotated[NoneSafeList[IterationTriggerKind], Field(min_length=1, max_length=8)]
+
+
+class TaskIterationCommitted(UsagePayload):
+    """The implementer pushed a fix commit during iteration.
+
+    The reactor subscribes to this event to dispatch Reviewer + Tester
+    against the new commit. ``inline_replies_count`` is the number of
+    PR-review-thread replies the implementer posted in this iteration.
+    """
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    iteration_count: Annotated[int, Field(ge=1, le=16)]
+    head_sha: Annotated[str, Field(min_length=7, max_length=40)]
+    inline_replies_count: Annotated[int, Field(ge=0)] = 0
+    diff_summary: Annotated[str, Field(max_length=4096)]
+    session_id: str
+
+
+class TaskMaxIterationsReached(Payload):
+    """Iteration budget exhausted; SFN gate continues waiting for human action."""
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    iteration_count: Annotated[int, Field(ge=1, le=16)]
+
+
 class ReviewReady(UsagePayload):
     """Reviewer agent code-reviewed a task PR — advisory.
 
@@ -335,6 +391,9 @@ type AnyPayload = (
     | TaskReady
     | TaskApproved
     | TaskRejected
+    | TaskIterationStarted
+    | TaskIterationCommitted
+    | TaskMaxIterationsReached
     | ReviewReady
     | TestReportReady
     | RunCompleted

@@ -15,6 +15,9 @@ from common.events import (
     RequestReceived,
     ReviewReady,
     RunCompleted,
+    TaskIterationCommitted,
+    TaskIterationStarted,
+    TaskMaxIterationsReached,
     TestReportReady,
 )
 from common.ids import new_correlation_id, new_event_id, new_run_id
@@ -297,3 +300,97 @@ def test_negative_severity_rejected() -> None:
             summary="x",
             session_id="x",
         )
+
+
+def test_task_iteration_started_round_trip() -> None:
+    payload = TaskIterationStarted(
+        project_slug="demo",
+        spec_slug="add-healthz",
+        task_id="T-001",
+        pr_url="https://github.com/x/y/pull/1",
+        iteration_count=1,
+        trigger_kinds=["ci_failure"],
+    )
+    env = EventEnvelope[TaskIterationStarted](
+        type="TASK.ITERATION_STARTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="iteration_reactor",
+        payload=payload,
+    )
+    parsed = EventEnvelope[TaskIterationStarted].model_validate_json(env.model_dump_json())
+    assert parsed.payload.iteration_count == 1
+    assert parsed.payload.trigger_kinds == ["ci_failure"]
+
+
+def test_task_iteration_started_rejects_zero_count() -> None:
+    with pytest.raises(ValidationError):
+        TaskIterationStarted(
+            project_slug="demo",
+            spec_slug="add-healthz",
+            task_id="T-001",
+            pr_url="https://github.com/x/y/pull/1",
+            iteration_count=0,
+            trigger_kinds=["ci_failure"],
+        )
+
+
+def test_task_iteration_started_rejects_unknown_trigger() -> None:
+    with pytest.raises(ValidationError):
+        TaskIterationStarted.model_validate(
+            {
+                "project_slug": "demo",
+                "spec_slug": "add-healthz",
+                "task_id": "T-001",
+                "pr_url": "https://github.com/x/y/pull/1",
+                "iteration_count": 1,
+                "trigger_kinds": ["unknown_trigger"],
+            },
+        )
+
+
+def test_task_iteration_committed_carries_usage() -> None:
+    payload = TaskIterationCommitted(
+        project_slug="demo",
+        spec_slug="add-healthz",
+        task_id="T-001",
+        pr_url="https://github.com/x/y/pull/1",
+        iteration_count=2,
+        head_sha="abcdef0123456789",
+        inline_replies_count=3,
+        diff_summary="Fixed null-check on parser.",
+        session_id="r1-T-001",
+        token_in=2_000,
+        token_out=500,
+        cost_usd=0.012,
+        duration_ms=45_000,
+    )
+    env = EventEnvelope[TaskIterationCommitted](
+        type="TASK.ITERATION_COMMITTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="implementer",
+        payload=payload,
+    )
+    parsed = EventEnvelope[TaskIterationCommitted].model_validate_json(env.model_dump_json())
+    assert parsed.payload.head_sha == "abcdef0123456789"
+    assert parsed.payload.token_in == 2_000
+
+
+def test_task_max_iterations_reached_round_trip() -> None:
+    payload = TaskMaxIterationsReached(
+        project_slug="demo",
+        spec_slug="add-healthz",
+        task_id="T-001",
+        pr_url="https://github.com/x/y/pull/1",
+        iteration_count=3,
+    )
+    env = EventEnvelope[TaskMaxIterationsReached](
+        type="TASK.MAX_ITERATIONS_REACHED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="iteration_reactor",
+        payload=payload,
+    )
+    parsed = EventEnvelope[TaskMaxIterationsReached].model_validate_json(env.model_dump_json())
+    assert parsed.payload.iteration_count == 3

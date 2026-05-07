@@ -402,3 +402,33 @@ def test_agent_made_real_changes_handles_renames(
     porcelain = "R  docs/specs/my-spec/old.md -> src/new.py\n"
     monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: porcelain)
     assert agent_made_real_changes("my-spec") is True
+
+
+def test_parse_pr_number_extracts_int() -> None:
+    n = repo_ops.parse_pr_number("https://github.com/owner/repo/pull/42")
+    assert n == 42
+
+
+def test_parse_pr_number_rejects_non_pull_url() -> None:
+    with pytest.raises(ValueError, match="unparseable"):
+        repo_ops.parse_pr_number("https://github.com/owner/repo/issues/42")
+
+
+def test_parse_pr_number_rejects_garbage() -> None:
+    with pytest.raises(ValueError, match="unparseable"):
+        repo_ops.parse_pr_number("not a url")
+
+
+def test_checkout_task_branch_runs_fetch_then_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(*args: str, **_: Any) -> str:
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr(repo_ops, "run_git", fake_run_git)
+    repo_ops.checkout_task_branch("aidlc/my-spec/t-001")
+    assert calls[0] == ("fetch", "origin", "aidlc/my-spec/t-001")
+    assert calls[1][:2] == ("checkout", "-B")
+    assert calls[1][2] == "aidlc/my-spec/t-001"
+    assert calls[1][3] == "origin/aidlc/my-spec/t-001"

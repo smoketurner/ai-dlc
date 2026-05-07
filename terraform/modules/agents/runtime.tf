@@ -276,6 +276,19 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
+  # Iteration-reactor-invoked task-phase agents publish their own
+  # *.READY / TASK.ITERATION_COMMITTED events directly to the platform
+  # bus (no SFN to do PublishXxxReady for them). Same agent set that
+  # gets the Step Functions callbacks above.
+  dynamic "statement" {
+    for_each = contains(["implementer", "reviewer", "tester"], each.key) ? [1] : []
+    content {
+      sid       = "EventBusPublish"
+      actions   = ["events:PutEvents"]
+      resources = [var.bus_arn]
+    }
+  }
+
   statement {
     sid = "Logs"
     # AgentCore Runtime creates ``/aws/bedrock-agentcore/runtimes/{id}-{qualifier}``
@@ -367,6 +380,11 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
       AIDLC_BEDROCK_MODEL_ID  = var.agents[each.key].bedrock_model_id
     },
+    # Task-phase agents emit their own bus events on the no-task-token path
+    # (iteration_reactor invocations). SFN-driven invocations don't read this.
+    contains(["implementer", "reviewer", "tester"], each.key) ? {
+      AIDLC_BUS_NAME = var.bus_name
+    } : {},
     contains(var.agents[each.key].targets, "repo_helper") ? {
       AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
     } : {},

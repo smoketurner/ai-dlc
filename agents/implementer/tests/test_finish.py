@@ -9,6 +9,7 @@ from implementer.finish import (
     FINISH_TOOL_NAME,
     FinishReport,
     FinishSink,
+    InlineReply,
     TestResult,
     build_finish_server,
     build_finish_tool,
@@ -147,3 +148,37 @@ async def test_finish_tool_handler_returns_error_on_invalid_args() -> None:
     result = await sdk_tool.handler(bad)
     assert result.get("is_error") is True
     assert sink.report is None
+
+
+def test_inline_reply_validates_minimal() -> None:
+    reply = InlineReply(comment_id=42, body="fixed in next commit")
+    assert reply.comment_id == 42
+    assert reply.body == "fixed in next commit"
+
+
+def test_inline_reply_rejects_zero_comment_id() -> None:
+    with pytest.raises(ValidationError):
+        InlineReply(comment_id=0, body="x")
+
+
+def test_inline_reply_rejects_empty_body() -> None:
+    with pytest.raises(ValidationError):
+        InlineReply(comment_id=1, body="")
+
+
+def test_finish_report_inline_replies_default_empty() -> None:
+    report = FinishReport(summary="x", status="done")
+    assert report.inline_replies == []
+
+
+def test_finish_report_with_inline_replies() -> None:
+    report = FinishReport(
+        summary="Iter 1 fix.",
+        status="done",
+        inline_replies=[
+            InlineReply(comment_id=1, body="fixed"),
+            InlineReply(comment_id=2, body="rephrased"),
+        ],
+    )
+    assert len(report.inline_replies) == 2
+    assert report.inline_replies[1].body == "rephrased"
