@@ -52,6 +52,10 @@ def stub_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         return client
 
     monkeypatch.setattr("dashboard.routes.webhooks.secrets", fake_secrets)
+    # react_eyes makes a live httpx call to GitHub. Replace with a no-op
+    # for every test; tests that want to assert on reactions monkeypatch
+    # it themselves with a recording stub.
+    monkeypatch.setattr("dashboard.routes.webhooks.react_eyes", lambda **_: None)
     # Powertools' idempotency layer needs DynamoDB. We're not exercising
     # idempotency in these tests (start_run is stubbed); disabling here
     # keeps the layer from reaching for the real table.
@@ -515,6 +519,107 @@ async def test_issue_comment_cancel_emits_run_cancel(
     }
     await post_webhook(event_type="issue_comment", payload=payload)
     assert captured_events[0].type == "RUN.CANCEL_REQUESTED"
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_bot_mention_emits_request_received(
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """``@aidlc-bot`` on a non-PR issue is the canonical mention syntax.
+
+    Same effect as ``/aidlc go``; gives users a single 'ping the bot'
+    convention that matches the PR-comment iteration flow.
+    """
+    payload = {
+        "action": "created",
+        "comment": {
+            "body": f"@{BOT_LOGIN} please look at this",
+            "user": {"login": "alice", "type": "User"},
+        },
+        "issue": {
+            "html_url": "https://github.com/o/r/issues/9",
+            "title": "x",
+            "number": 9,
+            "user": {"login": "alice"},
+            "labels": [],
+        },
+        "repository": {"full_name": "o/r"},
+    }
+    await post_webhook(event_type="issue_comment", payload=payload)
+    assert len(captured_events) == 1
+    assert captured_events[0].type == "REQUEST.RECEIVED"
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_aidlc_go_reacts_on_comment(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """``/aidlc go`` on a non-PR issue posts a 👀 on the comment id."""
+    reactions: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "dashboard.routes.webhooks.react_eyes",
+        lambda *, repo, reactions_url: reactions.append(
+            {"repo": repo, "url": reactions_url},
+        ),
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 4399714948,
+            "body": "/aidlc go",
+            "user": {"login": "alice", "type": "User"},
+        },
+        "issue": {
+            "html_url": "https://github.com/o/r/issues/9",
+            "title": "x",
+            "number": 9,
+            "user": {"login": "alice"},
+            "labels": [],
+        },
+        "repository": {"full_name": "o/r"},
+    }
+    await post_webhook(event_type="issue_comment", payload=payload)
+    assert len(reactions) == 1
+    assert reactions[0]["repo"] == "o/r"
+    assert "/issues/comments/4399714948/reactions" in reactions[0]["url"]
+
+
+@pytest.mark.asyncio
+async def test_pr_review_comment_with_mention_reacts_on_comment(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """PR-review (inline diff) comments react on the pulls/comments/{id} URL."""
+    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    reactions: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        "dashboard.routes.webhooks.react_eyes",
+        lambda *, repo, reactions_url: reactions.append(
+            {"repo": repo, "url": reactions_url},
+        ),
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "id": 7777,
+            "body": f"@{BOT_LOGIN} address this",
+            "path": "src/x.py",
+            "line": 42,
+            "commit_id": "abcdef0",
+            "in_reply_to_id": None,
+            "user": {"login": "alice"},
+        },
+        "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
+        "repository": {"full_name": "o/r"},
+    }
+    await post_webhook(
+        event_type="pull_request_review_comment",
+        payload=payload,
+        delivery_id="d-pr-review-comment-1",
+    )
+    assert len(reactions) == 1
+    assert "/pulls/comments/7777/reactions" in reactions[0]["url"]
 
 
 # ---------------------------------------------------------------------------

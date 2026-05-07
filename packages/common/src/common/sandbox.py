@@ -17,6 +17,7 @@ leaking it into CloudWatch:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -24,7 +25,6 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
-import structlog
 from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
 from common import agentcore_code_interpreter as ci
@@ -33,7 +33,7 @@ from common.errors import AgentCoreCodeInterpreterError
 if TYPE_CHECKING:
     from mypy_boto3_lambda.client import LambdaClient
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pull/(?P<num>\d+)$")
 TOKEN_REDACT_PATTERN = re.compile(r"x-access-token:[^@\s]+@")
@@ -182,7 +182,7 @@ def execute_in_sandbox(
             working_dir=working_dir,
         )
     except AgentCoreCodeInterpreterError as exc:
-        logger.warning("sandbox session failed", err=str(exc))
+        logger.warning("sandbox session failed", extra={"err": str(exc)})
         return {
             "head_sha": head_sha,
             "clone": clone_summary,
@@ -193,7 +193,7 @@ def execute_in_sandbox(
         try:
             ci.stop_session(sdk_client)
         except AgentCoreCodeInterpreterError as exc:
-            logger.warning("stop_session failed", err=str(exc))
+            logger.warning("stop_session failed", extra={"err": str(exc)})
     return {"head_sha": head_sha, "clone": clone_summary, "results": results}
 
 

@@ -16,20 +16,35 @@ Issue-derived events look up the run via the ``gsi1`` index
 (``ISSUE#{url}``) when needed — the projector populated it on the
 matching ``REQUEST.RECEIVED``.
 
+Trigger conventions:
+
+* ``/aidlc <verb>`` — terse state-machine commands. ``/aidlc cancel``,
+  ``/aidlc approve``, ``/aidlc reject``, ``/aidlc go``. Verb is the
+  whole signal; the rest of the comment is ignored except for
+  ``reject`` which uses the trailing text as the rejection reason.
+* ``@aidlc-bot <natural language>`` — directives that carry intent.
+  On a PR/PR-review comment the body becomes feedback for the
+  implementer (iteration). On a non-PR issue comment it triggers a
+  fresh triage run, same as ``/aidlc go``.
+
+Every accepted trigger posts a 👀 reaction on the source object — the
+issue itself for assignment-driven triggers, the comment id for any
+comment-driven trigger.
+
 Event mapping:
 
 * ``pull_request.closed`` (merged)        → ``SPEC.APPROVED`` / ``TASK.APPROVED``
 * ``pull_request.closed`` (unmerged)      → ``SPEC.REJECTED`` / ``TASK.REJECTED``
 * ``pull_request_review`` approved        → ``TASK.APPROVED``
 * ``pull_request_review`` changes_requested → ``TASK.ITERATION_REQUESTED``
-* ``pull_request_review_comment`` w/ bot mention → ``TASK.ITERATION_REQUESTED``
-* ``issue_comment`` on a PR w/ bot mention       → ``TASK.ITERATION_REQUESTED``
-* ``issue_comment`` w/ ``/aidlc cancel``         → ``RUN.CANCEL_REQUESTED``
-* ``issue_comment`` w/ ``/aidlc approve|reject`` → ``TASK.APPROVED`` / ``TASK.REJECTED``
-* ``workflow_run.completed`` failure             → ``TASK.ITERATION_REQUESTED``
-* ``issues`` opened/labeled/assigned (triage)    → ``REQUEST.RECEIVED``
-* ``issues`` unassigned (bot)                    → ``RUN.CANCEL_REQUESTED``
-* ``issue_comment`` ``/aidlc go`` / awaiting-response → ``REQUEST.RECEIVED``
+* ``pull_request_review_comment`` w/ ``@aidlc-bot``       → ``TASK.ITERATION_REQUESTED``
+* ``issue_comment`` on a PR w/ ``@aidlc-bot``             → ``TASK.ITERATION_REQUESTED``
+* ``issue_comment`` w/ ``/aidlc cancel``                  → ``RUN.CANCEL_REQUESTED``
+* ``issue_comment`` w/ ``/aidlc approve|reject``          → ``TASK.APPROVED`` / ``TASK.REJECTED``
+* ``workflow_run.completed`` failure                      → ``TASK.ITERATION_REQUESTED``
+* ``issues`` opened/labeled/assigned (triage)             → ``REQUEST.RECEIVED``
+* ``issues`` unassigned (bot)                             → ``RUN.CANCEL_REQUESTED``
+* ``issue_comment`` ``/aidlc go`` / ``@aidlc-bot`` / awaiting-response → ``REQUEST.RECEIVED``
 """
 
 from __future__ import annotations
@@ -406,6 +421,7 @@ def handle_pull_request_review_comment(
     row = lookup_pr(pr_url)
     if row is None or attr(row, "sk") == "STATE":
         return {"ok": True, "ignored": "not a task PR"}
+    react_to_pr_review_comment(payload.get("repository") or {}, comment)
     feedback = ReviewCommentMentionFeedback(
         path=comment.get("path", ""),
         line=comment.get("line"),
@@ -456,6 +472,7 @@ def handle_pr_comment(
         row=row,
         body=body,
         comment=comment,
+        repository=payload.get("repository") or {},
         pr_url=pr_url,
         commenter=commenter,
         delivery_id=delivery_id,
@@ -467,20 +484,31 @@ def classify_pr_comment(
     row: dict[str, Any],
     body: str,
     comment: dict[str, Any],
+    repository: dict[str, Any],
     pr_url: str,
     commenter: str,
     delivery_id: str,
 ) -> dict[str, Any]:
-    """Pick the right event for a PR conversation comment + emit it."""
+    """Pick the right event for a PR conversation comment + emit it.
+
+    Posts a 👀 reaction on the comment when the body matches a verb
+    (``/aidlc cancel|approve|reject``) or carries an ``@aidlc-bot``
+    mention — gives users immediate visual confirmation before the
+    asynchronous downstream pipeline does anything visible.
+    """
     if CANCEL_RE.search(body):
+        react_to_issue_comment(repository, comment)
         return emit_run_cancel(row, requestor=commenter, source="comment_command")
     is_task = attr(row, "sk").startswith("TASK#")
     if APPROVE_RE.search(body) and is_task:
+        react_to_issue_comment(repository, comment)
         return emit_task_close(row, pr_url=pr_url, merged=True, reviewer=commenter)
     match = REJECT_RE.search(body)
     if match and is_task:
+        react_to_issue_comment(repository, comment)
         return emit_task_reject_from_comment(row, pr_url=pr_url, commenter=commenter, match=match)
     if has_bot_mention(body, settings().github_bot_login) and is_task:
+        react_to_issue_comment(repository, comment)
         feedback = IssueCommentMentionFeedback(
             comment_id=int(comment.get("id", 0)),
             body=body,
@@ -525,21 +553,38 @@ def handle_issue_only_comment(
     *,
     delivery_id: str = "",
 ) -> dict[str, Any]:
-    """Comments on a non-PR issue: ``/aidlc go``, awaiting-response, ``/aidlc cancel``."""
+    """Comments on a non-PR issue.
+
+    Recognised triggers (each posts a 👀 reaction on the comment):
+
+    * ``/aidlc cancel`` → cancel the in-flight run for this issue.
+    * ``/aidlc go`` → start a fresh triage run.
+    * ``@aidlc-bot`` (anywhere in body) → start a fresh triage run.
+      Same effect as ``/aidlc go``; gives users one canonical "ping the
+      bot" syntax that matches the PR-comment iteration convention.
+    * Any human comment when the issue carries ``aidlc:awaiting-response``
+      → start a fresh triage run with the reply as additional context.
+    """
     issue = payload.get("issue") or {}
     label_names = [label.get("name", "") for label in issue.get("labels", [])]
     if set(label_names) & TERMINAL_LABELS:
         return {"ok": True, "ignored": "terminal label"}
     issue_url = issue.get("html_url") or ""
+    repository = payload.get("repository") or {}
+    comment = payload.get("comment") or {}
     if CANCEL_RE.search(body):
         state = lookup_run_by_issue(issue_url) if issue_url else None
         if state is None:
             return {"ok": True, "ignored": "no run for issue"}
-        commenter = (payload.get("comment", {}).get("user") or {}).get("login", "unknown")
+        commenter = (comment.get("user") or {}).get("login", "unknown")
+        react_to_issue_comment(repository, comment)
         return emit_run_cancel(state, requestor=commenter, source="comment_command")
-    if AWAITING_RESPONSE_LABEL in label_names and is_human_comment(payload.get("comment", {})):
+    if AWAITING_RESPONSE_LABEL in label_names and is_human_comment(comment):
+        react_to_issue_comment(repository, comment)
         return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
-    if GO_RE.search(body):
+    bot_login = settings().github_bot_login
+    if GO_RE.search(body) or has_bot_mention(body, bot_login):
+        react_to_issue_comment(repository, comment)
         return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
     return {"ok": True, "ignored": "no match"}
 
@@ -599,7 +644,7 @@ def handle_issues(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
     if action in {"opened", "labeled", "assigned"} and issues_action_is_trigger(action, payload):
         issue = payload.get("issue") or {}
         issue_url = issue.get("html_url") or ""
-        react_eyes(payload.get("repository") or {}, issue)
+        react_to_issue(payload.get("repository") or {}, issue)
         return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
     return {"ok": True, "ignored": True}
 
@@ -794,20 +839,22 @@ def build_issue_context(
 
 
 # ---------------------------------------------------------------------------
-# React-eyes — gives users immediate confirmation on assignment
+# React-eyes — gives users immediate confirmation on every accepted trigger
 # ---------------------------------------------------------------------------
 
 
-def react_eyes(repository: dict[str, Any], issue: dict[str, Any]) -> None:
-    """Post a 👀 reaction on the source issue. Best-effort."""
-    repo = repository.get("full_name")
-    issue_number = issue.get("number")
-    if not (repo and isinstance(issue_number, int)):
-        return
+def react_eyes(*, repo: str, reactions_url: str) -> None:
+    """POST a 👀 reaction to ``reactions_url``. Best-effort.
+
+    ``reactions_url`` is the full GitHub reactions endpoint — issue,
+    issue-comment, or PR-review-comment. ``repo`` is needed to mint the
+    App installation token. Failures are logged and swallowed: a
+    missing reaction is bad UX but never a reason to fail the webhook.
+    """
     try:
         token = common_github.installation_token_for_repo(repo)
         response = httpx.post(
-            f"{common_github.GITHUB_API}/repos/{repo}/issues/{issue_number}/reactions",
+            reactions_url,
             headers={
                 "Accept": common_github.ACCEPT_HEADER,
                 "Authorization": f"Bearer {token}",
@@ -819,12 +866,49 @@ def react_eyes(repository: dict[str, Any], issue: dict[str, Any]) -> None:
         )
         response.raise_for_status()
     except Exception as exc:
-        logger.warning(
-            "react_eyes failed",
-            error=str(exc),
-            repo=repo,
-            issue_number=issue_number,
-        )
+        logger.warning("react_eyes failed", error=str(exc), url=reactions_url)
+
+
+def issue_reactions_url(repo: str, issue_number: int) -> str:
+    """URL for posting a reaction on a GitHub issue."""
+    return f"{common_github.GITHUB_API}/repos/{repo}/issues/{issue_number}/reactions"
+
+
+def issue_comment_reactions_url(repo: str, comment_id: int) -> str:
+    """URL for posting a reaction on an issue or PR-conversation comment."""
+    return f"{common_github.GITHUB_API}/repos/{repo}/issues/comments/{comment_id}/reactions"
+
+
+def pr_review_comment_reactions_url(repo: str, comment_id: int) -> str:
+    """URL for posting a reaction on a PR-review (inline diff) comment."""
+    return f"{common_github.GITHUB_API}/repos/{repo}/pulls/comments/{comment_id}/reactions"
+
+
+def react_to_issue(repository: dict[str, Any], issue: dict[str, Any]) -> None:
+    """Eyes-react on the issue itself (assignment-driven triggers)."""
+    repo = repository.get("full_name")
+    issue_number = issue.get("number")
+    if not (repo and isinstance(issue_number, int)):
+        return
+    react_eyes(repo=repo, reactions_url=issue_reactions_url(repo, issue_number))
+
+
+def react_to_issue_comment(repository: dict[str, Any], comment: dict[str, Any]) -> None:
+    """Eyes-react on an issue-conversation or PR-conversation comment."""
+    repo = repository.get("full_name")
+    comment_id = comment.get("id")
+    if not (repo and isinstance(comment_id, int)):
+        return
+    react_eyes(repo=repo, reactions_url=issue_comment_reactions_url(repo, comment_id))
+
+
+def react_to_pr_review_comment(repository: dict[str, Any], comment: dict[str, Any]) -> None:
+    """Eyes-react on a PR-review (inline diff) comment."""
+    repo = repository.get("full_name")
+    comment_id = comment.get("id")
+    if not (repo and isinstance(comment_id, int)):
+        return
+    react_eyes(repo=repo, reactions_url=pr_review_comment_reactions_url(repo, comment_id))
 
 
 # ---------------------------------------------------------------------------

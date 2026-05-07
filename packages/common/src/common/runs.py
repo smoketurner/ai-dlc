@@ -21,6 +21,7 @@ entry_adapter Lambda and the state_router already use.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,7 +29,6 @@ from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
-import structlog
 
 from common.event_emit import publish
 from common.events import EventEnvelope, RequestReceived
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
     from mypy_boto3_sqs.client import SQSClient
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 # Time the router waits before its first look at the run, in seconds. Long
 # enough that the projector has applied REQUEST.RECEIVED → received before
@@ -156,9 +156,11 @@ def start_run(  # noqa: PLR0913
     send_beacon(run_id=str(rid), project_slug=project_slug)
     logger.info(
         "run started",
-        run_id=str(rid),
-        project_slug=project_slug,
-        source_issue_url=issue.issue_url if issue else None,
+        extra={
+            "run_id": str(rid),
+            "project_slug": project_slug,
+            "source_issue_url": issue.issue_url if issue else None,
+        },
     )
     return rid, cid
 

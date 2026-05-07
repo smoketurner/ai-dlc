@@ -38,6 +38,7 @@ invocations.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 from functools import cache
@@ -46,11 +47,10 @@ from typing import TYPE_CHECKING
 import boto3
 import httpx
 import jwt
-import structlog
 from botocore.exceptions import ClientError
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
@@ -245,8 +245,10 @@ def user_oauth_token_for_requestor_sub(requestor_sub: str) -> str | None:
         # installation token rather than crashing the run.
         logger.warning(
             "user-OBO failed; falling back to installation token",
-            requestor_sub=requestor_sub,
-            error_code=exc.response.get("Error", {}).get("Code"),
+            extra={
+                "requestor_sub": requestor_sub,
+                "error_code": exc.response.get("Error", {}).get("Code"),
+            },
         )
         return None
     access_token = resource_response.get("accessToken")

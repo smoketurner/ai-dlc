@@ -554,35 +554,25 @@ name = "common"
 version = "0.0.0"
 source = { editable = "packages/common" }
 dependencies = [
-    { name = "aws-opentelemetry-distro" },
     { name = "bedrock-agentcore" },
     { name = "boto3" },
     { name = "botocore" },
     { name = "httpx" },
-    { name = "mcp" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-sdk" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
-    { name = "structlog" },
     { name = "uuid-utils" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
     { name = "bedrock-agentcore", specifier = "==1.8.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "botocore", specifier = "==1.43.2" },
     { name = "httpx", specifier = "==0.28.1" },
-    { name = "mcp", specifier = "==1.27.0" },
-    { name = "opentelemetry-api", specifier = "==1.40.0" },
-    { name = "opentelemetry-sdk", specifier = "==1.40.0" },
     { name = "pydantic", specifier = "==2.13.3" },
     { name = "pydantic-settings", specifier = "==2.14.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
-    { name = "structlog", specifier = "==25.5.0" },
     { name = "uuid-utils", specifier = "==0.14.1" },
 ]
 

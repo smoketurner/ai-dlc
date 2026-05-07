@@ -13,19 +13,19 @@ identical across agents. It uses ``AIDLC_BUS_NAME`` from the environment
 
 from __future__ import annotations
 
+import logging
 import os
 from functools import cache
 from typing import TYPE_CHECKING
 
 import boto3
-import structlog
 
 from common.events import EventEnvelope, Payload
 
 if TYPE_CHECKING:
     from mypy_boto3_events.client import EventBridgeClient
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 
 @cache
@@ -60,7 +60,9 @@ def publish[PayloadT: Payload](envelope: EventEnvelope[PayloadT]) -> None:
     )
     logger.info(
         "event published",
-        type=envelope.type,
-        run_id=str(envelope.run_id),
-        event_id=str(envelope.event_id),
+        extra={
+            "type": envelope.type,
+            "run_id": str(envelope.run_id),
+            "event_id": str(envelope.event_id),
+        },
     )
