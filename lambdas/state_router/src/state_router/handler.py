@@ -265,14 +265,64 @@ def execute_invoke_agent(action: InvokeAgent) -> None:
     are all set, the advance is the per-invoke race guard. When all
     four are ``None`` the agent fires unconditionally — used for
     advisors gated by an outer :class:`GuardedAdvance`.
+
+    If :func:`dispatch_to_runtime` reports a synchronous dispatch failure
+    (4xx / 5xx from the runtime — the agent never received the work, or
+    the agent's container raised before doing any work), the state
+    advance is rolled back so the next beacon cycle re-dispatches from
+    the original state. Without this, a transient runtime error or a
+    misconfigured agent (missing env var, IAM gap, etc.) wedges the run
+    in ``*_running`` forever with no completion event ever arriving.
+
+    Asynchronous agent crashes (runtime accepted the work, agent
+    started, then died mid-execution) aren't visible from this path —
+    those need the stuck-run detector to recover.
     """
     if not invoke_advance_succeeds(action):
         return
-    fire_and_forget(
+    if dispatch_to_runtime(
         runtime_arn=action.runtime_arn,
         runtime_session_id=action.runtime_session_id,
         payload=action.payload,
+    ):
+        return
+    rollback_invoke_advance(action)
+
+
+def rollback_invoke_advance(action: InvokeAgent) -> None:
+    """Reverse a state advance that we made before a failed dispatch.
+
+    Conditional on the state still being at ``advance_to`` — if the
+    projector has already moved the state forward (e.g., a stale
+    completion event for a prior attempt landed), the rollback no-ops.
+    """
+    if (
+        action.target_pk is None
+        or action.target_sk is None
+        or action.advance_from is None
+        or action.advance_to is None
+    ):
+        return
+    rolled_back = advance_state(
+        target_pk=action.target_pk,
+        target_sk=action.target_sk,
+        advance_from=action.advance_to,
+        advance_to=action.advance_from,
     )
+    if rolled_back:
+        logger.info(
+            "rolled back state after dispatch failure",
+            extra={
+                "target_sk": action.target_sk,
+                "from": action.advance_to,
+                "to": action.advance_from,
+            },
+        )
+    else:
+        logger.info(
+            "skipped rollback — state already moved",
+            extra={"target_sk": action.target_sk, "advance_to": action.advance_to},
+        )
 
 
 def invoke_advance_succeeds(action: InvokeAgent) -> bool:
@@ -495,19 +545,24 @@ def advance_state(
     return True
 
 
-def fire_and_forget(
+def dispatch_to_runtime(
     *,
     runtime_arn: str,
     runtime_session_id: str,
     payload: dict[str, Any],
-) -> None:
-    """Invoke the AgentCore Runtime; treat read-timeout as success.
+) -> bool:
+    """Invoke the AgentCore Runtime; return ``True`` if the agent received the work.
 
-    Connection-level failures (auth, throttle, not-found) are logged
-    but do not raise — the beacon stays in the queue and the next
-    poll cycle (one visibility timeout later) retries the dispatch.
-    Persistent failures continue to retry indefinitely; surface them
-    via CloudWatch alarms on the runtime's invocation errors instead.
+    The 2s read-timeout is intentional — the agent runs for much longer
+    than that, so we don't wait for the response. A
+    :class:`ReadTimeoutError` means the request was sent and the runtime
+    accepted it; the agent will emit its completion event when done.
+
+    A :class:`ClientError` (4xx / 5xx) means the runtime synchronously
+    rejected the request OR the agent's container raised before doing
+    any work (today's KeyError-on-startup pattern). The caller must
+    treat this as "agent never started," roll back the state advance,
+    and let the next beacon cycle retry the dispatch.
     """
     try:
         runtime_client().invoke_agent_runtime(
@@ -520,11 +575,12 @@ def fire_and_forget(
         )
     except ReadTimeoutError:
         logger.info("dispatched (read-timeout)", extra={"runtime_arn": runtime_arn})
-        return
+        return True
     except ClientError as exc:
         logger.warning("dispatch failed", extra={"runtime_arn": runtime_arn, "err": str(exc)})
-        return
+        return False
     logger.info("dispatched (sub-2s response)", extra={"runtime_arn": runtime_arn})
+    return True
 
 
 def now_iso() -> str:

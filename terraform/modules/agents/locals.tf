@@ -24,4 +24,11 @@ locals {
     }
   ]...)
 
+  # Agents that mint GitHub installation tokens directly inside their
+  # container (clone / commit / push). These need the App's private-key
+  # secret in their env + IAM. Other agents delegate git ops to the
+  # repo_helper Lambda and don't need direct access.
+  #   * architect — clones the target repo for spec grounding.
+  #   * implementer — clones, commits, pushes the task PR.
+  github_app_direct_agents = toset(["architect", "implementer"])
 }

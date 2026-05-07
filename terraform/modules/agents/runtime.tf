@@ -247,10 +247,12 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
-  # Implementer-only: read the GitHub App credentials secret so the
-  # container can mint installation tokens for in-container git operations.
+  # Architect + implementer mint GitHub installation tokens directly
+  # inside their containers (architect for repo cloning during spec
+  # grounding; implementer for clone / commit / push). Both need read
+  # access to the App's private-key secret in Secrets Manager.
   dynamic "statement" {
-    for_each = each.key == "implementer" && var.github_app_secret_name != null ? [1] : []
+    for_each = contains(local.github_app_direct_agents, each.key) && var.github_app_secret_name != null ? [1] : []
     content {
       sid       = "ReadGithubAppSecret"
       actions   = ["secretsmanager:GetSecretValue"]
@@ -373,11 +375,12 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.platform[0].name
     } : {},
-    # Implementer-only: it does git operations directly inside its container
-    # (clone / commit / push), so it needs the App's installation token —
-    # minted from the App private key in Secrets Manager. Other agents
-    # delegate git ops to the repo_helper Lambda and don't need this.
-    each.key == "implementer" && var.github_app_secret_name != null ? {
+    # Architect + implementer mint GitHub installation tokens directly
+    # inside their containers — architect for repo cloning during spec
+    # grounding (``repo_grounding.clone_target_repo``), implementer for
+    # clone / commit / push. Both need the App's secret ARN. Other
+    # agents delegate git ops to the repo_helper Lambda.
+    contains(local.github_app_direct_agents, each.key) && var.github_app_secret_name != null ? {
       AIDLC_GITHUB_APP_SECRET_ARN = data.aws_secretsmanager_secret.github_app[0].arn
     } : {},
     contains(var.agents[each.key].features, "browser") ? {
