@@ -30,7 +30,7 @@ The state cursor (`RunState` / `TaskState` enums in `common.state`) is advanced 
 
 ---
 
-## SQS cutover stabilization 🟡
+## SQS cutover stabilization ✅
 
 The cutover replaced SFN with SQS beacon + DDB state but didn't reproduce every behaviour the old ASL had at each state. End-to-end trace from `aidlc-bot` being assigned to a GitHub issue shows where things dead-end:
 
@@ -76,7 +76,7 @@ Ordered by blast radius. Each batch is independently shippable.
 - [x] **Webhook idempotency.** Use Powertools `idempotent_function` keyed on `X-GitHub-Delivery` so a re-delivered event doesn't mint a duplicate `run_id`.
 - [x] **`project_slug` consistent across entry paths.** Webhook currently uses `repo.split("/", 1)[-1]` (just the name). Switch to `slug_from_repo` (lowercase + `/` → `-`) so the same repo gets the same slug from every entry path.
 
-### Robustness 🟡
+### Robustness ✅
 
 - [x] **`parse_run` falls back to pk parsing for `run_id`.** Projector-created rows don't set the `run_id` attribute explicitly; should derive from `pk = "RUN#{id}"` when the attribute is missing.
 - [x] **TASK row creation precedes `TASK.READY`.** Either seed the TASK row before dispatching the implementer, or have the projector upsert the row on `TASK.READY` arrival rather than skipping silently.
