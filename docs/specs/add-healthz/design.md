@@ -4,47 +4,48 @@
 
 ## Approach
 
-Add a minimal FastAPI route at GET /healthz that returns {"status": "ok"} with a 200 status code. The route is registered directly on the app (not behind any auth middleware). Because the dashboard's auth is handled at the ALB/Cognito level (not in FastAPI middleware), no special auth-bypass logic is needed — the route simply needs to exist and respond. A dedicated route module keeps it isolated and testable.
+Add a minimal FastAPI route at GET /healthz that returns {"status": "ok"} with no dependency on authentication or any external service. Register it directly on the app object in services/dashboard/src/dashboard/app.py (no separate router needed for a single infrastructure route). Update the ECS container health check command in terraform/modules/dashboard/ecs.tf to use an HTTP GET via curl instead of a raw TCP socket connect. Install curl in the runtime stage of services/dashboard/Dockerfile.
 
 ## Components
 
-- **healthz router** (`services/dashboard/src/dashboard/routes/healthz.py`) — Defines GET /healthz returning a fixed JSON response; registered on the FastAPI app before any auth-dependent middleware.
-- **app registration** (`services/dashboard/src/dashboard/app.py`) — Includes the healthz router in the FastAPI application.
-- **healthz tests** (`services/dashboard/tests/test_healthz.py`) — Verifies the endpoint returns 200 with the expected JSON body using the FastAPI TestClient.
+- **healthz route** (`services/dashboard/src/dashboard/app.py`) — Returns HTTP 200 {"status": "ok"} for ALB and container health checks with no auth required
+- **ECS health check update** (`terraform/modules/dashboard/ecs.tf`) — Switches container health check from TCP socket to HTTP GET /healthz for application-level liveness signal
+- **Dockerfile curl install** (`services/dashboard/Dockerfile`) — Ensures curl is available in the runtime image for the container health check CMD-SHELL command
+- **healthz test** (`services/dashboard/tests/test_healthz.py`) — Verifies the endpoint returns 200 with expected JSON body and content-type, no auth required
 
 ## Data model
 
 ```text
-Response schema (not persisted):
-
-```json
-{"status": "ok"}
-```
-
-No database or state changes.
+No new data model. The response is a static JSON object: {"status": "ok"}.
 ```
 
 ## Sequence
 
 ```text
-1. ALB (or operator) sends `GET /healthz` to the dashboard container on port 8080.
-2. FastAPI routes the request to `healthz.router`.
-3. The handler returns `JSONResponse({"status": "ok"}, status_code=200)` immediately — no I/O, no auth check.
-4. ALB marks the target healthy.
+ALB health check timer fires (every 15s)
+  → GET /healthz (no auth headers — ALB sends health checks directly to target, bypassing listener auth actions)
+  → FastAPI app.get("/healthz") handler
+  → Return JSONResponse({"status": "ok"}, status_code=200)
+  → ALB marks target healthy (matcher=200)
+
+ECS container health check (every 15s)
+  → CMD-SHELL: curl -sf http://127.0.0.1:8080/healthz
+  → Exit 0 on HTTP 2xx → container marked healthy
 ```
 
 ## Failure modes & mitigations
 
-- If the uvicorn process is dead or OOM-killed, the TCP connection will fail and ALB will drain the target — this is the desired behaviour.
-- If the route is accidentally removed or the import fails, the app will still start (other routes work) but ALB health checks will 404 and drain the target. CI tests guard against this.
+- If the FastAPI app fails to start (import error, missing env var), /healthz will be unreachable → ALB marks unhealthy after 3 failures (45s) → ECS replaces the task. This is correct behaviour.
+- If curl is missing from the image, the container health check fails → ECS marks unhealthy. The Dockerfile change ensures curl is installed.
 
 ## Trade-offs
 
-- Using a dedicated router module (vs. inlining in app.py) adds one file but keeps the pattern consistent with all other routes in the project.
-- Returning a static dict means the probe cannot detect downstream failures — acceptable for a liveness check; a readiness probe can be added later if needed.
+- Static response vs. deep check: A static 200 is appropriate for a liveness probe. Deep checks (DB, EventBridge) belong in a separate /readyz endpoint — mixing them into liveness causes cascading restarts when a downstream is temporarily unavailable.
+- curl dependency in runtime image: Adding curl increases image size by ~3 MB. The alternative (a Python one-liner with urllib) avoids the dependency but is slower to execute and harder to read. curl is the standard ECS health check tool.
 
 ## References
 
-- services/dashboard/src/dashboard/app.py
-- services/dashboard/src/dashboard/routes/pages.py
-- services/dashboard/Dockerfile
+- terraform/modules/dashboard/alb.tf — ALB target group health_check block already expects GET /healthz → 200
+- terraform/modules/dashboard/ecs.tf — ECS task definition container healthCheck block (currently TCP socket)
+- services/dashboard/src/dashboard/app.py — FastAPI app entrypoint where the route is registered
+- services/dashboard/Dockerfile — runtime stage where curl must be added
