@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -33,8 +34,12 @@ def ctx() -> LambdaContext:
 
 
 @pytest.fixture(autouse=True)
-def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Set env vars, mock agentcore client, create the runs table under moto."""
+def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
+    """Set env vars, mock agentcore client, create the runs table under moto.
+
+    Yields the agentcore MagicMock so tests that need to inspect
+    ``create_event`` calls can ``def test_foo(aws_env: MagicMock)``.
+    """
     monkeypatch.setenv("AIDLC_RUNS_TABLE", TABLE)
     monkeypatch.setenv("AIDLC_MEMORY_ID", MEM)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
@@ -57,7 +62,7 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        yield
+        yield fake_agentcore
     ddb.cache_clear()
     agentcore.cache_clear()
 
@@ -634,3 +639,27 @@ def test_eventbridge_with_string_detail() -> None:
     payload["detail"] = json.dumps(env)
     out = handler(payload, ctx())
     assert out["ok"] is True
+
+
+def test_forward_to_memory_calls_create_event_with_required_shape(aws_env: MagicMock) -> None:
+    """``CreateEvent`` requires eventTimestamp + tagged-union payload.
+
+    AgentCore Memory rejects:
+      * missing ``eventTimestamp``
+      * a ``payload[]`` entry that sets fields outside the
+        ``conversational`` / ``blob`` tagged union (no ``contentType``,
+        and ``blob`` carries a Document, not raw bytes).
+    """
+    handler(eb_event(envelope()), ctx())
+    aws_env.create_event.assert_called_once()
+    kwargs = aws_env.create_event.call_args.kwargs
+    assert kwargs["memoryId"] == MEM
+    assert kwargs["actorId"] == "demo"
+    assert kwargs["sessionId"] == "run-1"
+    assert kwargs["eventTimestamp"] == datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+    assert len(kwargs["payload"]) == 1
+    entry = kwargs["payload"][0]
+    assert set(entry.keys()) == {"blob"}
+    assert isinstance(entry["blob"], dict)
+    assert entry["blob"]["type"] == "SPEC.READY"
+    assert entry["blob"]["run_id"] == "run-1"

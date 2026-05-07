@@ -18,6 +18,8 @@ def payload() -> ImplementerInput:
         task_id="T-001",
         run_id="01999999-9999-7999-9999-999999999999",
         correlation_id="01999999-9999-7999-9999-999999999998",
+        source_issue_url="https://github.com/owner/name/issues/33",
+        spec_pr_url="https://github.com/owner/name/pull/38",
     )
 
 
@@ -33,6 +35,10 @@ def test_render_pr_body_minimal_done(payload: ImplementerInput) -> None:
     assert payload.run_id in body
     assert payload.correlation_id in body
     assert "docs/specs/add-healthz/" in body
+    # Provenance refs link reviewers back to the originating issue and
+    # the merged spec PR.
+    assert "https://github.com/owner/name/issues/33" in body
+    assert "https://github.com/owner/name/pull/38" in body
     # Footer carries human-readable run + task identifiers; the webhook
     # resolves to the run via gsi_pr lookup, not by parsing the body.
     assert "_task: T-001_" in body
@@ -110,3 +116,25 @@ def test_render_pr_body_under_2kb_for_typical_report(payload: ImplementerInput) 
     )
     body = render_pr_body(payload, task_title="Big task", report=report)
     assert len(body) < 2048
+
+
+def test_render_pr_body_omits_missing_refs() -> None:
+    """Programmatic runs (no source issue, no spec PR) still render cleanly.
+
+    The Refs line gracefully drops the missing entries — no empty
+    bullet, no stray separators — and keeps the in-repo spec path so
+    reviewers always have a link into the spec docs.
+    """
+    payload = ImplementerInput(
+        project_slug="ai-dlc",
+        spec_slug="add-healthz",
+        spec_s3_prefix="specs/add-healthz/",
+        task_id="T-001",
+        run_id="01999999-9999-7999-9999-999999999999",
+        correlation_id="01999999-9999-7999-9999-999999999998",
+    )
+    report = FinishReport(summary="Added /healthz endpoint.", status="done")
+    body = render_pr_body(payload, task_title="Add /healthz endpoint", report=report)
+    assert "issue:" not in body
+    assert "spec PR:" not in body
+    assert "Refs: spec: `docs/specs/add-healthz/`" in body

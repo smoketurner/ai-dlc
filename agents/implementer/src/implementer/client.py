@@ -525,16 +525,31 @@ def render_no_finish_body(payload: ImplementerInput, *, task_title: str) -> str:
 
 
 def pr_body_footer(payload: ImplementerInput) -> str:
-    """Human-readable footer with run + spec context.
+    """Human-readable footer with provenance refs + run context.
+
+    Two lines: a ``Refs:`` line carrying the originating GitHub issue,
+    the merged spec PR, and the in-repo spec path; then the italicised
+    run/correlation/project/task identifiers.
+
+    The issue and spec PR URLs are populated by the state router on
+    issue-driven runs; programmatic runs (POST ``/v1/runs`` without a
+    source issue) pass ``None`` and the line gracefully omits the
+    missing entries.
 
     The dashboard webhook resolves the run/task by querying the runs
     table's ``gsi_pr`` index on ``pr_url`` — no PR-body parsing —
     so this footer is informational only.
     """
+    refs = []
+    if payload.source_issue_url:
+        refs.append(f"issue: {payload.source_issue_url}")
+    if payload.spec_pr_url:
+        refs.append(f"spec PR: {payload.spec_pr_url}")
+    refs.append(f"spec: `docs/specs/{payload.spec_slug}/`")
     return (
+        f"Refs: {' · '.join(refs)}\n\n"
         f"_run_id: {payload.run_id}_  ·  "
         f"_correlation_id: {payload.correlation_id}_  ·  "
         f"_project: {payload.project_slug}_  ·  "
-        f"_spec: `docs/specs/{payload.spec_slug}/`_  ·  "
         f"_task: {payload.task_id}_"
     )

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import boto3
 from strands import tool
 
+from common.memory_md import read_memory_md
 from common.sandbox import run_pr_in_sandbox
 
 if TYPE_CHECKING:
@@ -33,28 +34,6 @@ def s3_client() -> S3Client:
 def artifacts_bucket() -> str:
     """Bucket holding run artifacts."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
-
-
-def memory_md_bucket() -> str:
-    """Bucket holding per-project MEMORY.md snapshots."""
-    return os.environ["AIDLC_MEMORY_MD_BUCKET"]
-
-
-def read_memory_md(project_slug: str) -> str:
-    """Read the canonical MEMORY.md for a project.
-
-    Args:
-        project_slug: Project identifier — e.g., ``ai-dlc``.
-
-    Returns:
-        The Markdown body, or an empty string if no MEMORY.md exists yet.
-    """
-    key = f"projects/{project_slug}/MEMORY.md"
-    try:
-        obj = s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
-    except Exception:
-        return ""
-    return obj["Body"].read().decode("utf-8")
 
 
 def read_spec_doc(spec_slug: str, doc: str) -> str:

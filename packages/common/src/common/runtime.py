@@ -226,6 +226,23 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
+    # Provenance refs threaded into the implementation PR body so reviewers
+    # can hop straight from the task PR to the originating issue and the
+    # merged spec PR without lookups.
+    source_issue_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+        ]
+        | None
+    ) = None
+    spec_pr_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+        ]
+        | None
+    ) = None
 
 
 class ImplementerResult(_UsageMixin):

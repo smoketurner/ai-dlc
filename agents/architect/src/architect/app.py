@@ -22,7 +22,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from architect.agent import build_agent, generate_spec, model_id
-from architect.repo_grounding import clone_target_repo
+from architect.repo_grounding import clone_target_repo, sync_memory_md_from_clone
 from architect.spec import SpecBundle, render_design, render_requirements, render_tasks
 from architect.tools import write_spec_doc
 from common.event_emit import publish
@@ -46,6 +46,10 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
     )
 
     clone_target_repo(payload.target_repo, requestor_sub=payload.requestor_sub)
+    sync_memory_md_from_clone(
+        project_slug=payload.project_slug,
+        target_repo=payload.target_repo,
+    )
     agent = build_agent(payload.run_id)
     spec = generate_spec(
         agent,

@@ -6,6 +6,11 @@ for a FastAPI project). On invocation the entrypoint shallow-clones the
 target repo into ``/workspace/repo``; ``read_repo_file`` and
 ``list_repo_paths`` expose bounded views of that tree as Strands tools.
 
+After the clone, :func:`sync_memory_md_from_clone` syncs
+``docs/MEMORY.md`` + ``CLAUDE.md`` from the clone into the per-project
+S3 bucket so downstream agents (Critic, Proposer) — which never clone —
+can ground themselves via ``read_memory_md``.
+
 This module is read-only with respect to the target repo: no commits,
 no pushes, no remote tracking — the architect's job is to look, not to
 edit. Cleanup of the workspace happens implicitly when the AgentCore
@@ -14,13 +19,21 @@ microVM is recycled.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
+from functools import cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import boto3
 import structlog
+from botocore.exceptions import ClientError
 
 from common.github_app import token_for_call
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3.client import S3Client
 
 logger = structlog.get_logger()
 
@@ -29,6 +42,9 @@ REPO_PATH = WORKSPACE_ROOT / "repo"
 GIT_BIN = "/usr/bin/git"
 MAX_FILE_BYTES = 16384  # 16 KiB cap so tool output stays in context.
 MAX_LIST_ENTRIES = 200  # ``list_repo_paths`` upper bound on returned paths.
+
+MEMORY_MD_SOURCES = ("docs/MEMORY.md", "CLAUDE.md")
+MEMORY_MD_KEY_TEMPLATE = "projects/{project_slug}/MEMORY.md"
 
 
 def clone_target_repo(
@@ -139,3 +155,110 @@ def read_repo_file(path: str) -> str:
     if not resolved.is_file():
         return ""
     return resolved.read_bytes()[:MAX_FILE_BYTES].decode("utf-8", errors="replace")
+
+
+@cache
+def s3_client() -> S3Client:
+    """Process-cached boto3 S3 client for the memory_md bucket sync."""
+    return boto3.client("s3")
+
+
+def sync_memory_md_from_clone(*, project_slug: str, target_repo: str | None = None) -> None:
+    """Sync ``docs/MEMORY.md`` + ``CLAUDE.md`` from the clone into S3.
+
+    Builds a single combined Markdown body with one section per source
+    file present in the clone, then uploads to
+    ``s3://{memory_md_bucket}/projects/{project_slug}/MEMORY.md`` —
+    where every agent's ``read_memory_md`` looks. Idempotent on
+    identical content (compared via the existing object's ETag, which
+    is the body's MD5 for non-multipart uploads).
+
+    No-op when neither source file exists in the clone (bucket stays
+    empty so ``read_memory_md`` returns the empty string and the
+    architect's grounding hook can fail closed). Sync failures are
+    swallowed — the architect can still ground itself by calling
+    ``read_repo_file`` against the clone directly.
+    """
+    bucket = os.environ.get("AIDLC_MEMORY_MD_BUCKET")
+    if not bucket:
+        logger.warning("AIDLC_MEMORY_MD_BUCKET unset; skipping MEMORY.md sync")
+        return
+    body = compose_memory_md_body(target_repo=target_repo)
+    if body is None:
+        logger.info(
+            "no MEMORY.md sources in clone; skipping sync",
+            project_slug=project_slug,
+            sources=list(MEMORY_MD_SOURCES),
+        )
+        return
+    key = MEMORY_MD_KEY_TEMPLATE.format(project_slug=project_slug)
+    if existing_object_matches(bucket=bucket, key=key, body=body):
+        logger.info(
+            "MEMORY.md unchanged; skipping put",
+            project_slug=project_slug,
+            key=key,
+        )
+        return
+    try:
+        s3_client().put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body.encode("utf-8"),
+            ContentType="text/markdown; charset=utf-8",
+        )
+    except ClientError as exc:
+        logger.warning(
+            "MEMORY.md sync failed",
+            project_slug=project_slug,
+            key=key,
+            err=str(exc),
+        )
+        return
+    logger.info("MEMORY.md synced", project_slug=project_slug, key=key, bytes=len(body))
+
+
+def compose_memory_md_body(*, target_repo: str | None) -> str | None:
+    """Read each MEMORY.md source from the clone and join into one body.
+
+    Returns ``None`` when none of the sources exist — the caller treats
+    that as "skip the sync entirely" so a project without grounding
+    files doesn't get a placeholder S3 object that would mask the
+    "fail closed" path in :func:`tools.read_memory_md`.
+
+    The body intentionally embeds no timestamp: the S3 object's
+    ``LastModified`` is the authoritative freshness signal and a
+    body-level timestamp would defeat the MD5-based idempotency check
+    in :func:`existing_object_matches`.
+    """
+    sections: list[str] = []
+    for source in MEMORY_MD_SOURCES:
+        content = read_repo_file(source)
+        if content:
+            sections.append(f"## {source}\n\n{content.rstrip()}\n")
+    if not sections:
+        return None
+    header = ["# Project memory (synced from repo clone)", ""]
+    if target_repo:
+        header.append(f"> Source repo: {target_repo}")
+        header.append("")
+    return "\n".join(header) + "\n".join(sections)
+
+
+def existing_object_matches(*, bucket: str, key: str, body: str) -> bool:
+    """Return True when the S3 object's ETag matches the candidate body's MD5.
+
+    For non-multipart uploads ETag is the body's MD5 hex digest in
+    quotes; we strip the quotes and compare. Any failure (object missing,
+    permissions, multipart upload with a non-MD5 ETag) returns False so
+    the caller falls through to put_object — better to over-write than
+    silently skip a real change.
+    """
+    try:
+        head = s3_client().head_object(Bucket=bucket, Key=key)
+    except ClientError:
+        return False
+    etag = head.get("ETag", "").strip('"')
+    if not etag:
+        return False
+    candidate_md5 = hashlib.md5(body.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return etag == candidate_md5

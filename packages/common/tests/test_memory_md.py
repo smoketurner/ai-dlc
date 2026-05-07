@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-import pytest
+from collections.abc import Iterator
 
+import boto3
+import pytest
+from moto import mock_aws
+
+from common import memory_md
 from common.errors import MemoryDocParseError
-from common.memory_md import MemoryDoc, parse, render
+from common.memory_md import MemoryDoc, parse, read_memory_md, render
+
+_MEMORY_BUCKET = "ai-dlc-test-memory-md"
+_PROJECT_SLUG = "ai-dlc"
+_PROJECT_KEY = f"projects/{_PROJECT_SLUG}/MEMORY.md"
 
 _MINIMAL = """# Project Memory
 
@@ -94,3 +103,59 @@ def test_empty_doc_renders_all_six_headers() -> None:
         "## Notes",
     ):
         assert header in rendered
+
+
+# ---------------------------------------------------------------------------
+# read_memory_md — S3-snapshot reader with read-time freshness header
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def memory_bucket(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """moto-backed S3 + bucket created + boto3 client cache cleared."""
+    monkeypatch.setenv("AIDLC_MEMORY_MD_BUCKET", _MEMORY_BUCKET)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    memory_md.memory_md_s3_client.cache_clear()
+    with mock_aws():
+        boto3.client("s3").create_bucket(Bucket=_MEMORY_BUCKET)
+        yield
+    memory_md.memory_md_s3_client.cache_clear()
+
+
+def test_read_memory_md_prefixes_body_with_sync_timestamp(memory_bucket: None) -> None:
+    """Reader prefixes the stored body with a sync-time header.
+
+    The architect's ``put_object`` idempotency check requires a stable
+    body across syncs of identical content; baking the timestamp into
+    the body would force a put on every sync. The fix: emit the
+    timestamp at read time off the S3 object's ``LastModified``.
+    """
+    del memory_bucket
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=_MEMORY_BUCKET,
+        Key=_PROJECT_KEY,
+        Body=b"# Project memory\n\nstable content\n",
+        ContentType="text/markdown; charset=utf-8",
+    )
+
+    body = read_memory_md(_PROJECT_SLUG)
+
+    assert body.startswith("_(synced from clone on ")
+    assert ")_\n\n" in body
+    assert "# Project memory" in body
+    assert "stable content" in body
+    raw = (
+        boto3.client("s3", region_name="us-east-1")
+        .get_object(Bucket=_MEMORY_BUCKET, Key=_PROJECT_KEY)["Body"]
+        .read()
+        .decode("utf-8")
+    )
+    assert "synced from clone on" not in raw
+
+
+def test_read_memory_md_returns_empty_string_when_object_missing(
+    memory_bucket: None,
+) -> None:
+    """No snapshot for the project yet — return ``""``."""
+    del memory_bucket
+    assert read_memory_md(_PROJECT_SLUG) == ""

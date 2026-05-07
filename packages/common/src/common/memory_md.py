@@ -1,4 +1,4 @@
-"""Parser and renderer for the ai-dlc ``MEMORY.md`` file.
+"""Parser, renderer, and S3-snapshot reader for the ai-dlc ``MEMORY.md``.
 
 A MEMORY.md has exactly six top-level ``## `` headers, in this order:
 
@@ -12,16 +12,28 @@ A MEMORY.md has exactly six top-level ``## `` headers, in this order:
 Anything else fails fast with :class:`MemoryDocParseError`. The strict
 schema is intentional — agents need to write to known sections without an
 LLM negotiating the structure on every save.
+
+This module also owns :func:`read_memory_md` — the canonical read of
+the per-project MEMORY.md S3 snapshot the architect syncs from the
+cloned repo. Each Strands agent imports and registers it directly so
+the read semantics (freshness header, empty-on-missing) live in one
+place rather than four near-identical copies.
 """
 
 from __future__ import annotations
 
+import os
 import re
-from typing import Final, Literal
+from functools import cache
+from typing import TYPE_CHECKING, Final, Literal
 
+import boto3
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.errors import MemoryDocParseError
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3.client import S3Client
 
 Section = Literal[
     "overview",
@@ -155,3 +167,49 @@ def _validate_section_order(seen: list[Section]) -> None:
             expected=list(_SECTION_ORDER),
             seen=seen,
         )
+
+
+@cache
+def memory_md_s3_client() -> S3Client:
+    """Process-cached S3 client used to read the per-project snapshot."""
+    return boto3.client("s3")
+
+
+def memory_md_bucket() -> str:
+    """Bucket name for the per-project MEMORY.md snapshot."""
+    return os.environ["AIDLC_MEMORY_MD_BUCKET"]
+
+
+def read_memory_md(project_slug: str) -> str:
+    """Read the canonical MEMORY.md for a project, prefixed with sync time.
+
+    The architect syncs ``docs/MEMORY.md`` + ``CLAUDE.md`` from the
+    cloned repo into ``s3://{bucket}/projects/{project_slug}/MEMORY.md``
+    on every architect run (see
+    ``architect.repo_grounding.sync_memory_md_from_clone``). The four
+    Strands agents (architect, critic, reviewer, proposer) register
+    this function directly as a tool — no per-agent wrapper.
+
+    The freshness header is injected at read time rather than baked
+    into the stored body so two syncs of identical source content
+    produce a byte-identical S3 object — that's what keeps the
+    architect's MD5 idempotency check valid.
+
+    Args:
+        project_slug: Project identifier — e.g., ``ai-dlc``.
+
+    Returns:
+        The Markdown body prefixed with ``_(synced from clone on
+        <iso>)_``, or the empty string when no snapshot exists for
+        the project.
+    """
+    key = f"projects/{project_slug}/MEMORY.md"
+    try:
+        obj = memory_md_s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
+    except Exception:
+        return ""
+    body = obj["Body"].read().decode("utf-8")
+    last_modified = obj.get("LastModified")
+    if last_modified is None:
+        return body
+    return f"_(synced from clone on {last_modified.isoformat()})_\n\n{body}"

@@ -204,7 +204,7 @@ All three should also call `react_to_issue_comment` / `react_to_pr_review_commen
 
 1. ~~**A1** — diagnose `list_repo_paths` empty.~~ Done. See updated section above.
 2. ~~**A1.5** — migrate all 6 Strands agents off deprecated `agent.structured_output()`.~~ Done. Helper `run_for_structured_output` lives in `packages/common/src/common/runtime.py`; architect / critic / reviewer / tester / proposer / triage now call it. Triage was included even though it has no tools — same deprecation, same fix. All workspace tests + lint + types green.
-3. **A2** — seed MEMORY.md from clone (2-3h).
+3. ~~**A2** — seed MEMORY.md from clone.~~ Done. `agents/architect/src/architect/repo_grounding.py:sync_memory_md_from_clone` runs after `clone_target_repo`, reads `docs/MEMORY.md` + `CLAUDE.md`, and uploads a single combined object to `s3://{memory_md_bucket}/projects/{slug}/MEMORY.md`. Idempotent via ETag/MD5 head-object compare; the body intentionally omits a timestamp so identical source content produces a byte-identical body. No-op when neither file exists (preserves the empty-grounding signal A3 will guard on).
 4. **A3** — fail-closed grounding hook (1-2h).
 5. **A4** — `read_claude_md` tool (1h, optional).
 6. Then **Part B** as a single feature batch.

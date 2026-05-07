@@ -28,6 +28,7 @@ from strands import tool
 
 from common import agentcore_browser as browser
 from common.errors import AgentCoreBrowserError
+from common.memory_md import read_memory_md
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -55,11 +56,6 @@ def s3_client() -> S3Client:
 def artifacts_bucket() -> str:
     """Bucket holding the eval substrate."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
-
-
-def memory_md_bucket() -> str:
-    """Bucket holding per-project MEMORY.md snapshots."""
-    return os.environ["AIDLC_MEMORY_MD_BUCKET"]
 
 
 def list_recent(prefix: str, *, days: int) -> list[str]:
@@ -162,16 +158,6 @@ def read_few_shot_summary(*, days: int = DEFAULT_LOOKBACK_DAYS) -> dict[str, Any
         "total_examples": sum(by_kind.values()),
         "by_kind": [{"kind": k, "count": c} for k, c in by_kind.most_common()],
     }
-
-
-def read_memory_md(project_slug: str) -> str:
-    """Read the canonical MEMORY.md for a project."""
-    key = f"projects/{project_slug}/MEMORY.md"
-    try:
-        obj = s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
-    except Exception:
-        return ""
-    return obj["Body"].read().decode("utf-8")
 
 
 def aws_region() -> str:

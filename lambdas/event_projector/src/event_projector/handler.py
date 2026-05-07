@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
@@ -172,7 +173,7 @@ def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str,
             TableName=runs_table(),
             Item={
                 "pk": {"S": f"RUN#{run_id}"},
-                "sk": {"S": f"EVENT#{envelope.get('timestamp', '')}#{event_id}"},
+                "sk": {"S": f"EVENT#{event_id}"},
                 "type": {"S": event_type or "UNKNOWN"},
                 "envelope": {"S": json.dumps(envelope)},
             },
@@ -784,7 +785,13 @@ def map_feedback(feedback: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 @tracer.capture_method
 def forward_to_memory(envelope: dict[str, Any]) -> None:
-    """Emit the envelope to AgentCore Memory as a CreateEvent."""
+    """Emit the envelope to AgentCore Memory as a CreateEvent.
+
+    AgentCore Memory's ``CreateEvent`` requires ``eventTimestamp`` and a
+    ``payload`` whose entries are a tagged union of ``conversational`` or
+    ``blob``. ``blob`` is a JSON-compatible Document, not raw bytes — we
+    pass the envelope dict directly.
+    """
     actor_id = envelope.get("payload", {}).get("project_slug") or envelope.get("actor_id", "system")
     session_id = envelope.get("run_id", "system")
     try:
@@ -792,13 +799,17 @@ def forward_to_memory(envelope: dict[str, Any]) -> None:
             memoryId=memory_id(),
             actorId=actor_id,
             sessionId=session_id,
-            payload=[
-                {
-                    "blob": json.dumps(envelope).encode("utf-8"),
-                    "contentType": "application/json",
-                },
-            ],
+            eventTimestamp=parse_event_timestamp(envelope),
+            payload=[{"blob": envelope}],
         )
     except Exception as exc:
         logger.warning("memory CreateEvent failed", extra={"err": repr(exc)})
         metrics.add_metric(name="MemoryWriteFailures", unit=MetricUnit.Count, value=1)
+
+
+def parse_event_timestamp(envelope: dict[str, Any]) -> datetime:
+    """Parse the envelope's ISO-8601 ``timestamp`` field for boto3."""
+    raw = envelope.get("timestamp")
+    if isinstance(raw, str):
+        return datetime.fromisoformat(raw)
+    return datetime.now(UTC)
