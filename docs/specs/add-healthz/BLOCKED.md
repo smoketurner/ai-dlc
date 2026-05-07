@@ -13,8 +13,9 @@ agent produced no diff
 
 ## Agent summary
 
-Replaced the TCP socket-based ECS container health check with `curl -sf http://127.0.0.1:8080/healthz` so the check detects application-level failures rather than just port availability. Added `curl` to the runtime stage apt-get install line in the Dockerfile so the CMD-SHELL command is available in the container.
+Replace the TCP socket health check in the ECS task definition with `curl -sf http://127.0.0.1:8080/healthz` so container liveness tracks application-level availability rather than port reachability. Add `curl` to the runtime stage of the dashboard Dockerfile so the CMD-SHELL command is available in the container image.
 
 ## Risks the agent flagged
 
-- docker build cannot be verified locally without network access to pull the base image; the Dockerfile change is syntactically correct but a live build was not run
+- curl adds ~3 MB to the runtime image; acceptable per design trade-off documented in design.md
+- docker build not run in CI here — build correctness depends on the Dockerfile syntax being valid and the apt package name being correct (curl is standard in debian:trixie-slim)
