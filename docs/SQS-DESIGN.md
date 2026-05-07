@@ -68,8 +68,8 @@ The architecture has clean separation:
                                                                     │
                                                              ┌──────────────────┐
                                                              │ SQS state-router │
-                                                             │ queue            │
-                                                             │ + DLQ            │
+                                                             │ queue (no DLQ)   │
+                                                             │                  │
                                                              └──────────────────┘
 ```
 
@@ -225,16 +225,16 @@ Single queue, one message per active run.
 | | |
 |---|---|
 | Queue name | `${prefix}-state-router` |
-| DLQ | `${prefix}-state-router-dlq` |
+| DLQ | none — beacons cycle indefinitely until terminal |
 | Visibility timeout | 60s |
 | Long-polling wait | 20s |
-| `maxReceiveCount` | 100 (high — most receives are normal polls, not failures) |
+| `maxReceiveCount` | unset (no redrive policy) |
 | Message body | `{"run_id": "<uuid7>"}` |
-| Lifecycle | Created on `REQUEST.RECEIVED`. Deleted when `current_state ∈ TERMINAL_STATES`. |
+| Lifecycle | Created on `REQUEST.RECEIVED`. Deleted by Lambda's SQS event source mapping when the handler returns it as a successful record (terminal / orphan / malformed). |
 
-The SQS message is **only a beacon** — it carries no state and triggers no work directly. The router's job on each receive is "read DDB; if there's a next action, do it; otherwise let the lease expire."
+The SQS message is **only a beacon** — it carries no state and triggers no work directly. The router's job on each receive is "read DDB; if there's a next action, do it." After dispatch, the handler reports the message as a batch-item failure (`function_response_types=["ReportBatchItemFailures"]`), which keeps it visible after the visibility timeout. The state machine ticks at this cadence until the run reaches a terminal state.
 
-For DLQ semantics: real failures (validation errors, dispatch failures) trigger `SendMessage` to a separate `errors` queue or alarm, not DLQ-via-receive-count. DLQ is reserved for SQS-level pathology (a message that gets redelivered 100 times means something is wrong with the consumer, not with the workflow).
+No DLQ on purpose: SQS caps `maxReceiveCount` at 1000, which would push a beacon to a DLQ after 1000 × 60s ≈ 16 hours regardless of whether the workflow is healthy. Active runs waiting on a multi-day spec-PR human merge would silently die. Real failures (validation errors, dispatch failures) surface via CloudWatch alarms on receive-count age or invocation-error metrics, not DLQ-by-redelivery.
 
 ## State router behaviour
 
@@ -357,7 +357,7 @@ Cheap insurance against beacon loss + observability into stuck runs.
 **Phase 1 — additive (safe, parallel to existing pipeline):**
 - Define state enum + dispatch table in code (no behaviour change).
 - Add `state_router` Lambda with full dispatch logic but DON'T wire it to anything yet.
-- Add SQS beacon queue + DLQ.
+- Add SQS beacon queue (no DLQ — see "SQS beacon contract" above).
 - Add `RUN.CANCEL_REQUESTED` and `TASK.ITERATION_REQUESTED` event types.
 - Extend `event_projector` to apply state transitions on a feature-flagged second code path.
 - Modify `entry_adapter` to ALSO send beacon (in addition to existing event emit).

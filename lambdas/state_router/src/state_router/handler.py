@@ -135,9 +135,10 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
       beacon is gone for good.
 
     Requires ``function_response_types=["ReportBatchItemFailures"]`` on
-    the event source mapping. ``maxReceiveCount`` on the queue caps how
-    long a single beacon can cycle before going to DLQ; the stuck-run
-    detector re-injects beacons for runs that lose theirs.
+    the event source mapping. The beacon queue has no DLQ + no
+    ``maxReceiveCount`` cap — a beacon cycles indefinitely until the
+    run reaches a terminal state. SQS-level pathology surfaces via
+    CloudWatch alarms on receive-count age, not via DLQ-by-redelivery.
     """
     records = event.get("Records") or []
     failures: list[dict[str, str]] = []
@@ -503,8 +504,10 @@ def fire_and_forget(
     """Invoke the AgentCore Runtime; treat read-timeout as success.
 
     Connection-level failures (auth, throttle, not-found) are logged
-    but do not raise — the next beacon poll will retry. Persistent
-    failures eventually push the beacon to DLQ via maxReceiveCount.
+    but do not raise — the beacon stays in the queue and the next
+    poll cycle (one visibility timeout later) retries the dispatch.
+    Persistent failures continue to retry indefinitely; surface them
+    via CloudWatch alarms on the runtime's invocation errors instead.
     """
     try:
         runtime_client().invoke_agent_runtime(

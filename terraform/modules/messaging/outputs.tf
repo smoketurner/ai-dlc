@@ -25,7 +25,3 @@ output "state_router_queue_url" {
 output "state_router_queue_arn" {
   value = aws_sqs_queue.state_router.arn
 }
-
-output "state_router_dlq_arn" {
-  value = aws_sqs_queue.state_router_dlq.arn
-}

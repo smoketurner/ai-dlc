@@ -21,12 +21,6 @@ variable "state_router_visibility_seconds" {
   default     = 60
 }
 
-variable "state_router_max_receives" {
-  description = "Max receives before a beacon is moved to the state-router DLQ. Each active beacon cycles once per visibility timeout; max_receives × visibility = wall-clock cap before DLQ. The default (10000 × 60s ≈ 7 days) covers typical spec-PR human-merge waits; the stuck-run detector re-injects beacons for runs that exceed this."
-  type        = number
-  default     = 10000
-}
-
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)
