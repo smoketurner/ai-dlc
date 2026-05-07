@@ -57,6 +57,7 @@ class TaskState(StrEnum):
     tester_running = "tester_running"
     iterating = "iterating"
     pending_approval = "pending_approval"
+    blocked = "blocked"
     merged = "merged"
     closed = "closed"
     failed = "failed"

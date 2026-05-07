@@ -43,6 +43,7 @@ EventType = Literal[
     "SPEC.REJECTED",
     "CRITIQUE.READY",
     "TASK.READY",
+    "TASK.BLOCKED",
     "TASK.APPROVED",
     "TASK.REJECTED",
     "TASK.ITERATION_REQUESTED",
@@ -225,6 +226,24 @@ class TaskReady(UsagePayload):
     session_id: str
 
 
+class TaskBlocked(UsagePayload):
+    """The implementer could not produce an implementation for one task.
+
+    A draft PR exists carrying ``BLOCKED.md`` with the explanation; the
+    human advances by commenting on the PR (which fires
+    ``TASK.ITERATION_REQUESTED`` and re-runs the implementer with the
+    comment as feedback) or by closing the PR (which fires
+    ``TASK.REJECTED`` and ends the task).
+    """
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str
+    blocked_reason: Annotated[str, Field(min_length=1, max_length=2048)]
+    session_id: str
+
+
 class TaskApproved(Payload):
     """A reviewer approved the task PR. The next task may start."""
 
@@ -360,6 +379,7 @@ type AnyPayload = (
     | SpecRejected
     | CritiqueReady
     | TaskReady
+    | TaskBlocked
     | TaskApproved
     | TaskRejected
     | TaskIterationRequested

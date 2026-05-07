@@ -246,6 +246,61 @@ class TestTaskTransitions:
             == TaskState.closed
         )
 
+    def test_task_blocked_from_implementer_running(self) -> None:
+        assert (
+            apply_task_transition(
+                event_type="TASK.BLOCKED",
+                current_state=TaskState.implementer_running,
+            )
+            == TaskState.blocked
+        )
+
+    def test_task_blocked_from_iterating(self) -> None:
+        # Iteration that remains blocked re-emits TASK.BLOCKED against
+        # an iterating task; the cursor goes back to ``blocked``.
+        assert (
+            apply_task_transition(
+                event_type="TASK.BLOCKED",
+                current_state=TaskState.iterating,
+            )
+            == TaskState.blocked
+        )
+
+    def test_iteration_requested_from_blocked(self) -> None:
+        # Comment on a blocked draft PR fires the existing
+        # TASK.ITERATION_REQUESTED webhook path; the new transition
+        # flips ``blocked → iterating`` so the implementer re-runs.
+        assert (
+            apply_task_transition(
+                event_type="TASK.ITERATION_REQUESTED",
+                current_state=TaskState.blocked,
+            )
+            == TaskState.iterating
+        )
+
+    def test_task_rejected_from_blocked(self) -> None:
+        # Closing a blocked draft PR ends the task; other tasks in the
+        # run keep going.
+        assert (
+            apply_task_transition(
+                event_type="TASK.REJECTED",
+                current_state=TaskState.blocked,
+            )
+            == TaskState.closed
+        )
+
+    def test_task_approved_from_blocked(self) -> None:
+        # Edge case: human marks ready + merges a blocked draft. Draft
+        # status normally prevents this, but the transition exists so
+        # the cursor doesn't stick if it does happen.
+        assert (
+            apply_task_transition(
+                event_type="TASK.APPROVED",
+                current_state=TaskState.blocked,
+            )
+            == TaskState.merged
+        )
+
 
 class TestTaskInvalidTransitions:
     @pytest.mark.parametrize(

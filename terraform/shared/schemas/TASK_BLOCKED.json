@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "TASK.BLOCKED",
+  "description": "The implementer could not produce an implementation for one task. A draft PR carrying BLOCKED.md is open; the human advances by commenting on the PR (TASK.ITERATION_REQUESTED) or closing it (TASK.REJECTED).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "type",
+    "timestamp",
+    "run_id",
+    "correlation_id",
+    "actor_id",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": { "type": "string", "enum": ["1.0"] },
+    "event_id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["TASK.BLOCKED"] },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "run_id": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "format": "uuid" },
+    "causation_id": { "type": ["string", "null"], "format": "uuid" },
+    "actor_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_slug",
+        "spec_slug",
+        "task_id",
+        "pr_url",
+        "blocked_reason",
+        "session_id"
+      ],
+      "properties": {
+        "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "pr_url": { "type": "string", "format": "uri" },
+        "blocked_reason": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "session_id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

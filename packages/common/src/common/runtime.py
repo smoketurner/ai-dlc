@@ -246,18 +246,21 @@ class ImplementerInput(_Frozen):
 
 
 class ImplementerResult(_UsageMixin):
-    """Result the Implementer returns. Becomes the TASK.READY payload.
+    """Result the Implementer returns.
 
-    ``pr_url`` is ``None`` when the agent reported ``status='blocked'`` via
-    the ``finish`` tool — no PR was opened. ``blocked_reason`` carries the
-    agent's explanation in that case.
+    ``pr_url`` is always set — the implementer opens a PR even on the
+    blocked path (with ``BLOCKED.md`` as the diff) so a human can
+    advance the task by commenting on the PR. ``blocked_reason`` is
+    set when the agent could not produce a real implementation; the
+    runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY`` in that
+    case.
     """
 
     task_id: str
     pr_url: str | None = None
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
-    blocked_reason: Annotated[str, Field(max_length=512)] | None = None
+    blocked_reason: Annotated[str, Field(max_length=2048)] | None = None
 
 
 class ReviewerInput(_Frozen):

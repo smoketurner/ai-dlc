@@ -15,6 +15,7 @@ from common.events import (
     ReviewReady,
     RunCancelRequested,
     RunCompleted,
+    TaskBlocked,
     TaskIterationRequested,
     TestReportReady,
 )
@@ -366,5 +367,41 @@ def test_run_cancel_requested_rejects_unknown_source() -> None:
                 "project_slug": "demo",
                 "requestor": "alice",
                 "source": "telepathy",
+            },
+        )
+
+
+def test_task_blocked_round_trip() -> None:
+    payload = TaskBlocked(
+        project_slug="demo",
+        spec_slug="add-healthz",
+        task_id="T-001",
+        pr_url="https://github.com/owner/name/pull/42",
+        blocked_reason="Spec was contradictory.",
+        session_id="01999999-9999-7999-9999-999999999999",
+    )
+    env = EventEnvelope[TaskBlocked](
+        type="TASK.BLOCKED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="implementer",
+        payload=payload,
+    )
+    parsed = EventEnvelope[TaskBlocked].model_validate_json(env.model_dump_json())
+    assert parsed.type == "TASK.BLOCKED"
+    assert parsed.payload.blocked_reason == "Spec was contradictory."
+    assert parsed.payload.pr_url == "https://github.com/owner/name/pull/42"
+
+
+def test_task_blocked_requires_blocked_reason() -> None:
+    with pytest.raises(ValidationError):
+        TaskBlocked.model_validate(
+            {
+                "project_slug": "demo",
+                "spec_slug": "add-healthz",
+                "task_id": "T-001",
+                "pr_url": "https://github.com/owner/name/pull/42",
+                "blocked_reason": "",
+                "session_id": "01999999-9999-7999-9999-999999999999",
             },
         )

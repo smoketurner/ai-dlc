@@ -15,7 +15,6 @@ Flow per invocation:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 import structlog
@@ -92,23 +91,41 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    blocked = check_blocked(payload, report)
-    if blocked is not None:
-        return blocked.with_usage(usage)
+    blocked_reason = compute_blocked_reason(payload, report)
 
-    materialize_spec_in_repo(payload.spec_slug)
-    update_tasks_md(payload.task_id, payload.spec_slug)
+    if blocked_reason is None:
+        materialize_spec_in_repo(payload.spec_slug)
+        update_tasks_md(payload.task_id, payload.spec_slug)
+        commit_message = build_commit_message(payload.task_id, task.title)
+        body = render_pr_body(payload, task_title=task.title, report=report)
+        title = f"{payload.task_id}: {task.title}"
+    else:
+        write_blocked_md(
+            spec_slug=payload.spec_slug,
+            task_id=payload.task_id,
+            blocked_reason=blocked_reason,
+            report=report,
+        )
+        commit_message = build_blocked_commit_message(payload.task_id, task.title)
+        body = render_blocked_pr_body(
+            payload,
+            task_title=task.title,
+            blocked_reason=blocked_reason,
+            report=report,
+        )
+        title = f"{payload.task_id} (blocked): {task.title}"
 
     if has_uncommitted_changes():
-        commit_changes(build_commit_message(payload.task_id, task.title))
+        commit_changes(commit_message)
     push_branch(branch)
 
     pr_url = open_pr(
         session,
         branch=branch,
         base="main",
-        title=f"{payload.task_id}: {task.title}",
-        body=render_pr_body(payload, task_title=task.title, report=report),
+        title=title,
+        body=body,
+        draft=blocked_reason is not None,
     )
 
     return ImplementerResult(
@@ -116,6 +133,7 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
         pr_url=pr_url,
         diff_summary=short_diff_summary()[:4096],
         session_id=payload.run_id,
+        blocked_reason=blocked_reason,
         **usage,
     )
 
@@ -158,14 +176,32 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     )
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    blocked = check_blocked(payload, report, pr_url=payload.pr_url)
-    if blocked is not None:
-        return blocked.with_usage(usage)
+    blocked_reason = compute_blocked_reason(payload, report)
+
+    if blocked_reason is None:
+        # Iteration produced a real diff — clean up any prior BLOCKED.md
+        # so it doesn't ride along into main when the PR is merged.
+        delete_blocked_md(payload.spec_slug)
+        commit_message = build_iteration_commit_message(
+            payload.task_id,
+            task.title,
+            payload.iteration_count,
+        )
+    else:
+        write_blocked_md(
+            spec_slug=payload.spec_slug,
+            task_id=payload.task_id,
+            blocked_reason=blocked_reason,
+            report=report,
+        )
+        commit_message = build_blocked_iteration_commit_message(
+            payload.task_id,
+            task.title,
+            payload.iteration_count,
+        )
 
     if has_uncommitted_changes():
-        commit_changes(
-            build_iteration_commit_message(payload.task_id, task.title, payload.iteration_count),
-        )
+        commit_changes(commit_message)
     push_branch(branch)
 
     if report is not None and report.inline_replies and payload.pr_url is not None:
@@ -181,42 +217,22 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
         pr_url=payload.pr_url,
         diff_summary=short_diff_summary()[:4096],
         session_id=payload.run_id,
+        blocked_reason=blocked_reason,
         **usage,
     )
 
 
-@dataclass(frozen=True)
-class BlockedShortCircuit:
-    """Internal helper carrying the short-circuit ImplementerResult sans usage."""
-
-    task_id: str
-    pr_url: str | None
-    diff_summary: str
-    session_id: str
-    blocked_reason: str
-
-    def with_usage(self, usage: dict[str, Any]) -> ImplementerResult:
-        """Pour the agent's usage metrics into the blocked result."""
-        return ImplementerResult(
-            task_id=self.task_id,
-            pr_url=self.pr_url,
-            diff_summary=self.diff_summary,
-            session_id=self.session_id,
-            blocked_reason=self.blocked_reason,
-            **usage,
-        )
-
-
-def check_blocked(
+def compute_blocked_reason(
     payload: ImplementerInput,
     report: FinishReport | None,
-    *,
-    pr_url: str | None = None,
-) -> BlockedShortCircuit | None:
-    """Return a short-circuit result when the agent produced no diff or said blocked.
+) -> str | None:
+    """Return the agent's blocker explanation, or ``None`` on a real diff.
 
-    ``pr_url`` is only set for iteration runs (the existing PR's URL stays
-    on the result so the dashboard timeline still renders the link).
+    A blocked path lands when the agent makes no real changes (``status
+    --porcelain`` is empty outside the spec dir) or the agent itself
+    reported ``status='blocked'`` via the ``finish`` tool. The runtime
+    still opens a draft PR carrying ``BLOCKED.md`` so a human can
+    advance the task by commenting on the PR.
     """
     if report is None:
         logger.warning(
@@ -229,18 +245,12 @@ def check_blocked(
             report.blocked_reason if report and report.blocked_reason else "agent produced no diff"
         )
         logger.info(
-            "implementer produced no diff; skipping PR",
+            "implementer produced no diff",
             run_id=payload.run_id,
             task_id=payload.task_id,
             blocked_reason=reason,
         )
-        return BlockedShortCircuit(
-            task_id=payload.task_id,
-            pr_url=pr_url,
-            diff_summary="(no diff — agent produced no changes)",
-            session_id=payload.run_id,
-            blocked_reason=reason,
-        )
+        return reason
     if report is not None and report.status == "blocked":
         logger.info(
             "implementer reported blocked",
@@ -248,13 +258,7 @@ def check_blocked(
             task_id=payload.task_id,
             blocked_reason=report.blocked_reason,
         )
-        return BlockedShortCircuit(
-            task_id=payload.task_id,
-            pr_url=pr_url,
-            diff_summary="(no diff — task blocked by agent)",
-            session_id=payload.run_id,
-            blocked_reason=report.blocked_reason or "agent reported blocked",
-        )
+        return report.blocked_reason or "agent reported blocked"
     return None
 
 
@@ -389,6 +393,16 @@ def build_iteration_commit_message(task_id: str, title: str, iteration: int) -> 
     return f"{task_id}: iter {iteration} — {title}"
 
 
+def build_blocked_commit_message(task_id: str, title: str) -> str:
+    """Commit subject for a blocked first-pass — signals 'no implementation yet'."""
+    return f"{task_id} (blocked): {title}"
+
+
+def build_blocked_iteration_commit_message(task_id: str, title: str, iteration: int) -> str:
+    """Commit subject for an iteration that remained blocked."""
+    return f"{task_id} (blocked iter {iteration}): {title}"
+
+
 async def drive_agent(
     user_prompt: str,
     *,
@@ -466,6 +480,66 @@ def update_tasks_md(task_id: str, spec_slug: str) -> None:
         return
 
 
+def blocked_md_path(spec_slug: str) -> str:
+    """Repo-relative path to the per-spec BLOCKED.md."""
+    return f"docs/specs/{spec_slug}/BLOCKED.md"
+
+
+def write_blocked_md(
+    *,
+    spec_slug: str,
+    task_id: str,
+    blocked_reason: str,
+    report: FinishReport | None,
+) -> None:
+    """Materialise ``BLOCKED.md`` so the draft PR has a meaningful diff.
+
+    The file lives at ``docs/specs/{spec_slug}/BLOCKED.md`` so it sits
+    alongside the spec docs and is naturally cleaned up when the
+    iteration produces a real diff (see :func:`delete_blocked_md`).
+    The body restates the task, the agent's blocker, and the agent's
+    self-report so a human can read it directly in the GitHub PR view.
+    """
+    target = repo_path() / "docs" / "specs" / spec_slug / "BLOCKED.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        f"# Implementation blocked: {task_id}",
+        "",
+        f"> **spec_slug:** `{spec_slug}` · **task:** `{task_id}`",
+        "",
+        "## Blocker",
+        "",
+        blocked_reason.strip(),
+        "",
+        "## How to advance",
+        "",
+        "- **Continue**: comment on this PR with `@aidlc-bot <guidance>` "
+        "to retry the implementation with that guidance as feedback.",
+        "- **Abort this task**: close this PR. Other tasks in the run (if any) keep running.",
+        "",
+    ]
+    if report is not None:
+        if report.summary:
+            lines += ["## Agent summary", "", report.summary.strip(), ""]
+        if report.risks:
+            lines += ["## Risks the agent flagged", ""]
+            lines += [f"- {risk}" for risk in report.risks]
+            lines += [""]
+    target.write_text("\n".join(lines), encoding="utf-8")
+
+
+def delete_blocked_md(spec_slug: str) -> None:
+    """Remove ``BLOCKED.md`` from the working tree if present.
+
+    Called on iteration paths that produce a real diff so the
+    blocked-state artifact doesn't ride along into ``main`` when the
+    PR is merged.
+    """
+    target = repo_path() / "docs" / "specs" / spec_slug / "BLOCKED.md"
+    if target.exists():
+        target.unlink()
+
+
 def build_commit_message(task_id: str, title: str) -> str:
     """Imperative one-line commit subject."""
     return f"{task_id}: {title}"
@@ -522,6 +596,48 @@ def render_no_finish_body(payload: ImplementerInput, *, task_title: str) -> str:
         "no structured summary is available. See the diff for details._\n\n"
         f"---\n{pr_body_footer(payload)}"
     )
+
+
+def render_blocked_pr_body(
+    payload: ImplementerInput,
+    *,
+    task_title: str,
+    blocked_reason: str,
+    report: FinishReport | None,
+) -> str:
+    """Render the PR body for a blocked task.
+
+    The blocked PR is the system's request for human guidance. The body
+    leads with the blocker and the two ways to advance — comment to
+    continue, close to abort the task — so a reviewer can act without
+    reading the whole conversation. The diff itself is just
+    ``BLOCKED.md`` (which carries the same info in-repo).
+    """
+    lines = [
+        f"## {payload.task_id} (blocked): {task_title}",
+        "",
+        "**The implementer could not produce changes for this task and is asking for guidance.**",
+        "",
+        "### Blocker",
+        "",
+        blocked_reason.strip(),
+        "",
+        "### How to advance this PR",
+        "",
+        "- **Continue**: comment with `@aidlc-bot <your guidance>` and "
+        "the implementer will retry with your comment as feedback.",
+        "- **Abort this task**: close this PR. Other tasks in the run (if any) keep running.",
+        "",
+    ]
+    if report is not None:
+        if report.summary:
+            lines += ["### Agent summary", "", report.summary.strip(), ""]
+        if report.risks:
+            lines += ["### Risks the agent flagged", ""]
+            lines += [f"- {risk}" for risk in report.risks]
+            lines += [""]
+    lines += ["---", pr_body_footer(payload)]
+    return "\n".join(lines)
 
 
 def pr_body_footer(payload: ImplementerInput) -> str:

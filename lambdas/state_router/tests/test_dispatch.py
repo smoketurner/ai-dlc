@@ -333,6 +333,12 @@ class TestTaskDispatch:
             TaskState.reviewer_running,
             TaskState.tester_running,
             TaskState.pending_approval,
+            # ``blocked`` is a wait-for-human state — the implementer
+            # opened a draft PR with BLOCKED.md and the run sits until a
+            # webhook lands TASK.ITERATION_REQUESTED (comment) or
+            # TASK.REJECTED (close). Reviewer/Tester intentionally don't
+            # fire because there's no implementation in the PR yet.
+            TaskState.blocked,
         ],
     )
     def test_waiting_task_states_are_noop(self, state: TaskState) -> None:

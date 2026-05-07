@@ -62,5 +62,6 @@ def test_task_state_iterable_for_dispatch_table() -> None:
     every = list(TaskState)
     assert TaskState.pending in every
     assert TaskState.iterating in every
+    assert TaskState.blocked in every
     assert TaskState.merged in every
-    assert len(every) == 10
+    assert len(every) == 11

@@ -640,6 +640,11 @@ TASK_DISPATCH: Mapping[TaskState, TaskHandler] = {
     TaskState.tester_running: task_noop_waiting,
     TaskState.iterating: dispatch_iteration,
     TaskState.pending_approval: task_noop_waiting,
+    # ``blocked`` waits for a human to comment on the draft PR (which fires
+    # TASK.ITERATION_REQUESTED via the existing webhook path) or close it
+    # (TASK.REJECTED). Reviewer + Tester intentionally do NOT fire — there's
+    # no implementation in the PR to review.
+    TaskState.blocked: task_noop_waiting,
     TaskState.merged: task_terminal,
     TaskState.closed: task_terminal,
     TaskState.failed: task_terminal,

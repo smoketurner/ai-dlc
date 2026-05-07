@@ -11,6 +11,7 @@ locals {
     "SPEC.APPROVED",
     "SPEC.REJECTED",
     "TASK.READY",
+    "TASK.BLOCKED",
     "TASK.APPROVED",
     "TASK.REJECTED",
     "RUN.COMPLETED",

@@ -70,6 +70,8 @@ def install_common_mocks(
         "create_branch": [],
         "materialize_spec_in_repo": [],
         "update_tasks_md": [],
+        "write_blocked_md": [],
+        "delete_blocked_md": [],
         "commit_changes": [],
         "push_branch": [],
         "open_pr": [],
@@ -86,6 +88,9 @@ def install_common_mocks(
     def fake_update_tasks_md(task_id: str, slug: str) -> None:
         calls["update_tasks_md"].append((task_id, slug))
 
+    def fake_write_blocked_md(**kw: Any) -> None:
+        calls["write_blocked_md"].append(kw)
+
     monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
     monkeypatch.setattr(client, "spec_path", lambda: spec_dir)
     monkeypatch.setattr(client, "clone_repo", calls["clone_repo"].append)
@@ -95,6 +100,8 @@ def install_common_mocks(
         client, "materialize_spec_in_repo", calls["materialize_spec_in_repo"].append
     )
     monkeypatch.setattr(client, "update_tasks_md", fake_update_tasks_md)
+    monkeypatch.setattr(client, "write_blocked_md", fake_write_blocked_md)
+    monkeypatch.setattr(client, "delete_blocked_md", calls["delete_blocked_md"].append)
     monkeypatch.setattr(client, "commit_changes", fake_commit_changes)
     monkeypatch.setattr(client, "push_branch", calls["push_branch"].append)
     monkeypatch.setattr(client, "open_pr", fake_open_pr)
@@ -117,31 +124,42 @@ def install_common_mocks(
 
 
 @pytest.mark.asyncio
-async def test_execute_task_short_circuits_on_no_agent_diff(
+async def test_execute_task_blocked_no_diff_opens_draft_pr_with_blocked_md(
     monkeypatch: pytest.MonkeyPatch,
     payload: ImplementerInput,
     fake_session: RepoSession,
     spec_dir_with_tasks: Path,
 ) -> None:
-    """When the agent produces no real diff, no PR is opened; result is blocked."""
+    """No real diff path: write BLOCKED.md, commit, push, open *draft* PR.
+
+    A draft PR carrying ``BLOCKED.md`` is the system's request for human
+    guidance — commenting on it (existing webhook → TASK.ITERATION_REQUESTED)
+    advances; closing it (existing webhook → TASK.REJECTED) ends the task.
+    Spec materialization + tasks.md flip are skipped on this path.
+    """
     calls = install_common_mocks(
         monkeypatch,
         fake_session=fake_session,
         spec_dir=spec_dir_with_tasks,
         drive_agent_report=None,
         agent_made_real_changes=False,
-        has_uncommitted_changes=True,  # would have done a commit if we got that far
+        has_uncommitted_changes=True,
     )
 
     result = await client.execute_task(payload)
 
-    assert result.pr_url is None
+    assert result.pr_url == "https://github.com/owner/name/pull/42"
     assert result.blocked_reason == "agent produced no diff"
     assert calls["materialize_spec_in_repo"] == []
     assert calls["update_tasks_md"] == []
-    assert calls["commit_changes"] == []
-    assert calls["push_branch"] == []
-    assert calls["open_pr"] == []
+    assert len(calls["write_blocked_md"]) == 1
+    assert calls["write_blocked_md"][0]["blocked_reason"] == "agent produced no diff"
+    assert calls["write_blocked_md"][0]["task_id"] == "T-001"
+    assert calls["commit_changes"] == ["T-001 (blocked): Add /healthz route"]
+    assert calls["push_branch"] == ["aidlc/add-healthz/t-001"]
+    assert len(calls["open_pr"]) == 1
+    assert calls["open_pr"][0]["draft"] is True
+    assert "(blocked)" in calls["open_pr"][0]["title"]
 
 
 @pytest.mark.asyncio
@@ -151,25 +169,27 @@ async def test_execute_task_uses_blocked_reason_from_finish_when_present(
     fake_session: RepoSession,
     spec_dir_with_tasks: Path,
 ) -> None:
-    """If the agent did call finish with status=blocked, use its reason."""
+    """Agent reported ``status='blocked'`` via finish — its reason flows through."""
     report = FinishReport(
         summary="Couldn't proceed.",
         status="blocked",
         blocked_reason="Spec was contradictory.",
     )
-    install_common_mocks(
+    calls = install_common_mocks(
         monkeypatch,
         fake_session=fake_session,
         spec_dir=spec_dir_with_tasks,
         drive_agent_report=report,
         agent_made_real_changes=False,
-        has_uncommitted_changes=False,
+        has_uncommitted_changes=True,
     )
 
     result = await client.execute_task(payload)
 
-    assert result.pr_url is None
+    assert result.pr_url == "https://github.com/owner/name/pull/42"
     assert result.blocked_reason == "Spec was contradictory."
+    assert calls["write_blocked_md"][0]["blocked_reason"] == "Spec was contradictory."
+    assert calls["open_pr"][0]["draft"] is True
 
 
 @pytest.mark.asyncio

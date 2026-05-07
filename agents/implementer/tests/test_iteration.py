@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from common.events import EventEnvelope, TaskReady
+from common.events import EventEnvelope, TaskBlocked, TaskReady
 from common.runtime import (
     CiFailureFeedback,
     ImplementerInput,
@@ -16,7 +16,7 @@ from common.runtime import (
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
 )
-from implementer.app import emit_task_ready
+from implementer.app import emit_task_blocked, emit_task_ready
 from implementer.client import (
     any_ci_failure_feedback,
     build_iteration_commit_message,
@@ -257,3 +257,44 @@ def test_emit_task_ready_builds_envelope(
     assert isinstance(env.payload, TaskReady)
     assert env.payload.task_id == "T-001"
     assert env.payload.pr_url == payload.pr_url
+
+
+def test_emit_task_blocked_builds_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[EventEnvelope[Any]] = []
+    monkeypatch.setattr("implementer.app.publish", captured.append)
+    payload = make_input(iteration_count=0, iteration_feedback=None)
+    result = ImplementerResult(
+        task_id="T-001",
+        pr_url="https://github.com/owner/repo/pull/77",
+        diff_summary="(no diff — agent produced no changes)",
+        session_id="sess",
+        blocked_reason="Spec was contradictory.",
+        token_in=2_000,
+        token_out=300,
+        cost_usd=0.012,
+        duration_ms=42_000,
+    )
+    emit_task_blocked(payload, result, pr_url="https://github.com/owner/repo/pull/77")
+    assert len(captured) == 1
+    env = captured[0]
+    assert env.type == "TASK.BLOCKED"
+    assert env.actor_id == "implementer"
+    assert isinstance(env.payload, TaskBlocked)
+    assert env.payload.blocked_reason == "Spec was contradictory."
+    assert env.payload.pr_url == "https://github.com/owner/repo/pull/77"
+    assert env.payload.cost_usd == 0.012
+
+
+def test_emit_task_blocked_requires_blocked_reason() -> None:
+    payload = make_input(iteration_count=0, iteration_feedback=None)
+    result = ImplementerResult(
+        task_id="T-001",
+        pr_url="https://github.com/owner/repo/pull/77",
+        diff_summary="diff",
+        session_id="sess",
+        blocked_reason=None,
+    )
+    with pytest.raises(ValueError, match="blocked_reason"):
+        emit_task_blocked(payload, result, pr_url="https://github.com/owner/repo/pull/77")

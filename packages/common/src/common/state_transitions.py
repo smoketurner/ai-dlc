@@ -50,10 +50,15 @@ RUN_TRANSITIONS: Mapping[tuple[EventType, RunState | None], RunState] = {
 TASK_TRANSITIONS: Mapping[tuple[EventType, TaskState], TaskState] = {
     ("TASK.READY", TaskState.implementer_running): TaskState.pr_open,
     ("TASK.READY", TaskState.iterating): TaskState.pr_open,
+    ("TASK.BLOCKED", TaskState.implementer_running): TaskState.blocked,
+    ("TASK.BLOCKED", TaskState.iterating): TaskState.blocked,
     ("TASK.ITERATION_REQUESTED", TaskState.pr_open): TaskState.iterating,
     ("TASK.ITERATION_REQUESTED", TaskState.pending_approval): TaskState.iterating,
+    ("TASK.ITERATION_REQUESTED", TaskState.blocked): TaskState.iterating,
     ("TASK.APPROVED", TaskState.pending_approval): TaskState.merged,
+    ("TASK.APPROVED", TaskState.blocked): TaskState.merged,
     ("TASK.REJECTED", TaskState.pending_approval): TaskState.closed,
+    ("TASK.REJECTED", TaskState.blocked): TaskState.closed,
 }
 """Task-level state transitions keyed by (event_type, current_state)."""
 
