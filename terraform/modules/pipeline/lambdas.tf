@@ -233,8 +233,12 @@ module "event_projector" {
   attach_policy_statements = true
   policy_statements = {
     runs_table = {
+      # PutItem writes the EVENT row + the initial STATE upsert; UpdateItem
+      # accumulates usage, advances current_state, applies iteration
+      # accumulators; GetItem reads current_state / status off STATE and
+      # TASK rows for ``apply_state_transition``'s conditional updates.
       effect    = "Allow"
-      actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem"]
+      actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"]
       resources = [var.runs_table_arn]
     }
     ddb_streams = {

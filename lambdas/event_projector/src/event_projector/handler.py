@@ -156,18 +156,36 @@ def process_stream_record(record: DynamoDBRecord) -> None:
 
 @tracer.capture_method
 def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
-    """Append the event to the run's timeline row."""
+    """Append the event to the run's timeline row, idempotent on event_id.
+
+    EventBridge can redeliver the same envelope (transient downstream
+    failure, retry-on-error, at-least-once semantics). The
+    ``attribute_not_exists(sk)`` guard makes the PutItem a no-op on
+    repeat, but DDB surfaces that as ``ConditionalCheckFailedException``
+    — we swallow it so the rest of the projection (state update +
+    transition + memory) can run on retries that need to make forward
+    progress past a previously-failing later step.
+    """
     event_id = envelope.get("event_id", "unknown")
-    ddb().put_item(
-        TableName=runs_table(),
-        Item={
-            "pk": {"S": f"RUN#{run_id}"},
-            "sk": {"S": f"EVENT#{envelope.get('timestamp', '')}#{event_id}"},
-            "type": {"S": event_type or "UNKNOWN"},
-            "envelope": {"S": json.dumps(envelope)},
-        },
-        ConditionExpression="attribute_not_exists(sk)",
-    )
+    try:
+        ddb().put_item(
+            TableName=runs_table(),
+            Item={
+                "pk": {"S": f"RUN#{run_id}"},
+                "sk": {"S": f"EVENT#{envelope.get('timestamp', '')}#{event_id}"},
+                "type": {"S": event_type or "UNKNOWN"},
+                "envelope": {"S": json.dumps(envelope)},
+            },
+            ConditionExpression="attribute_not_exists(sk)",
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(
+                "event row already exists; continuing projection",
+                extra={"run_id": run_id, "event_id": event_id, "event_type": event_type},
+            )
+            return
+        raise
 
 
 @tracer.capture_method

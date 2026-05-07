@@ -112,6 +112,31 @@ def test_eventbridge_event_writes_run_row() -> None:
     assert items[0]["type"]["S"] == "SPEC.READY"
 
 
+def test_redelivered_event_completes_projection() -> None:
+    """Redelivery of the same event_id is idempotent; later steps still run.
+
+    Without the CCFE swallow in ``upsert_run_event``, a redelivery would
+    short-circuit on the EVENT-row PutItem and skip the state transition
+    + memory forward. EventBridge retries (e.g. after a transient
+    downstream failure on a prior attempt) need to make forward progress.
+    """
+    received = envelope(
+        type="REQUEST.RECEIVED",
+        payload={"project_slug": "demo", "intent": "x", "requestor": "alice"},
+    )
+    handler(eb_event(received), ctx())
+    # Simulate a redelivery — same envelope, same event_id.
+    out = handler(eb_event(received), ctx())
+    assert out["ok"] is True
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    # Single state transition despite two deliveries.
+    assert state["current_state"]["S"] == "received"
+    assert state["state_transitions"]["N"] == "1"
+
+
 def test_run_state_row_upserted_with_status() -> None:
     handler(eb_event(envelope()), ctx())
     state = ddb().get_item(
@@ -561,12 +586,17 @@ def test_event_with_zero_usage_skips_add() -> None:
 
 
 def test_duplicate_event_id_silently_skipped() -> None:
+    """Redelivery returns ok and doesn't double-write the EVENT row."""
     env = envelope()
     handler(eb_event(env), ctx())
-    # second invocation with same event_id+timestamp triggers the
-    # ConditionalCheckFailedException; the projector swallows it.
-    with pytest.raises(Exception, match="ConditionalCheckFailed"):
-        handler(eb_event(env), ctx())
+    out = handler(eb_event(env), ctx())
+    assert out["ok"] is True
+    items = ddb().query(
+        TableName=TABLE,
+        KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":p": {"S": "RUN#run-1"}, ":prefix": {"S": "EVENT#"}},
+    )["Items"]
+    assert len(items) == 1
 
 
 def test_ddb_stream_event_passthrough() -> None:
