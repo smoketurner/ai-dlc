@@ -684,6 +684,7 @@ name = "dashboard"
 version = "0.0.0"
 source = { editable = "services/dashboard" }
 dependencies = [
+    { name = "aws-lambda-powertools" },
     { name = "boto3" },
     { name = "common" },
     { name = "fastapi" },
@@ -700,6 +701,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aws-lambda-powertools", specifier = "==3.29.0" },
     { name = "boto3", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
     { name = "fastapi", specifier = "==0.136.1" },
