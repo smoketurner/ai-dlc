@@ -15,18 +15,6 @@ variable "archive_retention_days" {
   default     = 90
 }
 
-variable "hitl_visibility_seconds" {
-  description = "Visibility timeout for the HITL approvals queue."
-  type        = number
-  default     = 60
-}
-
-variable "hitl_max_receives" {
-  description = "Max receives before a message is moved to the HITL DLQ."
-  type        = number
-  default     = 5
-}
-
 variable "state_router_visibility_seconds" {
   description = "Visibility timeout for the state-router beacon queue. Once a beacon is received, the router has this long to read state from DDB and dispatch any side-effects before the message becomes visible again. The router intentionally does not delete the beacon on a no-op — the visibility timeout expiring is what schedules the next look at the run's state."
   type        = number

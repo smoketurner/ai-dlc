@@ -71,11 +71,6 @@ output "bus_arn" {
   value       = module.messaging.bus_arn
 }
 
-output "hitl_approvals_queue_url" {
-  description = "Buffer queue used by the dashboard webhook handler."
-  value       = module.messaging.hitl_approvals_queue_url
-}
-
 # auth -------------------------------------------------------------------------
 
 output "cognito_user_pool_id" {
