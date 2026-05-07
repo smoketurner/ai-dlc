@@ -146,6 +146,10 @@ def test_run_state_row_upserted_with_status() -> None:
     assert state["status"]["S"] == "SPEC.READY"
     assert state["project_slug"]["S"] == "demo"
     assert state["spec_slug"]["S"] == "add-healthz"
+    # spec_s3_prefix is needed by every downstream dispatch (critic,
+    # implementer, reviewer, tester, open_spec_pr); persisting it on
+    # SPEC.READY keeps the router's payloads valid.
+    assert state["spec_s3_prefix"]["S"] == "specs/add-healthz/"
 
 
 def test_request_received_writes_current_state_received() -> None:

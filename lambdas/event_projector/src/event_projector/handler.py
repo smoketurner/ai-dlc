@@ -210,9 +210,7 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
     if isinstance(payload.get("project_slug"), str) and payload["project_slug"]:
         set_parts.append("project_slug = if_not_exists(project_slug, :proj)")
         values[":proj"] = {"S": payload["project_slug"]}
-    if isinstance(payload.get("spec_slug"), str) and payload["spec_slug"]:
-        set_parts.append("spec_slug = :spec")
-        values[":spec"] = {"S": payload["spec_slug"]}
+    accumulate_spec_fields(payload, set_parts=set_parts, values=values)
     # REQUEST.RECEIVED for an issue-driven run carries source_issue_url.
     # Project the URL onto the gsi1 keys so the dashboard can look up
     # in-flight runs by issue (used by the issues.unassigned cancel path).
@@ -245,6 +243,29 @@ def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str,
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
     )
+
+
+def accumulate_spec_fields(
+    payload: dict[str, Any],
+    *,
+    set_parts: list[str],
+    values: dict[str, dict[str, Any]],
+) -> None:
+    """Persist ``spec_slug`` + ``spec_s3_prefix`` if the payload carries them.
+
+    Both come on the architect's ``SPEC.READY`` event. The state-router
+    needs them on the STATE row for downstream dispatches: the Critic
+    payload, the spec-PR open call, and every Implementer / Reviewer /
+    Tester invocation that resolves spec docs out of S3.
+    """
+    spec_slug = payload.get("spec_slug")
+    if isinstance(spec_slug, str) and spec_slug:
+        set_parts.append("spec_slug = :spec")
+        values[":spec"] = {"S": spec_slug}
+    spec_s3_prefix = payload.get("spec_s3_prefix")
+    if isinstance(spec_s3_prefix, str) and spec_s3_prefix:
+        set_parts.append("spec_s3_prefix = :spec_prefix")
+        values[":spec_prefix"] = {"S": spec_s3_prefix}
 
 
 def accumulate_issue_triaged(

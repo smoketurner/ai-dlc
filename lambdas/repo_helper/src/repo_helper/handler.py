@@ -790,10 +790,15 @@ def github_client(*, repo: str, requestor_sub: str | None) -> httpx.Client:
 
 
 def safe_body(response: httpx.Response) -> str | dict[str, Any]:
-    """Best-effort body extraction that never raises."""
+    """Best-effort body extraction that never raises.
+
+    ``json.JSONDecodeError`` is a subclass of ``ValueError``, so the
+    second clause is redundant — the parenthesised form is here only
+    to make intent explicit and to keep the bare-except lint quiet.
+    """
     try:
         return response.json()
-    except ValueError, json.JSONDecodeError:
+    except (ValueError, json.JSONDecodeError):
         return response.text[:1024]
 
 
