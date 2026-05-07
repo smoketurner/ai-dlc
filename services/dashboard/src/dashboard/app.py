@@ -6,6 +6,7 @@ from pathlib import Path
 
 import structlog
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.routes import auth_github, pages, runs, stream, webhooks
@@ -13,6 +14,13 @@ from dashboard.routes import auth_github, pages, runs, stream, webhooks
 logger = structlog.get_logger()
 
 app = FastAPI(title="ai-dlc dashboard")
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz() -> JSONResponse:
+    """Liveness probe — no auth, no external deps."""
+    return JSONResponse({"status": "ok"})
+
 
 # Tailwind CSS is built at container build time by the `tailwind` Docker stage
 # and dropped into this directory; uv installs the dashboard package in
