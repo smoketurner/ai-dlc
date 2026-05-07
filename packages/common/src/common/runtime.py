@@ -193,9 +193,9 @@ class ImplementerInput(_Frozen):
     OAuth token via AgentCore Identity and configures git author identity
     accordingly so commits attribute to the requestor.
 
-    On iteration runs (``iteration_count > 0``), the implementer is invoked
-    by the iteration_reactor (no ``task_token``) and consults the existing
-    PR branch + ``iteration_feedback`` rather than starting from ``main``.
+    On iteration runs (``iteration_count > 0``) the state-router fills
+    ``iteration_feedback`` and ``pr_url`` so the implementer pushes a fix
+    commit on the existing PR branch rather than starting from ``main``.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -207,10 +207,10 @@ class ImplementerInput(_Frozen):
     actor_id: str = "system"
     iteration_count: Annotated[int, Field(ge=0, le=16)] = 0
     iteration_feedback: Annotated[list[FeedbackItem], Field(max_length=32)] | None = None
-    # Set by the iteration_reactor on iteration runs (iteration_count > 0)
-    # so the implementer can post inline replies + status updates against
-    # the existing PR. ``None`` on iteration_count == 0 (PR doesn't exist
-    # yet — implementer opens it).
+    # Set by the state_router on iteration dispatches so the implementer
+    # can post inline replies + status updates against the existing PR.
+    # ``None`` on the first dispatch (PR doesn't exist yet — implementer
+    # opens it).
     pr_url: (
         Annotated[
             str,
@@ -226,14 +226,6 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
-    # Set by the runtime_invoker shim so the agent can call
-    # ``states:SendTaskSuccess`` / ``SendTaskFailure`` directly when
-    # done. Sessions longer than the SDK's HTTP read timeout (~60s) need
-    # this; the synchronous /invocations response body is ignored when
-    # ``task_token`` is set. When invoked by the iteration_reactor (not by
-    # SFN), this is ``None`` and the implementer emits its own
-    # ``TASK.ITERATION_COMMITTED`` event before returning.
-    task_token: str | None = None
 
 
 class ImplementerResult(_UsageMixin):
@@ -264,7 +256,6 @@ class ReviewerInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
-    task_token: str | None = None
 
 
 class ReviewerResult(_UsageMixin):
@@ -294,7 +285,6 @@ class TesterInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
-    task_token: str | None = None
 
 
 class TesterResult(_UsageMixin):

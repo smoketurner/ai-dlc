@@ -1,7 +1,6 @@
 """AgentCore Runtime entrypoint for the Reviewer.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. Step Functions
-calls the runtime, which invokes the entrypoint defined here. The
+The state-router invokes the runtime as a fire-and-forget call. The
 entrypoint:
 
   1. Validates the input as :class:`ReviewerInput`.
@@ -11,7 +10,7 @@ entrypoint:
      forwarding ``requestor_sub`` so the comment attributes to the
      requestor when they have linked GitHub. Falls back silently if the
      comment fails — the run shouldn't block on advisory PR commenting.
-  5. Returns a :class:`ReviewerResult` for the REVIEW.READY event payload.
+  5. Emits ``REVIEW.READY`` so the projector + dashboard see the result.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ from common.event_emit import publish
 from common.events import EventEnvelope, ReviewReady
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ReviewerInput, ReviewerResult, usage_from_strands
-from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from reviewer.agent import build_agent, model_id, review_pr
 from reviewer.review import Review, render_review, severity_counts
 from reviewer.tools import write_review
@@ -46,39 +44,26 @@ PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pul
 
 @app.entrypoint
 async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Reviewer entrypoint. Returns a JSON-serialisable ReviewerResult.
-
-    See :mod:`common.task_token` for the ``task_token``/SendTaskSuccess
-    callback pattern — the HTTP response body is ignored when SF is
-    waiting on a token.
-    """
+    """Reviewer entrypoint. Reviews the PR and emits REVIEW.READY."""
     payload = ReviewerInput.model_validate(event)
     logger.info(
         "reviewer invoked",
         run_id=payload.run_id,
         task_id=payload.task_id,
         pr_url=payload.pr_url,
-        async_token=payload.task_token is not None,
     )
 
     agent = build_agent(payload.run_id)
-    try:
-        with heartbeat_loop(payload.task_token):
-            review = review_pr(
-                agent,
-                project_slug=payload.project_slug,
-                spec_slug=payload.spec_slug,
-                task_id=payload.task_id,
-                pr_url=payload.pr_url,
-                diff_summary=payload.diff_summary,
-            )
-            upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
-            post_pr_comment(payload=payload, review=review)
-    except BaseException as exc:
-        if payload.task_token is not None:
-            send_task_failure(task_token=payload.task_token, exc=exc)
-            return {"task_token_dispatched": True, "ok": False}
-        raise
+    review = review_pr(
+        agent,
+        project_slug=payload.project_slug,
+        spec_slug=payload.spec_slug,
+        task_id=payload.task_id,
+        pr_url=payload.pr_url,
+        diff_summary=payload.diff_summary,
+    )
+    upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
+    post_pr_comment(payload=payload, review=review)
 
     counts = severity_counts(review)
     result = ReviewerResult(
@@ -100,12 +85,8 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         verdict=result.verdict,
         comment_count=result.comment_count,
     )
-    output = result.model_dump()
-    if payload.task_token is not None:
-        send_task_success(task_token=payload.task_token, output=output)
-        return {"task_token_dispatched": True, "ok": True}
     publish_review_ready(payload, result)
-    return output
+    return result.model_dump()
 
 
 def upload_review(review: Review, *, run_id: str, task_id: str) -> None:
@@ -114,13 +95,7 @@ def upload_review(review: Review, *, run_id: str, task_id: str) -> None:
 
 
 def publish_review_ready(payload: ReviewerInput, result: ReviewerResult) -> None:
-    """Emit REVIEW.READY ourselves when invoked without a SF task_token.
-
-    On the SFN-driven path the ``PublishReviewReady`` ASL state emits this
-    event after SendTaskSuccess. On the iteration_reactor path there's no
-    SFN, so the agent must publish so downstream consumers (event_projector,
-    iteration_reactor's second-stage dispatch) see the completion.
-    """
+    """Emit REVIEW.READY for the projector + dashboard."""
     envelope = EventEnvelope[ReviewReady](
         event_id=new_event_id(),
         type="REVIEW.READY",

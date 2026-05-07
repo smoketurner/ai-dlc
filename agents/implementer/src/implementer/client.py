@@ -525,18 +525,16 @@ def render_no_finish_body(payload: ImplementerInput, *, task_title: str) -> str:
 
 
 def pr_body_footer(payload: ImplementerInput) -> str:
-    """Footer the dashboard webhook parses for HITL gate routing + iteration.
+    """Human-readable footer with run + spec context.
 
-    ``RUN_META_RE`` in ``services/dashboard/.../webhooks.py`` expects
-    ``_run_id:_`` and ``gate_ref:`` to find the right pending task token
-    on PR review / merge / close events. The iteration_reactor uses the
-    same shape plus ``_project:_`` to build an ``IterationTrigger``
-    without a DDB lookup back to the runs table.
+    The dashboard webhook resolves the run/task by querying the runs
+    table's ``gsi_pr`` index on ``pr_url`` — no PR-body parsing —
+    so this footer is informational only.
     """
     return (
         f"_run_id: {payload.run_id}_  ·  "
         f"_correlation_id: {payload.correlation_id}_  ·  "
         f"_project: {payload.project_slug}_  ·  "
-        f"_spec: `docs/specs/{payload.spec_slug}/`_\n\n"
-        f"gate_ref: task:{payload.task_id}"
+        f"_spec: `docs/specs/{payload.spec_slug}/`_  ·  "
+        f"_task: {payload.task_id}_"
     )

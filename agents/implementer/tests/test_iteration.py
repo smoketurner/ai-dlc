@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from common.events import EventEnvelope, TaskIterationCommitted
+from common.events import EventEnvelope, TaskReady
 from common.runtime import (
     CiFailureFeedback,
     ImplementerInput,
@@ -16,7 +16,7 @@ from common.runtime import (
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
 )
-from implementer.app import publish_iteration_committed
+from implementer.app import emit_task_ready
 from implementer.client import (
     any_ci_failure_feedback,
     build_iteration_commit_message,
@@ -220,13 +220,11 @@ def test_compose_iteration_prompt_omits_failed_checks_when_none(
     assert "Failed CI check details" not in prompt
 
 
-def test_publish_iteration_committed_builds_envelope(
+def test_emit_task_ready_builds_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[EventEnvelope[Any]] = []
     monkeypatch.setattr("implementer.app.publish", captured.append)
-    monkeypatch.setattr("implementer.app.run_git", lambda *args: "deadbeef0123\n")
-
     payload = make_input(
         iteration_count=2,
         iteration_feedback=[
@@ -251,42 +249,11 @@ def test_publish_iteration_committed_builds_envelope(
         duration_ms=15_000,
     )
     assert payload.pr_url is not None
-    publish_iteration_committed(payload, result, pr_url=payload.pr_url)
+    emit_task_ready(payload, result, pr_url=payload.pr_url)
     assert len(captured) == 1
     env = captured[0]
-    assert env.type == "TASK.ITERATION_COMMITTED"
+    assert env.type == "TASK.READY"
     assert env.actor_id == "implementer"
-    assert isinstance(env.payload, TaskIterationCommitted)
-    assert env.payload.iteration_count == 2
-    assert env.payload.head_sha == "deadbeef0123"
-    # Both feedback items have ``comment_id`` so inline_replies_count==2.
-    assert env.payload.inline_replies_count == 2
-
-
-def test_publish_iteration_committed_skips_ci_only_feedback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ci_failure feedback has no comment_id -> 0 inline replies pending."""
-    captured: list[EventEnvelope[Any]] = []
-    monkeypatch.setattr("implementer.app.publish", captured.append)
-    monkeypatch.setattr("implementer.app.run_git", lambda *args: "abc1234\n")
-
-    payload = make_input(
-        iteration_feedback=[
-            CiFailureFeedback(
-                workflow_name="CI",
-                conclusion="failure",
-                head_sha="abcdef0",
-                html_url="https://example.com",
-            ),
-        ],
-    )
-    result = ImplementerResult(
-        task_id="T-001",
-        pr_url=payload.pr_url,
-        diff_summary="x",
-        session_id="sess",
-    )
-    assert payload.pr_url is not None
-    publish_iteration_committed(payload, result, pr_url=payload.pr_url)
-    assert captured[0].payload.inline_replies_count == 0  # type: ignore[union-attr]
+    assert isinstance(env.payload, TaskReady)
+    assert env.payload.task_id == "T-001"
+    assert env.payload.pr_url == payload.pr_url

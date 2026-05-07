@@ -33,15 +33,3 @@ output "idempotency_table" {
 output "idempotency_table_arn" {
   value = aws_dynamodb_table.idempotency_keys.arn
 }
-
-output "approvals_table" {
-  value = aws_dynamodb_table.approvals.name
-}
-
-output "approvals_table_arn" {
-  value = aws_dynamodb_table.approvals.arn
-}
-
-output "approvals_stream_arn" {
-  value = aws_dynamodb_table.approvals.stream_arn
-}

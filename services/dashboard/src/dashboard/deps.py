@@ -12,7 +12,6 @@ from pydantic import BaseModel, ConfigDict
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
     from mypy_boto3_events.client import EventBridgeClient
-    from mypy_boto3_lambda.client import LambdaClient
     from mypy_boto3_s3.client import S3Client
 
 
@@ -25,12 +24,8 @@ class Settings(BaseModel):
     region: str
     bus_name: str
     runs_table: str
-    approvals_table: str
     idempotency_table: str
     artifacts_bucket: str
-    hitl_handler_function: str
-    triage_dispatcher_function: str
-    iteration_reactor_function: str
     github_app_secret_id: str
     github_webhook_secret_id: str
     cognito_region: str
@@ -55,12 +50,8 @@ def settings() -> Settings:
         region=os.environ["AWS_REGION"],
         bus_name=os.environ["AIDLC_BUS_NAME"],
         runs_table=os.environ["AIDLC_RUNS_TABLE"],
-        approvals_table=os.environ["AIDLC_APPROVALS_TABLE"],
         idempotency_table=os.environ["AIDLC_IDEMPOTENCY_TABLE"],
         artifacts_bucket=os.environ["AIDLC_ARTIFACTS_BUCKET"],
-        hitl_handler_function=os.environ["AIDLC_HITL_HANDLER_FUNCTION"],
-        triage_dispatcher_function=os.environ["AIDLC_TRIAGE_DISPATCHER_FUNCTION"],
-        iteration_reactor_function=os.environ["AIDLC_ITERATION_REACTOR_FUNCTION"],
         github_app_secret_id=os.environ["AIDLC_GITHUB_APP_SECRET_ARN"],
         github_webhook_secret_id=os.environ["AIDLC_GITHUB_WEBHOOK_SECRET_ID"],
         cognito_region=os.environ.get("AIDLC_COGNITO_REGION", os.environ["AWS_REGION"]),
@@ -84,12 +75,6 @@ def ddb() -> DynamoDBClient:
 def events() -> EventBridgeClient:
     """Process-cached EventBridge client."""
     return boto3.client("events", region_name=settings().region)
-
-
-@cache
-def lambda_client() -> LambdaClient:
-    """Process-cached Lambda client."""
-    return boto3.client("lambda", region_name=settings().region)
 
 
 @cache

@@ -1,7 +1,6 @@
 """AgentCore Runtime entrypoint for the Tester.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. Step Functions
-calls the runtime, which invokes the entrypoint defined here. The
+The state-router invokes the runtime as a fire-and-forget call. The
 entrypoint:
 
   1. Validates the input as :class:`TesterInput`.
@@ -10,7 +9,8 @@ entrypoint:
   4. Posts a summary comment on the PR via ``repo_helper.comment_pr``,
      forwarding ``requestor_sub`` so the comment attributes to the
      requestor when their GitHub identity is linked.
-  5. Returns a :class:`TesterResult` for the TEST_REPORT.READY event payload.
+  5. Emits ``TEST_REPORT.READY`` so the dashboard timeline + memory
+     projector see the result.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from common.event_emit import publish
 from common.events import EventEnvelope, TestReportReady
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TesterInput, TesterResult, usage_from_strands
-from common.task_token import heartbeat_loop, send_task_failure, send_task_success
 from tester.agent import analyze_gaps, build_agent, model_id
 from tester.report import Report, gap_count, render_report, suggestion_count
 from tester.tools import write_report
@@ -45,38 +44,26 @@ PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pul
 
 @app.entrypoint
 async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Tester entrypoint. Returns a JSON-serialisable TesterResult.
-
-    See :mod:`common.task_token` for the ``task_token``/SendTaskSuccess
-    callback pattern.
-    """
+    """Tester entrypoint. Analyzes the PR and emits TEST_REPORT.READY."""
     payload = TesterInput.model_validate(event)
     logger.info(
         "tester invoked",
         run_id=payload.run_id,
         task_id=payload.task_id,
         pr_url=payload.pr_url,
-        async_token=payload.task_token is not None,
     )
 
     agent = build_agent(payload.run_id)
-    try:
-        with heartbeat_loop(payload.task_token):
-            report = analyze_gaps(
-                agent,
-                project_slug=payload.project_slug,
-                spec_slug=payload.spec_slug,
-                task_id=payload.task_id,
-                pr_url=payload.pr_url,
-                diff_summary=payload.diff_summary,
-            )
-            upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
-            post_pr_comment(payload=payload, report=report)
-    except BaseException as exc:
-        if payload.task_token is not None:
-            send_task_failure(task_token=payload.task_token, exc=exc)
-            return {"task_token_dispatched": True, "ok": False}
-        raise
+    report = analyze_gaps(
+        agent,
+        project_slug=payload.project_slug,
+        spec_slug=payload.spec_slug,
+        task_id=payload.task_id,
+        pr_url=payload.pr_url,
+        diff_summary=payload.diff_summary,
+    )
+    upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
+    post_pr_comment(payload=payload, report=report)
 
     result = TesterResult(
         task_id=report.task_id,
@@ -94,12 +81,8 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         gap_count=result.gap_count,
         suggested_test_count=result.suggested_test_count,
     )
-    output = result.model_dump()
-    if payload.task_token is not None:
-        send_task_success(task_token=payload.task_token, output=output)
-        return {"task_token_dispatched": True, "ok": True}
     publish_test_report_ready(payload, result)
-    return output
+    return result.model_dump()
 
 
 def upload_report(report: Report, *, run_id: str, task_id: str) -> None:
@@ -108,13 +91,7 @@ def upload_report(report: Report, *, run_id: str, task_id: str) -> None:
 
 
 def publish_test_report_ready(payload: TesterInput, result: TesterResult) -> None:
-    """Emit TEST_REPORT.READY ourselves when invoked without a SF task_token.
-
-    On the SFN-driven path the ``PublishTestReportReady`` ASL state emits
-    this event after SendTaskSuccess. On the iteration_reactor path there's
-    no SFN, so the agent must publish so the dashboard timeline + memory
-    projector see the iteration's tester output.
-    """
+    """Emit TEST_REPORT.READY for the projector + dashboard."""
     envelope = EventEnvelope[TestReportReady](
         event_id=new_event_id(),
         type="TEST_REPORT.READY",

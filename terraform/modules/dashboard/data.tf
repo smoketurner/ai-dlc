@@ -35,8 +35,6 @@ data "aws_iam_policy_document" "task_inline" {
     resources = [
       var.runs_table_arn,
       "${var.runs_table_arn}/index/*",
-      var.approvals_table_arn,
-      "${var.approvals_table_arn}/index/*",
       var.idempotency_table_arn,
     ]
   }
@@ -49,7 +47,6 @@ data "aws_iam_policy_document" "task_inline" {
     ]
     resources = [
       var.runs_table_arn,
-      var.approvals_table_arn,
     ]
   }
 
@@ -57,24 +54,6 @@ data "aws_iam_policy_document" "task_inline" {
     sid       = "PutEvents"
     actions   = ["events:PutEvents"]
     resources = [var.bus_arn]
-  }
-
-  statement {
-    sid       = "InvokeHitl"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [var.hitl_handler_function_arn]
-  }
-
-  statement {
-    sid       = "InvokeTriageDispatcher"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [var.triage_dispatcher_function_arn]
-  }
-
-  statement {
-    sid       = "InvokeIterationReactor"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [var.iteration_reactor_function_arn]
   }
 
   statement {

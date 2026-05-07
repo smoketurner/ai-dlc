@@ -1,7 +1,7 @@
 ################################################################################
-# eval_runner Lambda — load_cases | evaluate_result | record_result |
-# aggregate_results. Step Functions calls each op separately as it walks the
-# state machine.
+# eval_runner Lambda — six ops driven by the eval Step Functions state
+# machine: load_cases, start_run, check_run_status, evaluate_result,
+# record_result, aggregate_results.
 ################################################################################
 
 module "eval_runner" {
@@ -9,7 +9,7 @@ module "eval_runner" {
   version = "~> 8.0"
 
   function_name = "${local.prefix}-eval-runner"
-  description   = "Eval runner — load + evaluate + record + aggregate eval-case results."
+  description   = "Eval runner — orchestrates eval cases through the live SQS-beacon SDLC pipeline."
   handler       = "eval_runner.handler.handler"
   runtime       = "python3.13"
   architectures = ["arm64"]
@@ -29,6 +29,8 @@ module "eval_runner" {
   environment_variables = {
     AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
     AIDLC_RUNS_TABLE             = var.runs_table
+    AIDLC_BUS_NAME               = var.bus_name
+    AIDLC_BEACON_QUEUE_URL       = var.beacon_queue_url
     AIDLC_EVAL_CASES_KEY         = "evals/cases.yaml"
     POWERTOOLS_SERVICE_NAME      = "eval_runner"
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
@@ -45,10 +47,20 @@ module "eval_runner" {
       actions   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"]
       resources = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/evals/*"]
     }
-    runs_table_read = {
+    runs_table_rw = {
       effect    = "Allow"
-      actions   = ["dynamodb:GetItem"]
+      actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
       resources = [var.runs_table_arn]
+    }
+    put_events = {
+      effect    = "Allow"
+      actions   = ["events:PutEvents"]
+      resources = [var.bus_arn]
+    }
+    enqueue_beacon = {
+      effect    = "Allow"
+      actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
+      resources = [var.beacon_queue_arn]
     }
     cloudwatch_metrics = {
       effect    = "Allow"

@@ -187,9 +187,6 @@ module "pipeline" {
   runs_table            = module.state.runs_table
   runs_table_arn        = module.state.runs_table_arn
   runs_stream_arn       = module.state.runs_stream_arn
-  approvals_table       = module.state.approvals_table
-  approvals_table_arn   = module.state.approvals_table_arn
-  approvals_stream_arn  = module.state.approvals_stream_arn
   idempotency_table     = module.state.idempotency_table
   idempotency_table_arn = module.state.idempotency_table_arn
 
@@ -234,22 +231,11 @@ module "dashboard" {
 
   runs_table            = module.state.runs_table
   runs_table_arn        = module.state.runs_table_arn
-  approvals_table       = module.state.approvals_table
-  approvals_table_arn   = module.state.approvals_table_arn
   idempotency_table     = module.state.idempotency_table
   idempotency_table_arn = module.state.idempotency_table_arn
 
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
-
-  hitl_handler_function_name = "${var.project}-${var.env}-hitl-handler"
-  hitl_handler_function_arn  = module.pipeline.lambda_arns["hitl_handler"]
-
-  triage_dispatcher_function_name = module.pipeline.triage_dispatcher_function_name
-  triage_dispatcher_function_arn  = module.pipeline.triage_dispatcher_function_arn
-
-  iteration_reactor_function_name = module.pipeline.iteration_reactor_function_name
-  iteration_reactor_function_arn  = module.pipeline.iteration_reactor_function_arn
 
   github_webhook_secret_id  = aws_secretsmanager_secret.github_webhook.name
   github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn
@@ -281,8 +267,7 @@ module "improvement" {
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
 
-  sdlc_state_machine_arn = module.pipeline.state_machine_arn
-  alerts_topic_arn       = module.observability.alerts_topic_arn
+  alerts_topic_arn = module.observability.alerts_topic_arn
 
   proposer_runtime_arn  = lookup(module.agents.runtime_arns, "proposer", "")
   proposer_enabled      = contains(keys(local.agent_image_tags), "proposer")
@@ -290,4 +275,7 @@ module "improvement" {
   proposer_project_slug = var.project
 
   common_layer_arn = module.common_layer.lambda_layer_arn
+
+  beacon_queue_url = module.messaging.state_router_queue_url
+  beacon_queue_arn = module.messaging.state_router_queue_arn
 }

@@ -28,23 +28,16 @@
       },
       "ItemProcessor": {
         "ProcessorConfig": { "Mode": "INLINE" },
-        "StartAt": "StartSdlcRun",
+        "StartAt": "StartRun",
         "States": {
-          "StartSdlcRun": {
+          "StartRun": {
             "Type": "Task",
-            "Resource": "arn:aws:states:::states:startExecution.sync:2",
+            "Resource": "${eval_runner_function_arn}",
             "Arguments": {
-              "StateMachineArn": "${sdlc_state_machine_arn}",
-              "Input": {
-                "run_id": "{% 'eval-' & $now() & '-' & $states.input.case.slug %}",
-                "correlation_id": "{% 'eval-' & $now() & '-' & $states.input.case.slug %}",
-                "project_slug": "{% $states.input.case.project_slug %}",
-                "intent": "{% $states.input.case.intent %}",
-                "actor_id": "eval-runner",
-                "eval_mode": true
-              }
+              "op": "start_run",
+              "project_slug": "{% $states.input.case.project_slug %}",
+              "intent": "{% $states.input.case.intent %}"
             },
-            "TimeoutSeconds": 7200,
             "Catch": [
               {
                 "ErrorEquals": ["States.ALL"],
@@ -57,10 +50,47 @@
             ],
             "Output": {
               "case": "{% $states.input.case %}",
-              "execution_arn": "{% $states.result.ExecutionArn %}",
-              "run_id": "{% $exists($parse($states.result.Output).run_id) ? $parse($states.result.Output).run_id : 'unknown' %}"
+              "run_id": "{% $states.result.run_id %}"
             },
-            "Next": "Evaluate"
+            "Next": "Wait"
+          },
+          "Wait": {
+            "Type": "Wait",
+            "Seconds": 30,
+            "Output": {
+              "case": "{% $states.input.case %}",
+              "run_id": "{% $states.input.run_id %}"
+            },
+            "Next": "CheckStatus"
+          },
+          "CheckStatus": {
+            "Type": "Task",
+            "Resource": "${eval_runner_function_arn}",
+            "Arguments": {
+              "op": "check_run_status",
+              "run_id": "{% $states.input.run_id %}"
+            },
+            "Output": {
+              "case": "{% $states.input.case %}",
+              "run_id": "{% $states.input.run_id %}",
+              "current_state": "{% $states.result.current_state %}",
+              "terminal": "{% $states.result.terminal %}"
+            },
+            "Next": "IsTerminal"
+          },
+          "IsTerminal": {
+            "Type": "Choice",
+            "Choices": [
+              {
+                "Condition": "{% $states.input.terminal = true %}",
+                "Output": {
+                  "case": "{% $states.input.case %}",
+                  "run_id": "{% $states.input.run_id %}"
+                },
+                "Next": "Evaluate"
+              }
+            ],
+            "Default": "Wait"
           },
           "Evaluate": {
             "Type": "Task",
@@ -101,7 +131,7 @@
             "Output": {
               "case_slug": "{% $states.input.case.slug %}",
               "passed": false,
-              "failures": ["sdlc execution failed"]
+              "failures": ["start_run failed"]
             },
             "End": true
           }

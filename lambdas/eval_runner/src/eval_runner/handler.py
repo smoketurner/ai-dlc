@@ -1,20 +1,27 @@
-"""Eval-runner Lambda — four ops dispatched on ``op`` from Step Functions.
+"""Eval-runner Lambda — six ops dispatched on ``op`` from Step Functions.
 
-The eval state machine calls this Lambda at four stages:
+The eval state machine calls this Lambda at six stages:
 
-  * ``load_cases``       — read ``evals/cases.yaml`` from S3 and return the
-    list of cases (or an explicit ``override`` list passed in by the GH
-    Actions trigger).
+  * ``load_cases``       — read ``evals/cases.yaml`` from S3 and return
+    the list of cases (or an explicit ``override`` list passed in by
+    the GH Actions trigger).
+  * ``start_run``        — mint a run_id, write the run STATE row,
+    emit ``REQUEST.RECEIVED``, and enqueue an SQS beacon. Returns
+    the new ``run_id`` for the SFN to poll.
+  * ``check_run_status`` — read the run STATE row and return the
+    ``current_state`` plus a ``terminal`` flag. The eval SFN loops
+    on this until ``terminal == true``.
   * ``evaluate_result``  — pull the SDLC pipeline run's STATE row from
     DynamoDB and compare totals against the case's pass criteria.
   * ``record_result``    — write the evaluated result to
     ``evals/results/{date}/{case_slug}.json`` and emit per-case
     CloudWatch metrics.
-  * ``aggregate_results``— compute the suite-wide pass rate and emit the
-    ``AIDLC/Evals/PassRate`` metric the drift alarm watches.
+  * ``aggregate_results``— compute the suite-wide pass rate and emit
+    the ``AIDLC/Evals/PassRate`` metric the drift alarm watches.
 
-The Lambda is intentionally read-only against pipeline tables and never
-mutates SDLC state — it only persists eval-result records.
+``start_run`` mirrors the live ``entry_adapter`` Lambda's three-step
+sequence (DDB row → EventBridge emit → SQS beacon with delay) so the
+eval flow uses exactly the orchestration path real runs do.
 """
 
 from __future__ import annotations
@@ -31,10 +38,22 @@ from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.events import EventEnvelope, RequestReceived
+from common.ids import (
+    CorrelationId,
+    RunId,
+    new_correlation_id,
+    new_event_id,
+    new_run_id,
+)
+from common.state import TERMINAL_RUN_STATES, RunState
+
 if TYPE_CHECKING:
     from mypy_boto3_cloudwatch.client import CloudWatchClient
     from mypy_boto3_dynamodb.client import DynamoDBClient
+    from mypy_boto3_events.client import EventBridgeClient
     from mypy_boto3_s3.client import S3Client
+    from mypy_boto3_sqs.client import SQSClient
 
 logger = Logger(service="eval_runner")
 tracer = Tracer(service="eval_runner")
@@ -110,6 +129,21 @@ class AggregateInput(BaseOp):
     results: list[dict[str, Any]]
 
 
+class StartRunInput(BaseOp):
+    """Mint a run, write STATE row, emit REQUEST.RECEIVED, send beacon."""
+
+    op: Literal["start_run"]
+    project_slug: str = Field(min_length=1, max_length=64)
+    intent: str = Field(min_length=1, max_length=4096)
+
+
+class CheckStatusInput(BaseOp):
+    """Read the run's STATE row; return current_state + terminal flag."""
+
+    op: Literal["check_run_status"]
+    run_id: str = Field(min_length=1, max_length=128)
+
+
 @cache
 def s3() -> S3Client:
     """Process-cached S3 client."""
@@ -128,6 +162,18 @@ def cw() -> CloudWatchClient:
     return boto3.client("cloudwatch")
 
 
+@cache
+def events() -> EventBridgeClient:
+    """Process-cached EventBridge client."""
+    return boto3.client("events")
+
+
+@cache
+def sqs() -> SQSClient:
+    """Process-cached SQS client."""
+    return boto3.client("sqs")
+
+
 def artifacts_bucket() -> str:
     """Bucket holding ``evals/cases.yaml`` and ``evals/results/...``."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
@@ -143,7 +189,18 @@ def cases_key() -> str:
     return os.environ.get("AIDLC_EVAL_CASES_KEY", "evals/cases.yaml")
 
 
+def bus_name() -> str:
+    """Platform EventBridge bus name."""
+    return os.environ["AIDLC_BUS_NAME"]
+
+
+def beacon_queue_url() -> str:
+    """SQS state-router beacon queue URL."""
+    return os.environ["AIDLC_BEACON_QUEUE_URL"]
+
+
 METRIC_NAMESPACE = "AIDLC/Evals"
+BEACON_INITIAL_DELAY_SECONDS = 10
 
 
 @logger.inject_lambda_context(log_event=False)
@@ -154,18 +211,11 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     if not isinstance(event, dict):
         return error("invalid_event", "expected JSON object")
     op = event.get("op")
-    if op == "load_cases":
-        return load_cases(LoadCasesInput.model_validate(event))
-    if op == "evaluate_result":
-        return evaluate_result(EvaluateInput.model_validate(event))
-    if op == "record_result":
-        return record_result(RecordInput.model_validate(event))
-    if op == "aggregate_results":
-        return aggregate_results(AggregateInput.model_validate(event))
-    return error(
-        "unknown_op",
-        f"op must be one of load_cases|evaluate_result|record_result|aggregate_results, got {op!r}",
-    )
+    entry = OPS.get(op or "")
+    if entry is None:
+        return error("unknown_op", f"unsupported op: {op!r}")
+    model, func = entry
+    return func(model.model_validate(event))
 
 
 def load_cases(req: LoadCasesInput) -> dict[str, Any]:
@@ -182,6 +232,90 @@ def load_cases(req: LoadCasesInput) -> dict[str, Any]:
     cases_dict = [c.model_dump() for c in cases]
     logger.info("cases loaded", extra={"count": len(cases_dict), "tier_filter": req.tier_filter})
     return {"ok": True, "cases": cases_dict}
+
+
+def start_run(req: StartRunInput) -> dict[str, Any]:
+    """Mint + emit the entry-adapter sequence for one eval case.
+
+    Mirrors :func:`entry_adapter.handler.accept_run`: DDB ``PutItem`` →
+    EventBridge ``PutEvents`` → SQS ``SendMessage`` (DelaySeconds=10).
+    Returns the new ``run_id`` so the SFN can poll for completion.
+    """
+    run_id = new_run_id()
+    correlation_id = new_correlation_id()
+    timestamp = datetime.now(UTC).isoformat()
+    ddb().put_item(
+        TableName=runs_table(),
+        Item={
+            "pk": {"S": f"RUN#{run_id}"},
+            "sk": {"S": "STATE"},
+            "run_id": {"S": str(run_id)},
+            "correlation_id": {"S": str(correlation_id)},
+            "project_slug": {"S": req.project_slug},
+            "intent": {"S": req.intent},
+            "requestor": {"S": "eval-runner"},
+            "actor_id": {"S": "eval-runner"},
+            "phase": {"S": "triage"},
+            "created_at": {"S": timestamp},
+            "updated_at": {"S": timestamp},
+        },
+        ConditionExpression="attribute_not_exists(pk)",
+    )
+    envelope = EventEnvelope[RequestReceived](
+        event_id=new_event_id(),
+        type="REQUEST.RECEIVED",
+        run_id=RunId(str(run_id)),
+        correlation_id=CorrelationId(str(correlation_id)),
+        actor_id="eval-runner",
+        payload=RequestReceived(
+            project_slug=req.project_slug,
+            intent=req.intent,
+            requestor="eval-runner",
+        ),
+    )
+    events().put_events(
+        Entries=[
+            {
+                "Source": f"ai-dlc.{envelope.actor_id}",
+                "DetailType": envelope.type,
+                "Detail": envelope.model_dump_json(),
+                "EventBusName": bus_name(),
+            },
+        ],
+    )
+    sqs().send_message(
+        QueueUrl=beacon_queue_url(),
+        MessageBody=json.dumps({"run_id": str(run_id)}),
+        DelaySeconds=BEACON_INITIAL_DELAY_SECONDS,
+    )
+    return {
+        "ok": True,
+        "run_id": str(run_id),
+        "correlation_id": str(correlation_id),
+    }
+
+
+def check_run_status(req: CheckStatusInput) -> dict[str, Any]:
+    """Read the STATE row's ``current_state`` and report terminal status."""
+    state = fetch_run_state(req.run_id)
+    if state is None:
+        return {
+            "ok": True,
+            "run_id": req.run_id,
+            "current_state": None,
+            "terminal": False,
+        }
+    raw = state.get("current_state", {}).get("S", "")
+    try:
+        cursor = RunState(raw) if raw else None
+    except ValueError:
+        cursor = None
+    return {
+        "ok": True,
+        "run_id": req.run_id,
+        "current_state": cursor.value if cursor else None,
+        "terminal": cursor in TERMINAL_RUN_STATES if cursor else False,
+    }
 
 
 def evaluate_result(req: EvaluateInput) -> dict[str, Any]:
@@ -311,3 +445,13 @@ def error(kind: str, detail: object) -> dict[str, Any]:
 def _dn(state: dict[str, Any], attr: str) -> str:
     """Pull a Number-typed DDB attribute or default to ``"0"``."""
     return (state.get(attr) or {}).get("N", "0")
+
+
+OPS: dict[str, Any] = {
+    "load_cases": (LoadCasesInput, load_cases),
+    "start_run": (StartRunInput, start_run),
+    "check_run_status": (CheckStatusInput, check_run_status),
+    "evaluate_result": (EvaluateInput, evaluate_result),
+    "record_result": (RecordInput, record_result),
+    "aggregate_results": (AggregateInput, aggregate_results),
+}

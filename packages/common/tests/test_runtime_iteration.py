@@ -34,7 +34,6 @@ def test_implementer_input_defaults_no_iteration() -> None:
     payload = base_input()
     assert payload.iteration_count == 0
     assert payload.iteration_feedback is None
-    assert payload.task_token is None
 
 
 def test_implementer_input_iteration_round_trip() -> None:

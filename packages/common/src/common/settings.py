@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     # EventBridge + DynamoDB (resolved by the env's Terraform outputs)
     eventbridge_bus_name: str = Field(default="ai-dlc-bus-dev")
     runs_table: str = Field(default="ai-dlc-runs-dev")
-    approvals_table: str = Field(default="ai-dlc-approvals-dev")
     idempotency_table: str = Field(default="ai-dlc-idempotency-dev")
+    state_router_queue_url: str | None = None
 
     # S3
     artifacts_bucket: str = Field(default="ai-dlc-artifacts-dev")

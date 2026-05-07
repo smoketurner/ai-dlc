@@ -55,7 +55,7 @@ function runsList() {
     filter: '',
     deleted: [],
     async deleteRun(runId) {
-      if (!window.confirm(`Delete run ${runId}? This permanently removes its events and approvals.`)) return;
+      if (!window.confirm(`Delete run ${runId}? This permanently removes its events.`)) return;
       const resp = await fetch(`/v1/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
       if (resp.status === 204) {
         this.deleted.push(runId);

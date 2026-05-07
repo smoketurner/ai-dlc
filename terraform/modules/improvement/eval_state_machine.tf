@@ -7,16 +7,12 @@
 #     files change in a PR, or
 #   * Manual invocation via aws CLI / dashboard (future).
 #
-# The state machine relies on the eval_runner Lambda for load/evaluate/record/
-# aggregate ops, and the SDLC pipeline state machine for actually running each
-# case. We require the SDLC state machine ARN as input — the dev composition
-# wires it through.
+# The state machine drives the eval flow entirely through the eval_runner
+# Lambda: ``start_run`` mints + emits ``REQUEST.RECEIVED`` (same path the
+# entry adapter uses), ``check_run_status`` polls the runs table until the
+# state machine reaches a terminal state, then ``evaluate_result``,
+# ``record_result``, and ``aggregate_results`` produce the verdict.
 ################################################################################
-
-variable "sdlc_state_machine_arn" {
-  description = "ARN of the SDLC pipeline state machine that the eval runner invokes."
-  type        = string
-}
 
 variable "alerts_topic_arn" {
   description = "SNS topic that drift-detector alarms publish to."
@@ -57,35 +53,6 @@ data "aws_iam_policy_document" "eval_states_inline" {
     sid       = "InvokeEvalRunner"
     actions   = ["lambda:InvokeFunction"]
     resources = [module.eval_runner.lambda_function_arn]
-  }
-
-  statement {
-    sid     = "StartSdlcExecution"
-    actions = ["states:StartExecution"]
-    resources = [
-      var.sdlc_state_machine_arn,
-    ]
-  }
-
-  statement {
-    sid = "WaitForSdlcExecution"
-    actions = [
-      "states:DescribeExecution",
-      "states:StopExecution",
-    ]
-    resources = [
-      "${replace(var.sdlc_state_machine_arn, ":stateMachine:", ":execution:")}*",
-    ]
-  }
-
-  statement {
-    sid = "WaitForChildEvents"
-    actions = [
-      "events:PutTargets",
-      "events:PutRule",
-      "events:DescribeRule",
-    ]
-    resources = ["arn:${local.aws_partition}:events:*:${local.aws_account_id}:rule/StepFunctionsGetEventsForStepFunctionsExecutionRule"]
   }
 
   statement {
@@ -138,7 +105,6 @@ resource "aws_sfn_state_machine" "eval_runner" {
 
   definition = templatefile("${path.module}/asl/eval.asl.json.tftpl", {
     eval_runner_function_arn = module.eval_runner.lambda_function_arn
-    sdlc_state_machine_arn   = var.sdlc_state_machine_arn
     max_concurrency          = var.eval_max_concurrency
   })
 

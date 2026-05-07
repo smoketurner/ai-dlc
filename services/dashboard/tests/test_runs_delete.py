@@ -13,7 +13,6 @@ from dashboard.app import app
 from dashboard.deps import ddb, settings
 
 RUNS = "test-runs"
-APPROVALS = "test-approvals"
 
 
 @pytest.fixture(autouse=True)
@@ -23,12 +22,8 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("AIDLC_BUS_NAME", "test-bus")
     monkeypatch.setenv("AIDLC_RUNS_TABLE", RUNS)
-    monkeypatch.setenv("AIDLC_APPROVALS_TABLE", APPROVALS)
     monkeypatch.setenv("AIDLC_IDEMPOTENCY_TABLE", "test-idempotency")
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
-    monkeypatch.setenv("AIDLC_HITL_HANDLER_FUNCTION", "test-hitl")
-    monkeypatch.setenv("AIDLC_TRIAGE_DISPATCHER_FUNCTION", "test-triage")
-    monkeypatch.setenv("AIDLC_ITERATION_REACTOR_FUNCTION", "test-iteration-reactor")
     monkeypatch.setenv(
         "AIDLC_GITHUB_APP_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:app"
     )
@@ -40,19 +35,18 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     ddb.cache_clear()
     with mock_aws():
         client = boto3.client("dynamodb", region_name="us-east-1")
-        for name in (RUNS, APPROVALS):
-            client.create_table(
-                TableName=name,
-                KeySchema=[
-                    {"AttributeName": "pk", "KeyType": "HASH"},
-                    {"AttributeName": "sk", "KeyType": "RANGE"},
-                ],
-                AttributeDefinitions=[
-                    {"AttributeName": "pk", "AttributeType": "S"},
-                    {"AttributeName": "sk", "AttributeType": "S"},
-                ],
-                BillingMode="PAY_PER_REQUEST",
-            )
+        client.create_table(
+            TableName=RUNS,
+            KeySchema=[
+                {"AttributeName": "pk", "KeyType": "HASH"},
+                {"AttributeName": "sk", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "pk", "AttributeType": "S"},
+                {"AttributeName": "sk", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
         yield
     settings.cache_clear()
     ddb.cache_clear()
@@ -81,17 +75,6 @@ def seed_run(run_id: str, *, status: str, event_count: int = 0) -> None:
         )
 
 
-def seed_approval(run_id: str, gate_ref: str) -> None:
-    ddb().put_item(
-        TableName=APPROVALS,
-        Item={
-            "pk": {"S": f"RUN#{run_id}"},
-            "sk": {"S": f"GATE#{gate_ref}"},
-            "status": {"S": "PENDING"},
-        },
-    )
-
-
 def count_partition(table: str, run_id: str) -> int:
     resp = ddb().query(
         TableName=table,
@@ -118,15 +101,10 @@ def test_delete_run_returns_409_when_not_terminal() -> None:
 
 def test_delete_run_cascades_when_completed() -> None:
     seed_run("r-done", status="RUN.COMPLETED", event_count=30)
-    seed_approval("r-done", "spec")
-    seed_approval("r-done", "task:T-001")
-
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-done")
-
     assert resp.status_code == 204
     assert count_partition(RUNS, "r-done") == 0
-    assert count_partition(APPROVALS, "r-done") == 0
 
 
 def test_delete_run_handles_failed_terminal_state() -> None:

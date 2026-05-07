@@ -1,4 +1,4 @@
-"""Server-rendered HTML pages — runs list, run detail, approvals, submit."""
+"""Server-rendered HTML pages — runs list, run detail, submit."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
     TERMINAL_TYPES,
     get_run_events,
-    list_pending_approvals,
     list_recent_runs,
     run_summary_from_item,
 )
@@ -53,17 +52,6 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "user": user,
             "terminal_types": TERMINAL_TYPES,
         },
-    )
-
-
-@router.get("/approvals", response_class=HTMLResponse)
-async def approvals_page(request: Request, user: CurrentUser) -> HTMLResponse:
-    """Pending HITL gates table."""
-    approvals = list_pending_approvals()
-    return templates.TemplateResponse(
-        request,
-        "approvals.html",
-        {"approvals": approvals, "user": user},
     )
 
 

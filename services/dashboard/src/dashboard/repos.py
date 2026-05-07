@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from dashboard.deps import ddb, settings
-from dashboard.models import PendingApproval, RunEvent, RunSummary
+from dashboard.models import RunEvent, RunSummary
 
 TERMINAL_TYPES = frozenset({"RUN.COMPLETED", "RUN.FAILED"})
 
@@ -43,19 +43,6 @@ def get_run_events(run_id: str, *, since_sk: str | None = None) -> list[RunEvent
     return [event_from_item(item) for item in resp.get("Items", [])]
 
 
-def list_pending_approvals() -> list[PendingApproval]:
-    """Scan the approvals table for rows with status=PENDING."""
-    cfg = settings()
-    resp = ddb().scan(
-        TableName=cfg.approvals_table,
-        FilterExpression="#s = :pending",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":pending": {"S": "PENDING"}},
-        Limit=100,
-    )
-    return [approval_from_item(item) for item in resp.get("Items", [])]
-
-
 def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
     """Convert a runs-table item into a :class:`RunSummary`."""
     return RunSummary(
@@ -80,19 +67,6 @@ def event_from_item(item: dict[str, Any]) -> RunEvent:
         type=item.get("type", {}).get("S", envelope.get("type", "UNKNOWN")),
         timestamp=envelope.get("timestamp", ""),
         payload=envelope.get("payload", {}),
-    )
-
-
-def approval_from_item(item: dict[str, Any]) -> PendingApproval:
-    """Convert an approvals-table row into a :class:`PendingApproval`."""
-    pk = item["pk"]["S"].removeprefix("RUN#")
-    sk = item["sk"]["S"].removeprefix("GATE#")
-    return PendingApproval(
-        run_id=pk,
-        gate_ref=sk,
-        project_slug=item.get("gsi1pk", {}).get("S", "").removeprefix("PROJECT#"),
-        pr_url=item.get("pr_url", {}).get("S") or None,
-        summary=item.get("summary", {}).get("S") or None,
     )
 
 

@@ -1,10 +1,9 @@
-"""EventBridge publish helper for agents that emit their own completion events.
+"""EventBridge publish helper for agents emitting their completion events.
 
-The SFN-driven path of an agent (Reviewer, Tester, Implementer) returns its
-result via SendTaskSuccess and lets a downstream SFN ``PublishXxxReady``
-state put the EventBridge event. When the same agent is invoked by the
-iteration_reactor (no ``task_token``), there's no SFN to do that
-publishing — the agent must emit the event itself before returning.
+Each agent (Architect, Critic, Implementer, Reviewer, Tester, Triage)
+publishes its own ``*.READY`` / ``*.TRIAGED`` event when finished. The
+event_projector picks them up off the platform bus and applies state
+transitions; the dashboard timeline reads the same stream.
 
 This helper centralises the EventBridge ``PutEvents`` call so the bus
 name resolution, source-field derivation, and JSON serialisation are

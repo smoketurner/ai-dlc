@@ -47,11 +47,6 @@ output "runs_stream_arn" {
   value       = module.state.runs_stream_arn
 }
 
-output "approvals_table" {
-  description = "DynamoDB table for HITL approvals."
-  value       = module.state.approvals_table
-}
-
 output "idempotency_table" {
   description = "DynamoDB table for entry-Lambda idempotency keys."
   value       = module.state.idempotency_table
@@ -140,13 +135,8 @@ output "agent_runtime_arns" {
 # pipeline ---------------------------------------------------------------------
 
 output "api_endpoint" {
-  description = "ai-dlc HTTP API endpoint (POST /v1/runs, /v1/runs/{id}/decide). The GitHub webhook lands on the dashboard ALB instead."
+  description = "ai-dlc HTTP API endpoint (POST /v1/runs). The GitHub webhook lands on the dashboard ALB instead."
   value       = module.pipeline.api_endpoint
-}
-
-output "state_machine_arn" {
-  description = "SDLC pipeline Step Functions state machine ARN."
-  value       = module.pipeline.state_machine_arn
 }
 
 output "platform_lambda_arns" {

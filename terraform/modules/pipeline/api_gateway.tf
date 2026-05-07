@@ -1,13 +1,12 @@
 ################################################################################
-# HTTP API Gateway. Two routes (both JWT-protected):
+# HTTP API Gateway. One JWT-protected route:
 #
-#   POST /v1/runs                  — entry_adapter Lambda
-#   POST /v1/runs/{run_id}/decide  — hitl_handler Lambda (DECIDE)
+#   POST /v1/runs  — entry_adapter Lambda
 #
 # The GitHub PR webhook is *not* on this API Gateway — it lands on a
 # separate, unauthenticated rule on the dashboard ALB at /webhooks/github.
-# The dashboard verifies the HMAC signature in-app and forwards to the
-# hitl_handler Lambda directly.
+# The dashboard verifies the HMAC signature in-app and emits platform
+# events directly onto the EventBridge bus.
 ################################################################################
 
 resource "aws_apigatewayv2_api" "this" {
@@ -104,32 +103,6 @@ resource "aws_lambda_permission" "apigw_invoke_entry_adapter" {
   statement_id  = "AllowAPIGatewayInvokeEntryAdapter"
   action        = "lambda:InvokeFunction"
   function_name = module.entry_adapter.lambda_function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
-}
-
-# POST /v1/runs/{run_id}/decide → hitl_handler (DECIDE op)
-
-resource "aws_apigatewayv2_integration" "hitl_handler" {
-  api_id                 = aws_apigatewayv2_api.this.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = module.hitl_handler.lambda_function_arn
-  integration_method     = "POST"
-  payload_format_version = "2.0"
-}
-
-resource "aws_apigatewayv2_route" "post_decide" {
-  api_id             = aws_apigatewayv2_api.this.id
-  route_key          = "POST /v1/runs/{run_id}/decide"
-  target             = "integrations/${aws_apigatewayv2_integration.hitl_handler.id}"
-  authorization_type = "JWT"
-  authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
-}
-
-resource "aws_lambda_permission" "apigw_invoke_hitl" {
-  statement_id  = "AllowAPIGatewayInvokeHitl"
-  action        = "lambda:InvokeFunction"
-  function_name = module.hitl_handler.lambda_function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }

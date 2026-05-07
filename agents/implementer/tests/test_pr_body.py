@@ -33,9 +33,9 @@ def test_render_pr_body_minimal_done(payload: ImplementerInput) -> None:
     assert payload.run_id in body
     assert payload.correlation_id in body
     assert "docs/specs/add-healthz/" in body
-    # Webhook receiver's RUN_META_RE needs both `_run_id:_` and `gate_ref:`
-    # to find the right pending task token.
-    assert "gate_ref: task:T-001" in body
+    # Footer carries human-readable run + task identifiers; the webhook
+    # resolves to the run via gsi_pr lookup, not by parsing the body.
+    assert "_task: T-001_" in body
 
 
 def test_render_pr_body_full(payload: ImplementerInput) -> None:
@@ -80,9 +80,8 @@ def test_render_pr_body_none_report_uses_fallback(payload: ImplementerInput) -> 
     assert "finish" in body
     assert payload.run_id in body
     assert payload.correlation_id in body
-    # Fallback body must also carry the webhook gate_ref so HITL still works
-    # when the agent skipped finish.
-    assert "gate_ref: task:T-001" in body
+    # Fallback body still includes the human-readable footer.
+    assert "_task: T-001_" in body
 
 
 def test_render_pr_body_does_not_include_chain_of_thought(payload: ImplementerInput) -> None:

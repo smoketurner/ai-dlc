@@ -39,17 +39,6 @@ class RunEvent(_Frozen):
     payload: dict[str, Any]
 
 
-class PendingApproval(_Frozen):
-    """One pending HITL gate."""
-
-    run_id: str
-    gate_ref: str
-    project_slug: str
-    pr_url: str | None = None
-    summary: str | None = None
-    requested_at: datetime | None = None
-
-
 class Critique(_Frozen):
     """Architect-spec critique attached to a run, parsed from S3."""
 

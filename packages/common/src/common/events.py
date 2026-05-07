@@ -126,9 +126,9 @@ class RequestReceived(Payload):
     # ``docs`` skip the spec phase and run a synthetic 1-task spec the
     # dispatcher generated from the issue context.
     workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] = "spec_driven"
-    # Slug of the synthetic spec the triage_dispatcher uploaded to S3
-    # for non-``spec_driven`` runs. ``None`` for ``spec_driven`` (the
-    # Architect produces the spec at runtime).
+    # Slug of the synthetic spec the state_router writes to S3 for
+    # non-``spec_driven`` runs (bug_fix / upgrade / docs). ``None`` for
+    # ``spec_driven`` — the Architect produces the spec at runtime.
     synthetic_spec_slug: Annotated[str, Field(min_length=1, max_length=128)] | None = None
 
 
@@ -274,11 +274,11 @@ IterationTriggerKind = Literal[
 
 
 class TaskIterationStarted(Payload):
-    """The iteration reactor dispatched the implementer for a new iteration.
+    """The state-router dispatched the implementer for a new iteration.
 
-    Emitted by ``iteration_reactor`` immediately before invoking the
-    implementer. ``trigger_kinds`` lists every webhook trigger that fed into
-    this iteration (typically one, but multiple CI failures can coalesce).
+    Observability sugar — the dashboard timeline renders this when the
+    router transitions a task to ``implementer_running`` from
+    ``iterating``. The state machine doesn't depend on this event.
     """
 
     project_slug: str

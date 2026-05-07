@@ -40,21 +40,6 @@ variable "runs_stream_arn" {
   type        = string
 }
 
-variable "approvals_table" {
-  description = "DynamoDB approvals-table name."
-  type        = string
-}
-
-variable "approvals_table_arn" {
-  description = "DynamoDB approvals-table ARN."
-  type        = string
-}
-
-variable "approvals_stream_arn" {
-  description = "DynamoDB approvals-table stream ARN."
-  type        = string
-}
-
 variable "idempotency_table" {
   description = "DynamoDB idempotency-keys table name."
   type        = string

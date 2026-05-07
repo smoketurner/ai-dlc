@@ -48,12 +48,8 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("AIDLC_BUS_NAME", "test-bus")
     monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
-    monkeypatch.setenv("AIDLC_APPROVALS_TABLE", "test-approvals")
     monkeypatch.setenv("AIDLC_IDEMPOTENCY_TABLE", "test-idempotency")
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", ARTIFACTS)
-    monkeypatch.setenv("AIDLC_HITL_HANDLER_FUNCTION", "test-hitl")
-    monkeypatch.setenv("AIDLC_TRIAGE_DISPATCHER_FUNCTION", "test-triage")
-    monkeypatch.setenv("AIDLC_ITERATION_REACTOR_FUNCTION", "test-iteration-reactor")
     monkeypatch.setenv(
         "AIDLC_GITHUB_APP_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:app"
     )

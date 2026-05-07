@@ -258,35 +258,15 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
-  # Task-phase agents (Implementer, Reviewer, Tester) report completion
-  # back to Step Functions directly via SendTaskSuccess/Failure once
-  # they finish — the InvokeAgentRuntime call from runtime_invoker is
-  # fire-and-forget. Without this perm the agent succeeds but SF stays
-  # blocked on the task token forever.
-  dynamic "statement" {
-    for_each = contains(["implementer", "reviewer", "tester"], each.key) ? [1] : []
-    content {
-      sid = "StatesTaskCallback"
-      actions = [
-        "states:SendTaskSuccess",
-        "states:SendTaskFailure",
-        "states:SendTaskHeartbeat",
-      ]
-      resources = ["*"]
-    }
-  }
-
-  # Iteration-reactor-invoked task-phase agents publish their own
-  # *.READY / TASK.ITERATION_COMMITTED events directly to the platform
-  # bus (no SFN to do PublishXxxReady for them). Same agent set that
-  # gets the Step Functions callbacks above.
-  dynamic "statement" {
-    for_each = contains(["implementer", "reviewer", "tester"], each.key) ? [1] : []
-    content {
-      sid       = "EventBusPublish"
-      actions   = ["events:PutEvents"]
-      resources = [var.bus_arn]
-    }
+  # Every agent emits its own completion event (``SPEC.READY``,
+  # ``TASK.READY``, ``REVIEW.READY``, ``TEST_REPORT.READY``,
+  # ``CRITIQUE.READY``, ``ISSUE.TRIAGED``) onto the platform bus when
+  # finished. The state-router invocation is fire-and-forget; the agent's
+  # event is what advances the projector's state machine.
+  statement {
+    sid       = "EventBusPublish"
+    actions   = ["events:PutEvents"]
+    resources = [var.bus_arn]
   }
 
   statement {
@@ -380,11 +360,12 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
       AIDLC_BEDROCK_MODEL_ID  = var.agents[each.key].bedrock_model_id
     },
-    # Task-phase agents emit their own bus events on the no-task-token path
-    # (iteration_reactor invocations). SFN-driven invocations don't read this.
-    contains(["implementer", "reviewer", "tester"], each.key) ? {
+    # Every agent emits its completion event on the platform bus when
+    # finished — wire the bus name into the runtime env so each container
+    # can call ``events:PutEvents`` without a per-agent override.
+    {
       AIDLC_BUS_NAME = var.bus_name
-    } : {},
+    },
     contains(var.agents[each.key].targets, "repo_helper") ? {
       AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
     } : {},

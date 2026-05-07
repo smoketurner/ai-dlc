@@ -66,16 +66,6 @@ variable "runs_table" {
   type        = string
 }
 
-variable "approvals_table_arn" {
-  description = "DynamoDB approvals-table ARN."
-  type        = string
-}
-
-variable "approvals_table" {
-  description = "DynamoDB approvals-table name."
-  type        = string
-}
-
 variable "idempotency_table_arn" {
   description = "DynamoDB idempotency-keys-table ARN."
   type        = string
@@ -93,36 +83,6 @@ variable "artifacts_bucket" {
 
 variable "artifacts_bucket_arn" {
   description = "Artifacts S3 bucket ARN."
-  type        = string
-}
-
-variable "hitl_handler_function_name" {
-  description = "Name of the hitl_handler Lambda the dashboard invokes for DECIDE."
-  type        = string
-}
-
-variable "hitl_handler_function_arn" {
-  description = "ARN of the hitl_handler Lambda."
-  type        = string
-}
-
-variable "triage_dispatcher_function_name" {
-  description = "Name of the triage_dispatcher Lambda the dashboard invokes on issue webhooks."
-  type        = string
-}
-
-variable "triage_dispatcher_function_arn" {
-  description = "ARN of the triage_dispatcher Lambda."
-  type        = string
-}
-
-variable "iteration_reactor_function_name" {
-  description = "Name of the iteration_reactor Lambda the dashboard invokes on PR iteration triggers."
-  type        = string
-}
-
-variable "iteration_reactor_function_arn" {
-  description = "ARN of the iteration_reactor Lambda."
   type        = string
 }
 

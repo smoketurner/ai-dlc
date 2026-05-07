@@ -116,7 +116,7 @@ def publish(envelope: EventEnvelope[RequestReceived], bus_name: str) -> None:
 
 @router.delete("/v1/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_run(run_id: str, user: CurrentUser) -> Response:
-    """Hard-delete a terminal run and its approvals from DynamoDB."""
+    """Hard-delete a terminal run from DynamoDB."""
     cfg = settings()
     state = fetch_run_state(run_id, cfg.runs_table)
     if state is None:
@@ -128,13 +128,11 @@ async def delete_run(run_id: str, user: CurrentUser) -> Response:
             detail={"error": "run_not_terminal", "status": run_status},
         )
     runs_rows = delete_partition(cfg.runs_table, f"RUN#{run_id}")
-    approvals_rows = delete_partition(cfg.approvals_table, f"RUN#{run_id}")
     logger.info(
         "run deleted",
         run_id=run_id,
         actor=user.sub,
         runs_rows=runs_rows,
-        approvals_rows=approvals_rows,
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
