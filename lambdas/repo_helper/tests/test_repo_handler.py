@@ -1113,6 +1113,55 @@ def test_open_spec_pr_reads_s3_branches_commits_and_opens(
     assert {key for _, key in fake_s3.requested} == set(SPEC_DOCS_S3)
 
 
+def test_open_spec_pr_includes_source_issue_url_in_body(
+    patch_client: Callable[[httpx.MockTransport], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the run was triggered by an issue, the URL goes into the PR body.
+
+    Gives GitHub a backlink between the source issue and the spec PR
+    without using a closing keyword (the issue stays open until task
+    PRs are merged).
+    """
+    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
+    monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
+    captured: dict[str, str] = {}
+
+    def open_pr_capture(req: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(req.content)["body"]
+        return httpx.Response(
+            201,
+            json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "state": "open"},
+        )
+
+    routes = _spec_pr_routes(
+        branch="aidlc/spec/add-healthz",
+        base="main",
+        slug="add-healthz",
+        run_id="run-xyz",
+    )
+    routes[("POST", "/repos/o/r/pulls")] = open_pr_capture
+    patch_client(httpx.MockTransport(_route_with(routes)))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_spec_pr",
+                "repo": "o/r",
+                "spec_slug": "add-healthz",
+                "spec_s3_prefix": "specs/add-healthz/",
+                "run_id": "run-xyz",
+                "source_issue_url": "https://github.com/o/r/issues/33",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert "Source issue: https://github.com/o/r/issues/33" in captured["body"]
+    # No closing keyword — the issue stays open until task PRs land.
+    assert "fixes" not in captured["body"].lower()
+    assert "closes" not in captured["body"].lower()
+
+
 def _existing_branch_routes() -> dict[
     tuple[str, str],
     Callable[[httpx.Request], httpx.Response],

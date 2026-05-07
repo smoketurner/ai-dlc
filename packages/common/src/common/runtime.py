@@ -380,14 +380,45 @@ class ProposerResult(_Frozen):
     session_id: str
 
 
+def run_for_structured_output[T: BaseModel](
+    agent: Any,
+    *,
+    output_model: type[T],
+    prompt: str,
+) -> T:
+    """Run a Strands ``Agent`` and return its validated structured output.
+
+    Wraps ``agent(prompt, structured_output_model=output_model)`` — the
+    pattern Strands recommends for tool-using agents that need to emit a
+    typed response. Crucially this runs the full agent loop with all
+    configured tools available; the deprecated ``Agent.structured_output``
+    method bypasses the tool registry entirely, so any grounding tools
+    declared on the agent are unreachable on that path.
+
+    The Strands ``AgentResult.structured_output`` is typed as
+    ``BaseModel | None``. We narrow back to the requested type and raise
+    when the model failed to produce structured output (e.g., max_tokens
+    cut the response off mid-tool-call).
+
+    The agent type is :class:`Any` so this module stays importable from
+    Implementer code that does not depend on Strands.
+    """
+    result = agent(prompt, structured_output_model=output_model)
+    output = result.structured_output
+    if not isinstance(output, output_model):
+        msg = f"agent did not produce a {output_model.__name__}"
+        raise TypeError(msg)
+    return output
+
+
 def usage_from_strands(agent: Any, *, model_id: str) -> dict[str, Any]:
     """Extract token + cost + duration from a Strands ``Agent``.
 
     Strands' ``EventLoopMetrics.accumulated_usage`` accumulates input /
     output tokens across every model call the agent made during one
-    ``__call__`` / ``structured_output`` invocation; ``accumulated_metrics``
-    carries cumulative latency in ms. Cost is computed via the local
-    pricing table since Strands does not compute it.
+    ``__call__`` invocation; ``accumulated_metrics`` carries cumulative
+    latency in ms. Cost is computed via the local pricing table since
+    Strands does not compute it.
 
     Returns a dict ready to splat into a ``*Result`` constructor::
 

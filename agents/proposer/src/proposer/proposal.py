@@ -8,7 +8,7 @@ by Pydantic validation, not just by code review.
 
 The :class:`Proposal` also enforces that ``pr_body`` does not quote spec
 documents verbatim (the ``validate_no_spec_dump`` heuristic from
-:mod:`common.hooks`). Strands' ``structured_output`` surfaces Pydantic
+:mod:`common.hooks`). Strands' structured-output mode surfaces Pydantic
 errors to the agent so it can self-correct.
 """
 

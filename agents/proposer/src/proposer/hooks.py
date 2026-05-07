@@ -3,7 +3,7 @@
 Two enforcement points:
 
   * Spec-dump rejection — applied via a ``model_validator`` on
-    :class:`proposer.proposal.Proposal`. Strands' ``structured_output``
+    :class:`proposer.proposal.Proposal`. Strands' structured-output mode
     surfaces ``ValidationError`` to the agent, giving it a chance to
     self-correct. (No hook needed for that piece.)
   * MEMORY.md prerequisites — :class:`ProposerCallTracker` records which
@@ -14,7 +14,7 @@ Two enforcement points:
     ``read_drift_report`` to have been called first.
 
 The Proposer's :func:`propose` calls ``check_memory_md_prerequisites``
-after ``structured_output`` returns; if it trips, the proposal is
+after the agent invocation returns; if it trips, the proposal is
 rejected and the run fails. The Proposer is advisory + scheduled, so
 failing once a week (or once per regression event) is acceptable — far
 better than a misinformed PR landing in MEMORY.md.

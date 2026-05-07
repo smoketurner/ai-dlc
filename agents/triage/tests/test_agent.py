@@ -81,11 +81,15 @@ def test_triage_issue_wires_structured_output_against_decision_schema(
         rationale="Issue has clear acceptance criteria.",
     )
 
+    class FakeResult:
+        def __init__(self, output: TriageDecision) -> None:
+            self.structured_output = output
+
     class FakeAgent:
-        def structured_output(self, model: type[Any], message: str) -> Any:
-            captured["model"] = model
-            captured["message"] = message
-            return expected
+        def __call__(self, prompt: str, *, structured_output_model: type[Any]) -> FakeResult:
+            captured["model"] = structured_output_model
+            captured["message"] = prompt
+            return FakeResult(expected)
 
     def fake_build_agent(run_id: str) -> FakeAgent:
         captured["run_id"] = run_id

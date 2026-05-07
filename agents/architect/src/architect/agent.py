@@ -1,9 +1,12 @@
 """Strands Agent factory for the Architect.
 
 The Architect uses Claude Opus 4.7 on Bedrock with a strict-JSON output
-contract: the agent's final message is parsed as a :class:`SpecBundle`.
-We use Strands' structured-output entrypoint (``structured_output``) so
-the Bedrock model is constrained to produce JSON matching the schema.
+contract: the agent loop runs with the four grounding/output tools and
+finishes by emitting a :class:`SpecBundle` via Strands'
+``structured_output_model`` parameter — that constrains the Bedrock
+model to produce JSON matching the schema while still letting the agent
+call tools (``read_memory_md``, ``list_repo_paths``, ``read_repo_file``)
+to ground itself in the project before drafting.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from architect.tools import (
 )
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
+from common.runtime import run_for_structured_output
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 
@@ -80,7 +84,7 @@ def generate_spec(
         A validated :class:`SpecBundle` ready for Markdown rendering.
     """
     user_message = _compose_message(intent, project_slug, prior_feedback)
-    return agent.structured_output(SpecBundle, user_message)
+    return run_for_structured_output(agent, output_model=SpecBundle, prompt=user_message)
 
 
 def _compose_message(intent: str, project_slug: str, prior_feedback: str | None) -> str:

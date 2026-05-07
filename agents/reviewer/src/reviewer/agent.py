@@ -1,7 +1,10 @@
 """Strands Agent factory for the Reviewer.
 
-The Reviewer uses Claude Sonnet 4.6 on Bedrock. Output is a
-:class:`Review` constrained via Strands' ``structured_output``.
+The Reviewer uses Claude Sonnet 4.6 on Bedrock. The agent loop runs
+with spec/memory readers plus a sandbox runner and finishes by emitting
+a :class:`Review` via Strands' ``structured_output_model`` parameter —
+that constrains the model to produce JSON matching the schema while
+still letting it call grounding tools.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from strands.models import BedrockModel
 
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
+from common.runtime import run_for_structured_output
 from reviewer.hooks import build_hooks
 from reviewer.review import Review
 from reviewer.tools import read_memory_md_tool, read_spec_doc_tool, run_pr_in_sandbox_tool
@@ -66,7 +70,7 @@ def review_pr(
         pr_url=pr_url,
         diff_summary=diff_summary,
     )
-    return agent.structured_output(Review, user_message)
+    return run_for_structured_output(agent, output_model=Review, prompt=user_message)
 
 
 def compose_message(

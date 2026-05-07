@@ -223,6 +223,17 @@ class OpenSpecPrInput(BaseOp):
     spec_s3_prefix: str = Field(min_length=1, max_length=512)
     run_id: str = Field(min_length=1, max_length=64)
     base: str = Field(default="main", min_length=1, max_length=128)
+    # When the run was triggered by a GitHub issue, the URL goes into
+    # the PR body so GitHub renders a backlink in both directions
+    # (issue timeline shows the PR; PR shows the source issue). We
+    # deliberately don't use closing keywords ("Fixes #N") — the issue
+    # stays open until task PRs land, not when the spec is approved.
+    source_issue_url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        pattern=r"^https://github\.com/.+$",
+    )
 
 
 class ListCheckRunsInput(BaseOp):
@@ -376,7 +387,7 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
     )
     update_ref(req.repo, branch, new_commit_sha, client)
     title = f"spec: {req.spec_slug}"
-    body = render_spec_pr_body(req.spec_slug, req.run_id)
+    body = render_spec_pr_body(req.spec_slug, req.run_id, req.source_issue_url)
     response = client.post(
         f"/repos/{req.repo}/pulls",
         json={"title": title, "body": body, "head": branch, "base": req.base},
@@ -428,16 +439,30 @@ def create_or_reuse_branch(
     return base_sha
 
 
-def render_spec_pr_body(spec_slug: str, run_id: str) -> str:
-    """PR body that links the spec docs and the dashboard run page."""
-    return (
-        f"ai-dlc spec for `{spec_slug}` (run `{run_id}`).\n\n"
+def render_spec_pr_body(
+    spec_slug: str,
+    run_id: str,
+    source_issue_url: str | None = None,
+) -> str:
+    """PR body that links the spec docs, the source issue, and the run.
+
+    No closing keyword on the source-issue line — the issue stays open
+    until task PRs are merged. The plain URL gives GitHub a clickable
+    link + a back-reference in the issue's timeline.
+    """
+    paragraphs = [f"ai-dlc spec for `{spec_slug}` (run `{run_id}`)."]
+    if source_issue_url:
+        paragraphs.append(f"Source issue: {source_issue_url}")
+    paragraphs.append(
         f"This PR contains three docs under `docs/specs/{spec_slug}/`:\n\n"
-        f"- `requirements.md`\n"
-        f"- `design.md`\n"
-        f"- `tasks.md`\n\n"
-        f"Merging approves the spec; the platform will then dispatch each task as a separate PR.\n"
+        "- `requirements.md`\n"
+        "- `design.md`\n"
+        "- `tasks.md`",
     )
+    paragraphs.append(
+        "Merging approves the spec; the platform will then dispatch each task as a separate PR.",
+    )
+    return "\n\n".join(paragraphs) + "\n"
 
 
 def comment_pr(req: CommentPrInput, client: httpx.Client) -> dict[str, Any]:

@@ -2,8 +2,9 @@
 
 The Proposer uses Claude Opus 4.7 — the proposal task requires reading
 multiple summary documents and synthesising a coherent recommendation
-under bounded scope. Output is constrained to a :class:`Proposal` JSON
-shape via Strands' ``structured_output``.
+under bounded scope. The agent loop runs with the summary-reading tools
+and finishes by emitting a :class:`Proposal` via Strands'
+``structured_output_model`` parameter.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from strands.models import BedrockModel
 
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
+from common.runtime import run_for_structured_output
 from proposer.hooks import (
     ProposerCallTracker,
     build_hooks_with_tracker,
@@ -97,7 +99,7 @@ def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_i
         lookback_days=lookback_days,
     )
     agent, tracker = build_agent(run_id)
-    proposal = agent.structured_output(Proposal, user_message)
+    proposal = run_for_structured_output(agent, output_model=Proposal, prompt=user_message)
     violation = check_memory_md_prerequisites(proposal, tracker)
     if violation is not None:
         raise ValueError(violation)

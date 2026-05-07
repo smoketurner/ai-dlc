@@ -1,10 +1,11 @@
 """Strands Agent factory for the Triage agent.
 
 The Triage agent uses Claude Haiku 4.5 on Bedrock with a strict-JSON
-output contract: the final message is parsed as
-:class:`common.triage.TriageDecision` via Strands' ``structured_output``.
-The Step Functions ``Choice`` state branches on the resulting
-``action`` and ``workflow_kind``.
+output contract: the agent emits a
+:class:`common.triage.TriageDecision` via Strands'
+``structured_output_model`` parameter on agent invocation. The Step
+Functions ``Choice`` state branches on the resulting ``action`` and
+``workflow_kind``.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from strands import Agent
 from strands.models import BedrockModel
 
 from common.routing import load_system_prompt, pick_variant
-from common.runtime import TriageInput
+from common.runtime import TriageInput, run_for_structured_output
 from common.triage import TriageDecision
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-v1"
@@ -49,7 +50,7 @@ def triage_issue(payload: TriageInput) -> TriageDecision:
     """Run the agent against ``payload`` and return the validated decision."""
     user_message = compose_message(payload)
     agent = build_agent(payload.run_id)
-    return agent.structured_output(TriageDecision, user_message)
+    return run_for_structured_output(agent, output_model=TriageDecision, prompt=user_message)
 
 
 def compose_message(payload: TriageInput) -> str:

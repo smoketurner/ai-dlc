@@ -320,6 +320,10 @@ def handle_spec_critiqued(run: Run) -> Action:
             "spec_s3_prefix": run.spec_s3_prefix,
             "run_id": run.run_id,
             "requestor_sub": run.requestor_sub,
+            # Issue-driven runs get a backlink in the spec PR body so
+            # GitHub's UI cross-references the source issue. Programmatic
+            # runs (POST /v1/runs) leave this None.
+            "source_issue_url": run.source_issue_url,
         },
         target_pk=f"RUN#{run.run_id}",
         target_sk="STATE",
