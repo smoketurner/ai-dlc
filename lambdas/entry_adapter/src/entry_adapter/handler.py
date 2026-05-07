@@ -171,18 +171,26 @@ def write_run_row(
 
 
 @tracer.capture_method
-def send_beacon(run_id: str) -> None:
+def send_beacon(*, run_id: str, project_slug: str) -> None:
     """Enqueue the SQS beacon with a 10s delay.
 
     Delay covers the projector's REQUEST.RECEIVED → received transition
     so the router's first look at the STATE row sees an actionable
     cursor. If the projector takes longer, the router no-ops and the
     visibility timeout re-delivers naturally.
+
+    ``MessageGroupId`` is set to ``project_slug`` so SQS fair queues
+    treat each project as a separate tenant. On a Standard queue this
+    has no ordering effect — it only signals tenant identity for
+    noisy-neighbor mitigation when one project floods runs. SQS also
+    surfaces ``Approximate*InQuietGroups`` CloudWatch metrics keyed
+    on this id.
     """
     sqs().send_message(
         QueueUrl=beacon_queue_url(),
         MessageBody=json.dumps({"run_id": run_id}),
         DelaySeconds=BEACON_INITIAL_DELAY_SECONDS,
+        MessageGroupId=project_slug,
     )
 
 
@@ -226,7 +234,7 @@ def accept_run(*, request: dict[str, Any]) -> dict[str, Any]:
         ),
     )
     publish(envelope)
-    send_beacon(str(run_id))
+    send_beacon(run_id=str(run_id), project_slug=request["project_slug"])
     metrics.add_metric(name="RunsAccepted", unit=MetricUnit.Count, value=1)
     logger.info(
         "run accepted",
