@@ -20,6 +20,7 @@ class RunSummary(_Frozen):
     run_id: str
     project_slug: str
     status: str
+    current_state: str | None = None
     created_at: datetime | None = None
     spec_slug: str | None = None
     tasks_completed: int = 0

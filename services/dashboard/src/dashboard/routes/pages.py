@@ -10,9 +10,10 @@ from fastapi.templating import Jinja2Templates
 
 from dashboard.artifacts import read_critique
 from dashboard.auth import CurrentUser
+from dashboard.deps import ddb, settings
 from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
-    TERMINAL_TYPES,
+    TERMINAL_STATES,
     get_run_events,
     list_recent_runs,
     run_summary_from_item,
@@ -29,7 +30,7 @@ async def runs_page(request: Request, user: CurrentUser) -> HTMLResponse:
     return templates.TemplateResponse(
         request,
         "runs.html",
-        {"runs": runs, "user": user, "terminal_types": TERMINAL_TYPES},
+        {"runs": runs, "user": user, "terminal_states": TERMINAL_STATES},
     )
 
 
@@ -50,7 +51,7 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "summary": summary,
             "critique": critique,
             "user": user,
-            "terminal_types": TERMINAL_TYPES,
+            "terminal_states": TERMINAL_STATES,
         },
     )
 
@@ -73,7 +74,22 @@ async def healthz() -> HTMLResponse:
 
 
 def first_known_run(run_id: str, events: list) -> dict[str, str]:  # type: ignore[type-arg]
-    """Best-effort summary derived from the latest event we saw."""
+    """Build a run summary from the STATE row, falling back to event payload.
+
+    The STATE row carries ``current_state`` (state-machine cursor), which
+    drives terminal-state UX. Synthesising from events alone misses it.
+    """
+    cfg = settings()
+    item = (
+        ddb()
+        .get_item(
+            TableName=cfg.runs_table,
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+        )
+        .get("Item")
+    )
+    if item:
+        return run_summary_from_item(item).model_dump()
     payload = events[-1].payload if events else {}
     return run_summary_from_item(
         {

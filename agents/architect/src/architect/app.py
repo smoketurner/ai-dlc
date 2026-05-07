@@ -1,8 +1,8 @@
 """AgentCore Runtime entrypoint for the Architect.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. Step Functions
-calls the runtime, which invokes the entrypoint defined here. The
-entrypoint:
+Serves ``POST /invocations`` and ``GET /ping`` on :8080. The state-router
+Lambda invokes this runtime fire-and-forget when a run reaches
+``architect_running`` / ``spec_pending``. The entrypoint:
 
   1. Validates the input as :class:`ArchitectInput`.
   2. Asks the Strands agent for a :class:`SpecBundle`.
@@ -10,7 +10,8 @@ entrypoint:
      agent's own ``write_spec_doc`` tool — but we also call the renderer
      directly here so the run is deterministic even if the model forgets
      to call the tool).
-  4. Returns an :class:`ArchitectResult` for the SPEC.READY event payload.
+  4. Emits ``SPEC.READY`` so the projector advances the run, then
+     returns the result body.
 """
 
 from __future__ import annotations

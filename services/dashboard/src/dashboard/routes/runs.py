@@ -14,7 +14,7 @@ from common.slug import slug_from_repo
 from dashboard.auth import CurrentUser
 from dashboard.deps import ddb, settings
 from dashboard.models import SubmitRunRequest, SubmitRunResponse
-from dashboard.repos import TERMINAL_TYPES
+from dashboard.repos import TERMINAL_STATES
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -95,11 +95,11 @@ async def delete_run(run_id: str, user: CurrentUser) -> Response:
     state = fetch_run_state(run_id, cfg.runs_table)
     if state is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    run_status = state.get("status", {}).get("S", "UNKNOWN")
-    if run_status not in TERMINAL_TYPES:
+    current_state = state.get("current_state", {}).get("S", "")
+    if current_state not in TERMINAL_STATES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"error": "run_not_terminal", "status": run_status},
+            detail={"error": "run_not_terminal", "current_state": current_state or "unknown"},
         )
     runs_rows = delete_partition(cfg.runs_table, f"RUN#{run_id}")
     logger.info(

@@ -52,7 +52,6 @@ class Settings(BaseSettings):
     cognito_issuer_url: str | None = None
 
     # Behavior toggles
-    hitl_enabled: bool = True
     log_level: str = "INFO"
     max_run_cost_usd: float = 5.0
 

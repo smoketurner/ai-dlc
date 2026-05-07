@@ -42,6 +42,7 @@ from state_router.actions import (
     AdvanceState,
     CompoundAction,
     EmitEvent,
+    GuardedAdvance,
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
@@ -251,6 +252,11 @@ def execute_emit_event(_run: Run, action: Action) -> None:
         publish(action.envelope)
 
 
+# Lambda values defer the function lookup so executors defined below
+# this dict can be referenced (forward ref). The lambdas that drop
+# ``_run`` adapt single-arg executors to the (run, action) signature
+# the dispatcher expects; the ``GuardedAdvance`` lambda passes both
+# args through and is wrapped only for the same forward-ref reason.
 EXECUTORS: dict[type[Action], Any] = {
     Noop: execute_noop,
     InvokeAgent: lambda _run, a: execute_invoke_agent(a),
@@ -259,27 +265,83 @@ EXECUTORS: dict[type[Action], Any] = {
     WriteSyntheticSpec: lambda _run, a: execute_write_synthetic_spec(a),
     SeedTasks: lambda _run, a: execute_seed_tasks(a),
     AdvanceState: lambda _run, a: execute_advance_state(a),
+    GuardedAdvance: lambda run, a: execute_guarded_advance(run, a),  # noqa: PLW0108
 }
 
 
 def execute_invoke_agent(action: InvokeAgent) -> None:
-    """Conditionally advance state, then fire the agent."""
-    if not advance_state(
-        target_pk=action.target_pk,
-        target_sk=action.target_sk,
-        advance_from=action.advance_from,
-        advance_to=action.advance_to,
-    ):
-        logger.info(
-            "lost dispatch race, skipping",
-            extra={"target_sk": action.target_sk, "advance_to": action.advance_to},
-        )
+    """Optionally advance state, then fire the agent.
+
+    When ``advance_from`` / ``advance_to`` / ``target_pk`` / ``target_sk``
+    are all set, the advance is the per-invoke race guard. When all
+    four are ``None`` the agent fires unconditionally — used for
+    advisors gated by an outer :class:`GuardedAdvance`.
+    """
+    if not invoke_advance_succeeds(action):
         return
     fire_and_forget(
         runtime_arn=action.runtime_arn,
         runtime_session_id=action.runtime_session_id,
         payload=action.payload,
     )
+
+
+def invoke_advance_succeeds(action: InvokeAgent) -> bool:
+    """Run the optional per-invoke conditional advance.
+
+    Returns ``True`` when the agent should fire — either because the
+    advance succeeded or because the action carries no advance fields
+    (gated by an outer :class:`GuardedAdvance`).
+    """
+    if (
+        action.target_pk is None
+        or action.target_sk is None
+        or action.advance_from is None
+        or action.advance_to is None
+    ):
+        return True
+    won = advance_state(
+        target_pk=action.target_pk,
+        target_sk=action.target_sk,
+        advance_from=action.advance_from,
+        advance_to=action.advance_to,
+    )
+    if not won:
+        logger.info(
+            "lost dispatch race, skipping",
+            extra={"target_sk": action.target_sk, "advance_to": action.advance_to},
+        )
+    return won
+
+
+def execute_guarded_advance(run: Run, action: Action) -> None:
+    """Atomic state advance; on success, run ``on_success`` actions.
+
+    The advance is the race guard. If a concurrent router already
+    advanced the state (the conditional update fails), we skip the
+    follow-ups — the winning router will run them. Idempotent across
+    redelivered beacons.
+    """
+    if not isinstance(action, GuardedAdvance):
+        return
+    won = advance_state(
+        target_pk=action.target_pk,
+        target_sk=action.target_sk,
+        advance_from=action.advance_from,
+        advance_to=action.advance_to,
+    )
+    if not won:
+        logger.info(
+            "lost guarded advance, skipping on_success",
+            extra={
+                "target_sk": action.target_sk,
+                "advance_from": action.advance_from,
+                "advance_to": action.advance_to,
+            },
+        )
+        return
+    for sub in action.on_success:
+        execute(run, sub)
 
 
 def execute_invoke_repo_helper(action: InvokeRepoHelper) -> None:

@@ -33,6 +33,7 @@ from state_router.actions import (
     AdvanceState,
     CompoundAction,
     EmitEvent,
+    GuardedAdvance,
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
@@ -455,34 +456,39 @@ def dispatch_implementer(run: Run, task: Task) -> Action:
 
 
 def dispatch_advisors(run: Run, task: Task) -> Action:
-    """PR is open — fire reviewer + tester in parallel.
+    """PR is open — fire reviewer + tester in parallel, race-protected.
 
-    Both advisors run independently; their ``REVIEW.READY`` and
-    ``TEST_REPORT.READY`` events are advisory and do not change task
-    state. The task immediately advances to ``pending_approval`` —
-    advisors post their findings as PR comments while we wait for a
-    human merge or PR-review verdict.
+    The :class:`GuardedAdvance` flips the task ``pr_open → pending_approval``;
+    only the winning router runs ``on_success`` and fires the advisors.
+    A loser (e.g., a redelivered beacon while the original consumer was
+    still mid-execution) sees the new state on its next read and no-ops.
+    Without the gate, ``advance_from == advance_to`` is a no-op
+    conditional that always succeeds — every concurrent router would
+    fire both advisors, doubling cost and PR comment noise.
+
+    Reviewer's ``REVIEW.READY`` and tester's ``TEST_REPORT.READY``
+    events are advisory and do not change task state; advisors post
+    their findings as PR comments while we wait for human merge or PR
+    review verdict.
     """
-    actions = []
+    fires: list[Action] = []
     reviewer_arn = runtime_arn("reviewer")
     tester_arn = runtime_arn("tester")
     if reviewer_arn:
-        actions.append(invoke_reviewer(run, task, reviewer_arn))
+        fires.append(invoke_reviewer(run, task, reviewer_arn))
     if tester_arn:
-        actions.append(invoke_tester(run, task, tester_arn))
-    actions.append(
-        AdvanceState(
-            target_pk=f"RUN#{run.run_id}",
-            target_sk=f"TASK#{task.task_id}",
-            advance_from=TaskState.pr_open.value,
-            advance_to=TaskState.pending_approval.value,
-        ),
+        fires.append(invoke_tester(run, task, tester_arn))
+    return GuardedAdvance(
+        target_pk=f"RUN#{run.run_id}",
+        target_sk=f"TASK#{task.task_id}",
+        advance_from=TaskState.pr_open.value,
+        advance_to=TaskState.pending_approval.value,
+        on_success=tuple(fires),
     )
-    return CompoundAction(actions=tuple(actions))
 
 
 def invoke_reviewer(run: Run, task: Task, arn: str) -> InvokeAgent:
-    """Fire the reviewer against the task's PR."""
+    """Fire the reviewer against the task's PR. Gated by the outer GuardedAdvance."""
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-{task.task_id}-reviewer",
@@ -498,18 +504,11 @@ def invoke_reviewer(run: Run, task: Task, arn: str) -> InvokeAgent:
             "actor_id": "state_router",
             "requestor_sub": run.requestor_sub,
         },
-        target_pk=f"RUN#{run.run_id}",
-        target_sk=f"TASK#{task.task_id}",
-        advance_from=TaskState.pr_open.value,
-        # Reviewer runs in parallel with tester; advisors don't gate task
-        # state. The advance is a placeholder — advisor invokes are
-        # fire-and-forget alongside the AdvanceState in dispatch_advisors.
-        advance_to=TaskState.pr_open.value,
     )
 
 
 def invoke_tester(run: Run, task: Task, arn: str) -> InvokeAgent:
-    """Fire the tester against the task's PR."""
+    """Fire the tester against the task's PR. Gated by the outer GuardedAdvance."""
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-{task.task_id}-tester",
@@ -525,10 +524,6 @@ def invoke_tester(run: Run, task: Task, arn: str) -> InvokeAgent:
             "actor_id": "state_router",
             "requestor_sub": run.requestor_sub,
         },
-        target_pk=f"RUN#{run.run_id}",
-        target_sk=f"TASK#{task.task_id}",
-        advance_from=TaskState.pr_open.value,
-        advance_to=TaskState.pr_open.value,
     )
 
 

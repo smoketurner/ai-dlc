@@ -9,7 +9,7 @@
     </div>
     <div class="flex items-baseline gap-3">
       <span class="px-2 py-0.5 rounded text-xs bg-slate-200" x-text="lastType || '{{ summary.status }}'"></span>
-      {% if summary.status in terminal_types %}
+      {% if summary.current_state in terminal_states %}
       <button type="button" @click="deleteRun()"
               class="text-rose-600 hover:text-rose-800 text-xs underline">delete</button>
       {% endif %}

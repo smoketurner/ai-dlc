@@ -32,26 +32,28 @@ class Noop:
 
 @dataclass(frozen=True, slots=True)
 class InvokeAgent:
-    """Conditionally advance state to ``advance_to``, then fire the agent.
+    """Optionally advance state, then fire the agent.
 
-    The advance is a DDB ``UpdateItem`` with a ``ConditionExpression``
-    on the previous state — only one router instance wins the race; the
-    loser sees the new state on the next poll and no-ops. Agent invoke
-    is fire-and-forget (2s read timeout). The agent emits its
-    completion event when done.
+    When ``advance_from`` / ``advance_to`` are set, the invoker does a
+    DDB ``UpdateItem`` with a ``ConditionExpression`` on the previous
+    state — only one router instance wins the race; the loser sees the
+    new state on the next poll and no-ops. Agent invoke is
+    fire-and-forget (2s read timeout); the agent emits its completion
+    event when done.
 
-    ``target_pk`` / ``target_sk`` identify whether we're advancing the
-    run's STATE row or one of its TASK rows; ``advance_from`` is the
-    expected current value for the conditional update.
+    When all four advance fields are ``None`` the invoker fires
+    unconditionally. Used for advisors gated by an outer
+    :class:`GuardedAdvance` — the gate is the race protection, so each
+    individual advisor invoke doesn't need its own.
     """
 
     runtime_arn: str
     runtime_session_id: str
     payload: dict[str, Any]
-    target_pk: str
-    target_sk: str
-    advance_from: str
-    advance_to: str
+    target_pk: str | None = None
+    target_sk: str | None = None
+    advance_from: str | None = None
+    advance_to: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,12 +153,39 @@ class CompoundAction:
     """Run several actions in sequence.
 
     Used when a single state transition has multiple side effects —
-    e.g., dispatch advisors (reviewer + tester) is two ``InvokeAgent``
-    actions plus one ``AdvanceState``. ``CompoundAction`` may itself
-    appear in the tuple — :func:`~.handler.execute` flattens recursively.
+    e.g., seed task rows then advance the run state.
+    ``CompoundAction`` may itself appear in the tuple —
+    :func:`~.handler.execute` flattens recursively.
+
+    Sub-actions execute independently: if one's conditional advance
+    fails, subsequent ones still run. For "gate, then run on success"
+    semantics use :class:`GuardedAdvance` instead.
     """
 
     actions: tuple[Action, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GuardedAdvance:
+    """Atomically advance state; if it succeeds, run ``on_success``.
+
+    The advance is the race guard: when multiple routers process the
+    same beacon (visibility timeout exceeded), only one of them passes
+    the conditional update. The winner runs ``on_success``; losers
+    no-op via :func:`~.dispatch.decide` on their next read.
+
+    Used by ``dispatch_advisors`` so the reviewer + tester invokes fire
+    exactly once per beacon, even under concurrent delivery. The
+    advisors themselves don't change task state, so without this gate
+    a no-op conditional update (``advance_from == advance_to``) would
+    let every concurrent router fire each advisor.
+    """
+
+    target_pk: str
+    target_sk: str
+    advance_from: str
+    advance_to: str
+    on_success: tuple[Action, ...] = ()
 
 
 type Action = (
@@ -167,5 +196,6 @@ type Action = (
     | WriteSyntheticSpec
     | SeedTasks
     | AdvanceState
+    | GuardedAdvance
     | CompoundAction
 )

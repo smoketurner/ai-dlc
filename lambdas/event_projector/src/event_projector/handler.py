@@ -366,6 +366,19 @@ def apply_run_state_transition(
     )
 
 
+ITERATION_ACCUMULATOR_STATES = frozenset(
+    {TaskState.iterating, TaskState.implementer_running},
+)
+"""States in which a fresh ``TASK.ITERATION_REQUESTED`` is queued, not advanced.
+
+A user can post a second ``/aidlc fix X`` while the implementer is still
+mid-flight on the first. There's no state transition for those moments
+(no ``iterating → iterating``), so the projector accumulates the new
+feedback onto the task row in place and lets the in-flight iteration
+finish; whichever iteration flushes ``pending_feedback`` consumes it.
+"""
+
+
 def apply_task_state_transition(
     *,
     run_id: str,
@@ -378,6 +391,11 @@ def apply_task_state_transition(
     task's ``delivery_ids`` set and the feedback item to
     ``pending_feedback``. The state advance + accumulator update happen
     in one ``UpdateItem`` so they're atomic.
+
+    When the event arrives mid-iteration (current state is
+    :data:`ITERATION_ACCUMULATOR_STATES`), there is no state transition
+    but the new feedback still has to land — :func:`accumulate_iteration_in_place`
+    writes the accumulators with a state-guard but no advance.
     """
     payload = envelope.get("payload") or {}
     task_id = payload.get("task_id")
@@ -396,6 +414,15 @@ def apply_task_state_transition(
         current_state=current,
     )
     if next_state is None:
+        if event_type == "TASK.ITERATION_REQUESTED" and current in ITERATION_ACCUMULATOR_STATES:
+            accumulate_iteration_in_place(
+                run_id=run_id,
+                task_id=task_id,
+                current_state=current,
+                event_id=envelope.get("event_id", ""),
+                timestamp=envelope.get("timestamp", ""),
+                payload=payload,
+            )
         return
     advance_task_state(
         run_id=run_id,
@@ -519,6 +546,7 @@ def advance_task_state(
         "last_event_at = :ts",
     ]
     add_parts: list[str] = []
+    remove_parts: list[str] = []
     values: dict[str, Any] = {
         ":from": {"S": from_state.value},
         ":to": {"S": to_state.value},
@@ -526,16 +554,124 @@ def advance_task_state(
         ":ts": {"S": timestamp},
     }
     names = {"#s": "status"}
-    if event_type == "TASK.ITERATION_REQUESTED":
-        accumulate_iteration_data(payload=payload, set_parts=set_parts, values=values)
-        delivery_id = payload.get("delivery_id")
-        if isinstance(delivery_id, str) and delivery_id:
-            add_parts.append("delivery_ids :did")
-            values[":did"] = {"SS": [delivery_id]}
+    apply_iteration_request_clauses(
+        event_type=event_type,
+        payload=payload,
+        set_parts=set_parts,
+        add_parts=add_parts,
+        values=values,
+    )
+    apply_task_ready_clauses(
+        event_type=event_type,
+        from_state=from_state,
+        set_parts=set_parts,
+        remove_parts=remove_parts,
+        values=values,
+    )
     pr_url = payload.get("pr_url")
     if isinstance(pr_url, str) and pr_url:
         set_parts.append("pr_url = :pr_url")
         values[":pr_url"] = {"S": pr_url}
+    expression = "SET " + ", ".join(set_parts)
+    if add_parts:
+        expression += " ADD " + ", ".join(add_parts)
+    if remove_parts:
+        expression += " REMOVE " + ", ".join(remove_parts)
+    try:
+        ddb().update_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
+            UpdateExpression=expression,
+            ConditionExpression="#s = :from",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(
+                "task state already advanced (idempotent no-op)",
+                extra={"run_id": run_id, "task_id": task_id, "to": to_state.value},
+            )
+            return
+        raise
+
+
+def apply_iteration_request_clauses(
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    set_parts: list[str],
+    add_parts: list[str],
+    values: dict[str, Any],
+) -> None:
+    """Append feedback + delivery_id clauses for ``TASK.ITERATION_REQUESTED``.
+
+    No-op for any other event type. Mutates the caller's expression
+    builders in place.
+    """
+    if event_type != "TASK.ITERATION_REQUESTED":
+        return
+    accumulate_iteration_data(payload=payload, set_parts=set_parts, values=values)
+    delivery_id = payload.get("delivery_id")
+    if isinstance(delivery_id, str) and delivery_id:
+        add_parts.append("delivery_ids :did")
+        values[":did"] = {"SS": [delivery_id]}
+
+
+def apply_task_ready_clauses(
+    *,
+    event_type: str,
+    from_state: TaskState,
+    set_parts: list[str],
+    remove_parts: list[str],
+    values: dict[str, Any],
+) -> None:
+    """Flush the iteration queue when ``TASK.READY`` arrives from ``iterating``.
+
+    Iteration N's fix commit just landed; clear ``pending_feedback`` and
+    ``delivery_ids`` so iteration N+1 starts clean instead of
+    re-processing items the implementer already addressed.
+    ``delivery_ids`` is ``REMOVE``'d because DDB doesn't allow empty
+    string sets.
+    """
+    if event_type != "TASK.READY" or from_state != TaskState.iterating:
+        return
+    set_parts.append("pending_feedback = :empty_list")
+    values[":empty_list"] = {"L": []}
+    remove_parts.append("delivery_ids")
+
+
+def accumulate_iteration_in_place(
+    *,
+    run_id: str,
+    task_id: str,
+    current_state: TaskState,
+    event_id: str,
+    timestamp: str,
+    payload: dict[str, Any],
+) -> None:
+    """Append iteration feedback + delivery_id without advancing task state.
+
+    Called when ``TASK.ITERATION_REQUESTED`` arrives while the task is
+    in ``iterating`` / ``implementer_running``. The conditional update
+    still guards on the current state so we don't clobber a task that
+    just transitioned (e.g., to ``pr_open`` from a concurrent
+    ``TASK.READY``). On a lost race, the feedback is dropped — the next
+    iteration request will queue properly once state stabilises.
+    """
+    set_parts = ["last_event_id = :eid", "last_event_at = :ts"]
+    add_parts: list[str] = []
+    values: dict[str, Any] = {
+        ":from": {"S": current_state.value},
+        ":eid": {"S": event_id},
+        ":ts": {"S": timestamp},
+    }
+    names = {"#s": "status"}
+    accumulate_iteration_data(payload=payload, set_parts=set_parts, values=values)
+    delivery_id = payload.get("delivery_id")
+    if isinstance(delivery_id, str) and delivery_id:
+        add_parts.append("delivery_ids :did")
+        values[":did"] = {"SS": [delivery_id]}
     expression = "SET " + ", ".join(set_parts)
     if add_parts:
         expression += " ADD " + ", ".join(add_parts)
@@ -551,8 +687,8 @@ def advance_task_state(
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
             logger.info(
-                "task state already advanced (idempotent no-op)",
-                extra={"run_id": run_id, "task_id": task_id, "to": to_state.value},
+                "task moved while accumulating iteration feedback",
+                extra={"run_id": run_id, "task_id": task_id, "current": current_state.value},
             )
             return
         raise

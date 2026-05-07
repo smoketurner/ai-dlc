@@ -1,14 +1,15 @@
 """AgentCore Runtime entrypoint for the Critic.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. Step Functions
-calls the runtime, which invokes the entrypoint defined here. The
-entrypoint:
+Serves ``POST /invocations`` and ``GET /ping`` on :8080. The state-router
+Lambda invokes this runtime fire-and-forget when a run reaches
+``critic_running``. The entrypoint:
 
   1. Validates the input as :class:`CriticInput`.
   2. Asks the Strands agent for a :class:`Critique`.
   3. Renders the critique as Markdown and uploads it to S3 — deterministic
      even if the model forgets to call a write tool.
-  4. Returns a :class:`CriticResult` for the CRITIQUE.READY event payload.
+  4. Emits ``CRITIQUE.READY`` so the projector advances the run, then
+     returns the result body.
 """
 
 from __future__ import annotations

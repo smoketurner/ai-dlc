@@ -17,6 +17,7 @@ from state_router.actions import (
     AdvanceState,
     CompoundAction,
     EmitEvent,
+    GuardedAdvance,
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
@@ -299,15 +300,17 @@ class TestTaskDispatch:
         run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")
         task = make_task(TaskState.pr_open, pr_url="https://github.com/o/r/pull/1")
         action = decide_task(run, task)
-        assert isinstance(action, CompoundAction)
-        invokes = [a for a in action.actions if isinstance(a, InvokeAgent)]
+        # The advisors are gated behind a single GuardedAdvance flipping
+        # pr_open → pending_approval; only the winning router fires them.
+        assert isinstance(action, GuardedAdvance)
+        assert action.advance_from == TaskState.pr_open.value
+        assert action.advance_to == TaskState.pending_approval.value
+        invokes = [a for a in action.on_success if isinstance(a, InvokeAgent)]
         runtimes = [a.runtime_arn for a in invokes]
         assert any("reviewer" in arn for arn in runtimes)
         assert any("tester" in arn for arn in runtimes)
-        assert any(
-            isinstance(a, AdvanceState) and a.advance_to == TaskState.pending_approval.value
-            for a in action.actions
-        )
+        # Each gated invoke fires unconditionally — the gate is the race guard.
+        assert all(a.advance_from is None and a.advance_to is None for a in invokes)
 
     def test_iterating_dispatches_implementer_with_feedback(self) -> None:
         run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")

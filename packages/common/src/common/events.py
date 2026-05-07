@@ -38,7 +38,6 @@ from common.validators import NoneSafeList
 EventType = Literal[
     "REQUEST.RECEIVED",
     "ISSUE.TRIAGED",
-    "ISSUE.ASK_POSTED",
     "SPEC.READY",
     "SPEC.APPROVED",
     "SPEC.REJECTED",
@@ -46,10 +45,7 @@ EventType = Literal[
     "TASK.READY",
     "TASK.APPROVED",
     "TASK.REJECTED",
-    "TASK.ITERATION_STARTED",
-    "TASK.ITERATION_COMMITTED",
     "TASK.ITERATION_REQUESTED",
-    "TASK.MAX_ITERATIONS_REACHED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
     "RUN.COMPLETED",
@@ -155,27 +151,6 @@ class IssueTriaged(Payload):
     session_id: str
 
 
-class IssueAskPosted(Payload):
-    """The Triage agent posted a clarifying question on an issue.
-
-    Emitted alongside ISSUE.TRIAGED when ``action == "ask"``. Provides
-    the comment URL (for the dashboard) and the count of questions
-    (for metrics on triage thrash).
-    """
-
-    project_slug: str
-    target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
-    issue_url: Annotated[
-        str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
-    ]
-    issue_number: Annotated[int, Field(ge=1)]
-    comment_url: Annotated[
-        str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
-    ]
-    question_count: Annotated[int, Field(ge=1, le=8)]
-    session_id: str
-
-
 class SpecReady(UsagePayload):
     """The architect agent has produced a spec bundle and is awaiting approval.
 
@@ -269,59 +244,6 @@ class TaskRejected(Payload):
     pr_url: str
     reviewer: str
     reason: str
-
-
-IterationTriggerKind = Literal[
-    "ci_failure",
-    "review_changes_requested",
-    "review_comment_mention",
-    "issue_comment_mention",
-]
-
-
-class TaskIterationStarted(Payload):
-    """The state-router dispatched the implementer for a new iteration.
-
-    Observability sugar — the dashboard timeline renders this when the
-    router transitions a task to ``implementer_running`` from
-    ``iterating``. The state machine doesn't depend on this event.
-    """
-
-    project_slug: str
-    spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str
-    iteration_count: Annotated[int, Field(ge=1, le=16)]
-    trigger_kinds: Annotated[NoneSafeList[IterationTriggerKind], Field(min_length=1, max_length=8)]
-
-
-class TaskIterationCommitted(UsagePayload):
-    """The implementer pushed a fix commit during iteration.
-
-    The reactor subscribes to this event to dispatch Reviewer + Tester
-    against the new commit. ``inline_replies_count`` is the number of
-    PR-review-thread replies the implementer posted in this iteration.
-    """
-
-    project_slug: str
-    spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str
-    iteration_count: Annotated[int, Field(ge=1, le=16)]
-    head_sha: Annotated[str, Field(min_length=7, max_length=40)]
-    inline_replies_count: Annotated[int, Field(ge=0)] = 0
-    diff_summary: Annotated[str, Field(max_length=4096)]
-    session_id: str
-
-
-class TaskMaxIterationsReached(Payload):
-    """Iteration budget exhausted; SFN gate continues waiting for human action."""
-
-    project_slug: str
-    spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str
-    iteration_count: Annotated[int, Field(ge=1, le=16)]
 
 
 class TaskIterationRequested(Payload):
@@ -433,7 +355,6 @@ class RunFailed(Payload):
 type AnyPayload = (
     RequestReceived
     | IssueTriaged
-    | IssueAskPosted
     | SpecReady
     | SpecApproved
     | SpecRejected
@@ -441,10 +362,7 @@ type AnyPayload = (
     | TaskReady
     | TaskApproved
     | TaskRejected
-    | TaskIterationStarted
-    | TaskIterationCommitted
     | TaskIterationRequested
-    | TaskMaxIterationsReached
     | ReviewReady
     | TestReportReady
     | RunCompleted

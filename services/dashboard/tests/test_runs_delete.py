@@ -23,6 +23,10 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("AIDLC_BUS_NAME", "test-bus")
     monkeypatch.setenv("AIDLC_RUNS_TABLE", RUNS)
     monkeypatch.setenv("AIDLC_IDEMPOTENCY_TABLE", "test-idempotency")
+    monkeypatch.setenv(
+        "AIDLC_BEACON_QUEUE_URL",
+        "https://sqs.us-east-1.amazonaws.com/000000000000/test-beacon",
+    )
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
     monkeypatch.setenv(
         "AIDLC_GITHUB_APP_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:app"
@@ -52,13 +56,26 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     ddb.cache_clear()
 
 
-def seed_run(run_id: str, *, status: str, event_count: int = 0) -> None:
-    """Seed a STATE row plus ``event_count`` synthetic event rows for ``run_id``."""
+def seed_run(
+    run_id: str,
+    *,
+    current_state: str,
+    status: str = "STATUS",
+    event_count: int = 0,
+) -> None:
+    """Seed a STATE row plus ``event_count`` synthetic event rows for ``run_id``.
+
+    ``current_state`` is the state-machine cursor that gates terminal
+    operations like delete. ``status`` (last event type) is preserved
+    only as a display field; the dashboard no longer uses it for
+    terminal detection.
+    """
     ddb().put_item(
         TableName=RUNS,
         Item={
             "pk": {"S": f"RUN#{run_id}"},
             "sk": {"S": "STATE"},
+            "current_state": {"S": current_state},
             "status": {"S": status},
             "project_slug": {"S": "acme-widgets"},
         },
@@ -91,7 +108,7 @@ def test_delete_run_returns_404_when_unknown() -> None:
 
 
 def test_delete_run_returns_409_when_not_terminal() -> None:
-    seed_run("r-active", status="REQUEST.RECEIVED", event_count=2)
+    seed_run("r-active", current_state="received", event_count=2)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-active")
     assert resp.status_code == 409
@@ -99,25 +116,34 @@ def test_delete_run_returns_409_when_not_terminal() -> None:
     assert count_partition(RUNS, "r-active") == 3
 
 
-def test_delete_run_cascades_when_completed() -> None:
-    seed_run("r-done", status="RUN.COMPLETED", event_count=30)
+def test_delete_run_cascades_when_done() -> None:
+    seed_run("r-done", current_state="done", event_count=30)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-done")
     assert resp.status_code == 204
     assert count_partition(RUNS, "r-done") == 0
 
 
-def test_delete_run_handles_failed_terminal_state() -> None:
-    seed_run("r-failed", status="RUN.FAILED", event_count=1)
+def test_delete_run_handles_failed_state() -> None:
+    seed_run("r-failed", current_state="failed", event_count=1)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-failed")
     assert resp.status_code == 204
     assert count_partition(RUNS, "r-failed") == 0
 
 
+def test_delete_run_handles_cancelled_state() -> None:
+    """Cancelled runs are terminal — used to be unreachable via the dashboard."""
+    seed_run("r-cancelled", current_state="cancelled", event_count=1)
+    with TestClient(app) as client:
+        resp = client.delete("/v1/runs/r-cancelled")
+    assert resp.status_code == 204
+    assert count_partition(RUNS, "r-cancelled") == 0
+
+
 def test_delete_run_does_not_touch_other_runs() -> None:
-    seed_run("r-keep", status="RUN.COMPLETED", event_count=2)
-    seed_run("r-drop", status="RUN.COMPLETED", event_count=2)
+    seed_run("r-keep", current_state="done", event_count=2)
+    seed_run("r-drop", current_state="done", event_count=2)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-drop")
     assert resp.status_code == 204

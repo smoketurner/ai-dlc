@@ -305,6 +305,132 @@ def test_task_iteration_requested_appends_feedback_and_delivery_id() -> None:
     assert feedback_entry["workflow_name"]["S"] == "ci"
 
 
+def test_task_ready_from_iterating_flushes_pending_feedback() -> None:
+    """Iteration N's TASK.READY clears pending_feedback + delivery_ids.
+
+    Otherwise iteration N+1 dispatches the implementer with stale items
+    from iterations 1..N still on the queue.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "iterating"},
+            "delivery_ids": {"SS": ["webhook-1"]},
+            "pending_feedback": {
+                "L": [{"M": {"kind": {"S": "ci_failure"}, "workflow_name": {"S": "ci"}}}],
+            },
+        },
+    )
+    task_ready = envelope(
+        type="TASK.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "diff_summary": "fix",
+            "session_id": "run-1-T-001",
+        },
+    )
+    handler(eb_event(task_ready), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["status"]["S"] == "pr_open"
+    assert task["pending_feedback"]["L"] == []
+    assert "delivery_ids" not in task
+
+
+def test_task_iteration_requested_in_iterating_accumulates_without_advance() -> None:
+    """Second /aidlc fix while implementer is mid-iteration queues feedback.
+
+    Without this, the projector early-returns (no transition for
+    iterating → iterating) and the second request is silently dropped.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "iterating"},
+            "delivery_ids": {"SS": ["webhook-1"]},
+            "pending_feedback": {
+                "L": [{"M": {"kind": {"S": "ci_failure"}, "workflow_name": {"S": "ci"}}}],
+            },
+        },
+    )
+    second_iteration = envelope(
+        type="TASK.ITERATION_REQUESTED",
+        event_id="01J0000000000000000000000C",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "delivery_id": "webhook-2",
+            "feedback": {
+                "kind": "issue_comment_mention",
+                "comment_id": 7,
+                "body": "also fix the lint",
+                "commenter": "alice",
+            },
+        },
+    )
+    handler(eb_event(second_iteration), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    # State unchanged — implementer is still working on the first request.
+    assert task["status"]["S"] == "iterating"
+    # New delivery + feedback queued alongside the first.
+    assert sorted(task["delivery_ids"]["SS"]) == ["webhook-1", "webhook-2"]
+    assert len(task["pending_feedback"]["L"]) == 2
+    second = task["pending_feedback"]["L"][1]["M"]
+    assert second["kind"]["S"] == "issue_comment_mention"
+    assert second["body"]["S"] == "also fix the lint"
+
+
+def test_task_iteration_requested_in_implementer_running_accumulates() -> None:
+    """Iteration request mid-implementer queues feedback, no state change."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+        },
+    )
+    iteration = envelope(
+        type="TASK.ITERATION_REQUESTED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "delivery_id": "webhook-3",
+            "feedback": {
+                "kind": "ci_failure",
+                "workflow_name": "ci",
+                "conclusion": "failure",
+                "head_sha": "abcdef0",
+                "html_url": "https://github.com/o/r/actions/runs/2",
+            },
+        },
+    )
+    handler(eb_event(iteration), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["status"]["S"] == "implementer_running"
+    assert task["delivery_ids"]["SS"] == ["webhook-3"]
+    assert len(task["pending_feedback"]["L"]) == 1
+
+
 def test_request_received_with_source_issue_url_indexes_state_row() -> None:
     received = envelope(
         type="REQUEST.RECEIVED",

@@ -10,7 +10,7 @@ from fastapi import APIRouter
 from sse_starlette import EventSourceResponse
 
 from dashboard.auth import CurrentUser
-from dashboard.repos import get_run_events, is_terminal_event
+from dashboard.repos import get_run_events, is_run_terminal
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -30,11 +30,15 @@ async def stream(run_id: str, _user: CurrentUser) -> EventSourceResponse:
             events = get_run_events(run_id, since_sk=last_sk)
             for ev in events:
                 yield {"event": ev.type, "data": ev.model_dump_json()}
-                if is_terminal_event(ev):
-                    yield {"event": "close", "data": ""}
-                    return
             if events:
                 last_sk = max(events, key=lambda e: e.timestamp).timestamp
+                # The state-machine cursor is the source of truth for
+                # "done" — covers cancelled (RUN.CANCEL_REQUESTED →
+                # cancelled) and rejection-induced failures (SPEC.REJECTED
+                # → failed) that the event types alone don't disambiguate.
+                if is_run_terminal(run_id):
+                    yield {"event": "close", "data": ""}
+                    return
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             elapsed += POLL_INTERVAL_SECONDS
         yield {"event": "close", "data": "timeout"}

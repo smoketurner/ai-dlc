@@ -1,18 +1,19 @@
 """AgentCore Runtime entrypoint for the Triage agent.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. The webhook
-handler (or the existing triage_dispatcher Lambda once it's rewired to
-call this runtime) sends a ``TriageInput`` body. The entrypoint:
+Serves ``POST /invocations`` and ``GET /ping`` on :8080. The state-router
+Lambda invokes this runtime fire-and-forget when a run reaches
+``triaging`` (an issue-driven trigger arrived via the GitHub webhook).
+The entrypoint:
 
   1. Validates the input as :class:`TriageInput`.
   2. Calls :func:`triage_issue` to get a :class:`TriageDecision`.
   3. Uploads the decision as JSON to
      ``s3://{artifacts_bucket}/runs/{run_id}/triage.json`` so the
-     dashboard and downstream Lambdas can read the full structured
-     output.
-  4. Returns a :class:`TriageResult` carrying the flattened fields the
-     Step Functions ``Choice`` state branches on (``action``,
-     ``workflow_kind``).
+     dashboard can read the full structured output.
+  4. Emits ``ISSUE.TRIAGED`` so the projector advances the run to
+     ``triage_decided`` (carrying ``action`` and ``workflow_kind`` for
+     the router's ``handle_triage_decided`` to branch on), then returns
+     the result body.
 """
 
 from __future__ import annotations

@@ -5,10 +5,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from common.state import TERMINAL_RUN_STATES, RunState
 from dashboard.deps import ddb, settings
 from dashboard.models import RunEvent, RunSummary
 
-TERMINAL_TYPES = frozenset({"RUN.COMPLETED", "RUN.FAILED"})
+TERMINAL_STATES = frozenset(s.value for s in TERMINAL_RUN_STATES)
+"""Stringified ``RunState`` values that mean a run is finished.
+
+Templates and route handlers compare ``run.current_state`` against this
+set rather than the ``status`` attribute (which holds the most-recent
+event type, not the state-machine cursor). A cancelled run, for
+example, has ``status="RUN.CANCEL_REQUESTED"`` and
+``current_state="cancelled"`` — only the latter reliably says "done".
+"""
 
 
 def list_recent_runs(*, limit: int = 50) -> list[RunSummary]:
@@ -49,6 +58,7 @@ def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
         run_id=item["pk"]["S"].removeprefix("RUN#"),
         project_slug=item.get("project_slug", {}).get("S", ""),
         status=item.get("status", {}).get("S", "UNKNOWN"),
+        current_state=item.get("current_state", {}).get("S") or None,
         spec_slug=item.get("spec_slug", {}).get("S") or None,
         tasks_completed=int(item.get("tasks_completed", {}).get("N", "0")),
         tasks_total=int(item.get("tasks_total", {}).get("N", "0")),
@@ -70,6 +80,36 @@ def event_from_item(item: dict[str, Any]) -> RunEvent:
     )
 
 
-def is_terminal_event(ev: RunEvent) -> bool:
-    """Whether ``ev.type`` is a terminal run state."""
-    return ev.type in TERMINAL_TYPES
+def get_run_state(run_id: str) -> RunState | None:
+    """Read ``current_state`` off the run's STATE row, or ``None``.
+
+    The state-machine cursor is the source of truth for "is this run
+    done?" — separate from the ``status`` attribute (last event type).
+    Callers use it to decide SSE close, delete authorization, terminal
+    badges in the UI.
+    """
+    cfg = settings()
+    item = (
+        ddb()
+        .get_item(
+            TableName=cfg.runs_table,
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            ProjectionExpression="current_state",
+        )
+        .get("Item")
+    )
+    if not item:
+        return None
+    raw = item.get("current_state", {}).get("S")
+    if not raw:
+        return None
+    try:
+        return RunState(raw)
+    except ValueError:
+        return None
+
+
+def is_run_terminal(run_id: str) -> bool:
+    """``True`` when the run's state-machine cursor is in a terminal state."""
+    state = get_run_state(run_id)
+    return state in TERMINAL_RUN_STATES if state else False

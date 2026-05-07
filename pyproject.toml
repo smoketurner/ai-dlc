@@ -67,7 +67,7 @@ max-positional-args = 5
 ban-relative-imports = "all"
 
 [tool.ruff.lint.isort]
-known-first-party = ["common", "architect", "critic", "implementer", "reviewer", "tester", "proposer", "triage", "dashboard", "pr_telemetry", "comment_classifier", "eval_aggregator", "state_router", "telemetry", "few_shot_miner"]
+known-first-party = ["common", "architect", "critic", "implementer", "reviewer", "tester", "proposer", "triage", "dashboard", "state_router", "telemetry", "few_shot_miner"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "D", "PLR2004"]        # asserts, missing docstrings, magic-number comparisons in tests

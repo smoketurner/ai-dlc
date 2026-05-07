@@ -36,7 +36,7 @@ BEDROCK_PRICING: dict[str, ModelPrice] = {
     # Claude Sonnet 4.x — Implementer, Reviewer.
     "us.anthropic.claude-sonnet-4-6": ModelPrice(3.0, 15.0),
     "anthropic.claude-sonnet-4-6": ModelPrice(3.0, 15.0),
-    # Claude Haiku 4.x — Tester, Triage, comment_classifier, telemetry.
+    # Claude Haiku 4.x — Tester, Triage, telemetry.
     "us.anthropic.claude-haiku-4-5-20251001-v1:0": ModelPrice(1.0, 5.0),
     "anthropic.claude-haiku-4-5-20251001-v1:0": ModelPrice(1.0, 5.0),
 }

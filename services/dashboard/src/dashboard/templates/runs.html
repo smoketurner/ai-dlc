@@ -36,7 +36,7 @@
           {% if run.total_cost_usd %}${{ "%.3f"|format(run.total_cost_usd) }}{% else %}—{% endif %}
         </td>
         <td class="px-3 py-2 text-right">
-          {% if run.status in terminal_types %}
+          {% if run.current_state in terminal_states %}
           <button type="button" @click="deleteRun('{{ run.run_id }}')"
                   class="text-rose-600 hover:text-rose-800 text-xs underline">delete</button>
           {% endif %}
