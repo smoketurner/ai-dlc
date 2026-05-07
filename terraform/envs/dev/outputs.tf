@@ -183,16 +183,6 @@ output "few_shot_miner_function_arn" {
   value       = module.improvement.few_shot_miner_function_arn
 }
 
-output "eval_runner_state_machine_arn" {
-  description = "Eval-runner Step Functions state machine ARN."
-  value       = module.improvement.eval_state_machine_arn
-}
-
-output "eval_drift_alarm_arn" {
-  description = "CloudWatch alarm ARN watching the eval pass-rate baseline."
-  value       = module.improvement.eval_drift_alarm_arn
-}
-
 # ci_cd ------------------------------------------------------------------------
 
 output "github_actions_terraform_role_arn" {
@@ -203,9 +193,4 @@ output "github_actions_terraform_role_arn" {
 output "github_actions_image_publisher_role_arn" {
   description = "Role assumed by GitHub Actions to push images to ECR."
   value       = module.ci_cd.image_publisher_role_arn
-}
-
-output "github_actions_evals_role_arn" {
-  description = "Role assumed by the evals workflow to sync cases.yaml + start the eval state machine."
-  value       = module.ci_cd.evals_role_arn
 }

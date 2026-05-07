@@ -48,8 +48,8 @@ def variant_actor_id(agent_name: str, variant: Variant) -> str:
     """Build the actor_id telemetry tag for ``(agent_name, variant)``.
 
     Used as the ``actor_id`` field on event envelopes the agent emits so
-    downstream consumers (event_projector, telemetry, eval_runner) can
-    split metrics by variant.
+    downstream consumers (event_projector, telemetry) can split metrics
+    by variant.
     """
     return f"{agent_name}-{variant}"
 

@@ -267,15 +267,10 @@ module "improvement" {
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
 
-  alerts_topic_arn = module.observability.alerts_topic_arn
-
   proposer_runtime_arn  = lookup(module.agents.runtime_arns, "proposer", "")
   proposer_enabled      = contains(keys(local.agent_image_tags), "proposer")
   proposer_target_repo  = "${var.github_owner}/${var.github_repo}"
   proposer_project_slug = var.project
 
   common_layer_arn = module.common_layer.lambda_layer_arn
-
-  beacon_queue_url = module.messaging.state_router_queue_url
-  beacon_queue_arn = module.messaging.state_router_queue_arn
 }

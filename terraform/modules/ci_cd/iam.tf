@@ -2,7 +2,6 @@
 # Roles assumed by GitHub Actions:
 #   * terraform        — plan on PR, apply on push to main.
 #   * image_publisher  — push images to ECR after build.
-#   * evals            — sync cases.yaml + start the eval state machine.
 ################################################################################
 
 resource "aws_iam_role" "terraform" {
@@ -50,19 +49,3 @@ resource "aws_iam_role_policy" "image_publisher" {
   policy = data.aws_iam_policy_document.image_publisher_inline.json
 }
 
-resource "aws_iam_role" "evals" {
-  name               = "${var.project}-github-actions-evals"
-  assume_role_policy = data.aws_iam_policy_document.evals_assume.json
-  description        = "Assumed by GitHub Actions to sync eval cases and start the eval state machine."
-
-  tags = merge(var.tags, {
-    Name      = "${var.project}-github-actions-evals"
-    Component = "ci_cd"
-  })
-}
-
-resource "aws_iam_role_policy" "evals" {
-  name   = "evals-inline"
-  role   = aws_iam_role.evals.id
-  policy = data.aws_iam_policy_document.evals_inline.json
-}

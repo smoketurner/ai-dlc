@@ -8,11 +8,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import boto3
-import few_shot_miner.handler as miner
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from few_shot_miner.handler import ddb, handler, s3
 from moto import mock_aws
+
+import few_shot_miner.handler as miner
+from few_shot_miner.handler import ddb, handler, s3
 
 ARTIFACTS = "test-artifacts"
 RUNS = "test-runs"

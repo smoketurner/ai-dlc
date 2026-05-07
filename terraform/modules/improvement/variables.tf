@@ -61,16 +61,6 @@ variable "common_layer_arn" {
   type        = string
 }
 
-variable "beacon_queue_url" {
-  description = "URL of the state-router SQS beacon queue. eval_runner enqueues a beacon when it starts a run."
-  type        = string
-}
-
-variable "beacon_queue_arn" {
-  description = "ARN of the state-router SQS beacon queue."
-  type        = string
-}
-
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

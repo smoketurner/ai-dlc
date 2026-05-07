@@ -26,12 +26,6 @@ variable "image_publisher_branches" {
   default     = ["main"]
 }
 
-variable "evals_role_branches" {
-  description = "Branches that may assume the evals role for `workflow_dispatch` runs."
-  type        = list(string)
-  default     = ["main"]
-}
-
 variable "tags" {
   description = "Additional tags applied to every taggable resource."
   type        = map(string)

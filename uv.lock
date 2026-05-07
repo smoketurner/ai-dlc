@@ -11,10 +11,8 @@ members = [
     "common",
     "critic",
     "dashboard",
-    "drift-detector",
     "entry-adapter",
     "eval-aggregator",
-    "eval-runner",
     "event-projector",
     "few-shot-miner",
     "implementer",
@@ -773,25 +771,6 @@ wheels = [
 ]
 
 [[package]]
-name = "drift-detector"
-version = "0.0.0"
-source = { editable = "lambdas/drift_detector" }
-dependencies = [
-    { name = "aws-lambda-powertools" },
-    { name = "boto3" },
-    { name = "botocore" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aws-lambda-powertools", specifier = "==3.29.0" },
-    { name = "boto3", specifier = "==1.43.2" },
-    { name = "botocore", specifier = "==1.43.2" },
-    { name = "pydantic", specifier = "==2.13.3" },
-]
-
-[[package]]
 name = "entry-adapter"
 version = "0.0.0"
 source = { editable = "lambdas/entry_adapter" }
@@ -833,29 +812,6 @@ requires-dist = [
     { name = "botocore", specifier = "==1.43.2" },
     { name = "common", editable = "packages/common" },
     { name = "pydantic", specifier = "==2.13.3" },
-]
-
-[[package]]
-name = "eval-runner"
-version = "0.0.0"
-source = { editable = "lambdas/eval_runner" }
-dependencies = [
-    { name = "aws-lambda-powertools" },
-    { name = "boto3" },
-    { name = "botocore" },
-    { name = "common" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aws-lambda-powertools", specifier = "==3.29.0" },
-    { name = "boto3", specifier = "==1.43.2" },
-    { name = "botocore", specifier = "==1.43.2" },
-    { name = "common", editable = "packages/common" },
-    { name = "pydantic", specifier = "==2.13.3" },
-    { name = "pyyaml", specifier = "==6.0.3" },
 ]
 
 [[package]]

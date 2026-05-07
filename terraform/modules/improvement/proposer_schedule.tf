@@ -1,16 +1,10 @@
 ################################################################################
-# Proposer schedule + regression trigger.
+# Proposer weekly schedule.
 #
-# Two trigger paths:
-#   * Weekly EventBridge schedule  — proposer runs every Monday 09:00 UTC.
-#   * Regression detected         — drift_detector's RegressionDetected metric
-#                                    fires the alarm; SNS routes to the
-#                                    proposer-trigger Lambda which invokes the
-#                                    Proposer with trigger_reason="regression".
-#
-# Both paths invoke the proposer's AgentCore Runtime via
-# `bedrock-agentcore:invokeAgentRuntime`. The runtime ARN is passed in by the
-# environment composition because the agents module owns it.
+# EventBridge schedule fires every Monday 09:00 UTC and invokes the Proposer's
+# AgentCore Runtime via `bedrock-agentcore:invokeAgentRuntime`. The runtime
+# ARN is passed in by the environment composition because the agents module
+# owns it.
 ################################################################################
 
 variable "proposer_runtime_arn" {
@@ -112,69 +106,3 @@ resource "aws_scheduler_schedule" "proposer_weekly" {
   }
 }
 
-# Lambda that fires the proposer when the drift_detector alarm goes off.
-# A small bridge — receives the SNS alarm message, invokes the proposer
-# runtime with trigger_reason="regression". Lives here (not in the
-# agents module) because the trigger is a proposer concern, not a fleet concern.
-
-module "proposer_trigger" {
-  count = var.proposer_enabled ? 1 : 0
-
-  source  = "terraform-aws-modules/lambda/aws"
-  version = "~> 8.0"
-
-  function_name = "${local.prefix}-proposer-trigger"
-  description   = "Bridges drift_detector alarms to the Proposer runtime."
-  handler       = "index.handler"
-  runtime       = "python3.13"
-  architectures = ["arm64"]
-  memory_size   = 256
-  timeout       = 30
-  publish       = true
-
-  source_path = [{
-    path = "${path.module}/lambda_src/proposer_trigger"
-  }]
-  build_in_docker = false
-
-  environment_variables = {
-    AIDLC_PROPOSER_RUNTIME_ARN = var.proposer_runtime_arn
-    AIDLC_PROJECT_SLUG         = var.proposer_project_slug
-    AIDLC_TARGET_REPO          = var.proposer_target_repo
-    AIDLC_LOOKBACK_DAYS        = tostring(var.proposer_lookback_days)
-  }
-
-  cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
-
-  attach_policy_statements = true
-  policy_statements = {
-    invoke_runtime = {
-      effect    = "Allow"
-      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
-      resources = [var.proposer_runtime_arn]
-    }
-  }
-
-  tags = merge(var.tags, {
-    Name      = "${local.prefix}-proposer-trigger"
-    Component = "improvement"
-  })
-}
-
-resource "aws_sns_topic_subscription" "proposer_trigger" {
-  count = var.proposer_enabled ? 1 : 0
-
-  topic_arn = var.alerts_topic_arn
-  protocol  = "lambda"
-  endpoint  = module.proposer_trigger[0].lambda_function_arn
-}
-
-resource "aws_lambda_permission" "sns_invoke_proposer_trigger" {
-  count = var.proposer_enabled ? 1 : 0
-
-  statement_id  = "AllowSNSInvokeProposerTrigger"
-  action        = "lambda:InvokeFunction"
-  function_name = module.proposer_trigger[0].lambda_function_name
-  principal     = "sns.amazonaws.com"
-  source_arn    = var.alerts_topic_arn
-}

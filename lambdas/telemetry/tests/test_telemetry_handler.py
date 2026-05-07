@@ -13,6 +13,7 @@ import boto3
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from moto import mock_aws
+
 from telemetry.handler import RejectionEnvelope, bedrock, build_record, ddb, handler, s3
 
 ARTIFACTS = "test-artifacts"
