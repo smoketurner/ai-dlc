@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import boto3
 from strands import tool
 
+from common.agentcore_browser import browse_url
 from common.memory_md import read_memory_md
 
 if TYPE_CHECKING:
@@ -82,3 +83,4 @@ def critique_s3_key(run_id: str) -> str:
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
 read_spec_doc_tool = tool(read_spec_doc)
+browse_url_tool = tool(browse_url)

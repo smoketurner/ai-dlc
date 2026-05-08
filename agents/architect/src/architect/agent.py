@@ -19,6 +19,7 @@ from strands.models import BedrockModel
 from architect.hooks import build_hooks
 from architect.spec import SpecBundle
 from architect.tools import (
+    browse_url_tool,
     list_repo_paths_tool,
     read_memory_md_tool,
     read_repo_file_tool,
@@ -58,6 +59,7 @@ def build_agent(run_id: str) -> Agent:
             write_spec_doc_tool,
             list_repo_paths_tool,
             read_repo_file_tool,
+            browse_url_tool,
         ],
         hooks=build_hooks(),
         retry_strategy=default_retry_strategy(bedrock_model_id),

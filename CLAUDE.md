@@ -89,5 +89,6 @@ Inherits the global `~/.claude/CLAUDE.md` standards (≤100 lines/function, comp
 
 - Any `rm -rf /`, `rm -rf $HOME`, `chmod -R 777`, `git push --force-with-lease origin main`.
 - Any `aws iam *Delete*`, `terraform apply` against `prod`, `kubectl delete`, `dropdb` / `DROP TABLE`.
-- Network egress outside the AgentCore Gateway.
 - Direct GitHub OAuth tokens or Bedrock model API keys in code.
+
+The implementer container has outbound network access (`Bash` / `WebFetch` / `WebSearch`). Container credentials are scoped (Bedrock + project S3 + GitHub App for the target repo) and the only path code reaches the repo is a human-reviewed PR — that's the load-bearing control, not egress filtering.

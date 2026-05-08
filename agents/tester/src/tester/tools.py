@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import boto3
 from strands import tool
 
+from common.agentcore_browser import browse_url
 from common.sandbox import run_pr_in_sandbox
 
 if TYPE_CHECKING:
@@ -103,3 +104,4 @@ def report_s3_key(*, run_id: str, task_id: str) -> str:
 read_memory_md_tool = tool(read_memory_md)
 read_spec_doc_tool = tool(read_spec_doc)
 run_pr_in_sandbox_tool = tool(run_pr_in_sandbox)
+browse_url_tool = tool(browse_url)

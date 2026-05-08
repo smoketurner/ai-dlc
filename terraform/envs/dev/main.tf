@@ -120,11 +120,13 @@ module "agents" {
     architect = {
       description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
       targets          = ["artifact_tool"]
+      features         = ["browser"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     critic = {
       description      = "Critic agent — adversarially reviews the spec (advisory)."
       targets          = ["artifact_tool"]
+      features         = ["browser"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     implementer = {
@@ -135,13 +137,13 @@ module "agents" {
     reviewer = {
       description      = "Reviewer agent — code-reviews each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
-      features         = ["code_interpreter"]
+      features         = ["browser", "code_interpreter"]
       bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     tester = {
       description      = "Tester agent — flags test gaps in each task PR (advisory)."
       targets          = ["artifact_tool", "repo_helper"]
-      features         = ["code_interpreter"]
+      features         = ["browser", "code_interpreter"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     proposer = {

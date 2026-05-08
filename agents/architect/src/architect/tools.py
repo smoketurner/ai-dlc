@@ -20,6 +20,7 @@ import boto3
 from strands import tool
 
 from architect.repo_grounding import list_repo_paths, read_repo_file
+from common.agentcore_browser import browse_url
 from common.memory_md import read_memory_md
 
 if TYPE_CHECKING:
@@ -70,3 +71,4 @@ read_memory_md_tool = tool(read_memory_md)
 write_spec_doc_tool = tool(write_spec_doc)
 list_repo_paths_tool = tool(list_repo_paths)
 read_repo_file_tool = tool(read_repo_file)
+browse_url_tool = tool(browse_url)
