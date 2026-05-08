@@ -299,6 +299,42 @@ def test_task_ready_advances_task_status_to_pr_open() -> None:
     assert task["status"]["S"] == "pr_open"
 
 
+def test_task_blocked_advances_task_status_to_blocked() -> None:
+    """TASK.BLOCKED moves a TASK row from implementer_running to blocked.
+
+    Regression: ``TASK.BLOCKED`` must be in ``TASK_LEVEL_EVENTS`` or the
+    projector routes it to the run-level transition path (where
+    ``apply_run_transition`` returns ``None``) and the task row stays
+    stuck in ``implementer_running``.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+        },
+    )
+    task_blocked = envelope(
+        type="TASK.BLOCKED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "blocked_reason": "agent produced no diff",
+            "session_id": "run-1-T-001",
+        },
+    )
+    handler(eb_event(task_blocked), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["status"]["S"] == "blocked"
+    assert task["pr_url"]["S"] == "https://github.com/o/r/pull/1"
+
+
 def test_task_iteration_requested_appends_feedback_and_delivery_id() -> None:
     """TASK.ITERATION_REQUESTED adds delivery_id + feedback alongside state advance."""
     ddb().put_item(

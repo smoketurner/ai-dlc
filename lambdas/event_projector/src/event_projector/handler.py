@@ -355,6 +355,7 @@ def accumulate_usage(
 TASK_LEVEL_EVENTS = frozenset(
     {
         "TASK.READY",
+        "TASK.BLOCKED",
         "TASK.APPROVED",
         "TASK.REJECTED",
         "TASK.ITERATION_REQUESTED",

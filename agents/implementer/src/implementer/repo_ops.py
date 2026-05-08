@@ -478,8 +478,17 @@ def checkout_task_branch(branch: str) -> None:
     the prior implementer run; we want HEAD to land on top of it (rather
     than recreating from main, which is what ``create_branch`` does for
     iteration_count == 0). Idempotent — ``-B`` recreates the local ref.
+
+    The explicit ``branch:refs/remotes/origin/branch`` refspec is
+    required because ``clone_repo`` shallow-clones with
+    ``--branch main``, which configures
+    ``remote.origin.fetch = +refs/heads/main:refs/remotes/origin/main``.
+    A bare ``git fetch origin <task-branch>`` updates ``FETCH_HEAD``
+    but doesn't populate ``refs/remotes/origin/<task-branch>``, so
+    ``checkout -B <branch> origin/<branch>`` would fail with
+    "is not a commit" without the explicit refspec.
     """
-    run_git("fetch", "origin", branch)
+    run_git("fetch", "origin", f"{branch}:refs/remotes/origin/{branch}")
     run_git("checkout", "-B", branch, f"origin/{branch}")
 
 

@@ -420,6 +420,15 @@ def test_parse_pr_number_rejects_garbage() -> None:
 
 
 def test_checkout_task_branch_runs_fetch_then_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fetch uses an explicit refspec into ``refs/remotes/origin/<branch>``.
+
+    Regression: ``clone_repo`` shallow-clones with ``--branch main``
+    which restricts the default fetch refspec to main. A bare
+    ``git fetch origin <task-branch>`` only updates ``FETCH_HEAD`` —
+    the subsequent ``checkout -B <branch> origin/<branch>`` then fails
+    with "is not a commit" because the remote-tracking ref was never
+    populated.
+    """
     calls: list[tuple[str, ...]] = []
 
     def fake_run_git(*args: str, **_: Any) -> str:
@@ -428,7 +437,11 @@ def test_checkout_task_branch_runs_fetch_then_checkout(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(repo_ops, "run_git", fake_run_git)
     repo_ops.checkout_task_branch("aidlc/my-spec/t-001")
-    assert calls[0] == ("fetch", "origin", "aidlc/my-spec/t-001")
+    assert calls[0] == (
+        "fetch",
+        "origin",
+        "aidlc/my-spec/t-001:refs/remotes/origin/aidlc/my-spec/t-001",
+    )
     assert calls[1][:2] == ("checkout", "-B")
     assert calls[1][2] == "aidlc/my-spec/t-001"
     assert calls[1][3] == "origin/aidlc/my-spec/t-001"
