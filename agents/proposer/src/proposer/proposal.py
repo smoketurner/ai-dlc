@@ -50,6 +50,20 @@ class FileEdit(_Frozen):
         return v
 
 
+class ProposedIssue(_Frozen):
+    """One scoped GitHub issue to spawn from a research synthesis.
+
+    Emitted by the Proposer only when the human's triggering comment
+    explicitly asks for issue creation based on prior research findings;
+    the runtime turns each entry into a single ``repo_helper.create_issue``
+    call backlinked to the parent issue.
+    """
+
+    title: Annotated[str, Field(min_length=1, max_length=128)]
+    body: Annotated[str, Field(min_length=1, max_length=8192)]
+    labels: Annotated[NoneSafeList[str], Field(max_length=8)] = Field(default_factory=list)
+
+
 class Proposal(_Frozen):
     """The Proposer's full structured output.
 
@@ -69,6 +83,9 @@ class Proposal(_Frozen):
     pr_title: Annotated[str, Field(min_length=1, max_length=72)] = "ai-dlc proposer: no-op"
     pr_body: Annotated[str, Field(min_length=1, max_length=65_536)] = "no edits"
     summary_comment: Annotated[str, Field(max_length=8192)] = ""
+    proposed_issues: Annotated[NoneSafeList[ProposedIssue], Field(max_length=16)] = Field(
+        default_factory=list,
+    )
 
     @model_validator(mode="after")
     def pr_body_must_not_dump_spec(self) -> Self:

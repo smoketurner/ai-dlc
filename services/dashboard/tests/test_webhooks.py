@@ -22,6 +22,7 @@ from common.events import EventEnvelope, RequestReceived
 from common.ids import CorrelationId, RunId, new_correlation_id, new_event_id, new_run_id
 from common.runs import IssueContext
 from dashboard.routes.webhooks import (
+    build_issue_context,
     receive_github_webhook,
     verify_signature,
     webhook_secret,
@@ -671,3 +672,54 @@ async def test_unknown_event_type_ignored(
     out = await post_webhook(event_type="ping", payload={})
     assert out["ignored"] is True
     assert captured_events == []
+
+
+# ---------------------------------------------------------------------------
+# build_issue_context — comment-body forwarding
+# ---------------------------------------------------------------------------
+
+
+def test_build_issue_context_no_comment_payload() -> None:
+    """``issues`` triggers (no comment payload) leave the comment fields empty."""
+    ctx = build_issue_context(
+        issue_payload={"number": 9, "title": "x", "body": "details"},
+        source_issue_url="https://github.com/o/r/issues/9",
+    )
+    assert ctx is not None
+    assert ctx.triggering_comment_body == ""
+    assert ctx.triggering_commenter == ""
+
+
+def test_build_issue_context_forwards_comment_body_and_commenter() -> None:
+    """``issue_comment`` triggers carry the comment body + commenter login."""
+    ctx = build_issue_context(
+        issue_payload={"number": 34, "title": "x", "body": "details"},
+        source_issue_url="https://github.com/o/r/issues/34",
+        comment_payload={
+            "body": "@aidlc-bot create issues for the highest-impact items",
+            "user": {"login": "jplock"},
+        },
+    )
+    assert ctx is not None
+    assert ctx.triggering_comment_body == ("@aidlc-bot create issues for the highest-impact items")
+    assert ctx.triggering_commenter == "jplock"
+
+
+def test_build_issue_context_strips_comment_whitespace() -> None:
+    ctx = build_issue_context(
+        issue_payload={"number": 9, "title": "x", "body": ""},
+        source_issue_url="https://github.com/o/r/issues/9",
+        comment_payload={"body": "   /aidlc go   \n", "user": {"login": "alice"}},
+    )
+    assert ctx is not None
+    assert ctx.triggering_comment_body == "/aidlc go"
+
+
+def test_build_issue_context_returns_none_without_issue_url() -> None:
+    assert (
+        build_issue_context(
+            issue_payload={"number": 1},
+            source_issue_url="",
+        )
+        is None
+    )

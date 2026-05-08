@@ -526,6 +526,232 @@ def test_get_issue_returns_title_body_and_labels(
     assert out["result"]["user"] == "alice"
 
 
+def test_create_issue_posts_to_issues_endpoint(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/o/r/issues"
+        assert json.loads(request.content) == {
+            "title": "Adopt scoped rule files",
+            "body": "Split MEMORY.md by directory.",
+        }
+        return httpx.Response(
+            201,
+            json={
+                "number": 51,
+                "html_url": "https://github.com/o/r/issues/51",
+                "state": "open",
+                "labels": [],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "create_issue",
+                "repo": "o/r",
+                "title": "Adopt scoped rule files",
+                "body": "Split MEMORY.md by directory.",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["op"] == "create_issue"
+    assert out["result"] == {
+        "issue_number": 51,
+        "issue_url": "https://github.com/o/r/issues/51",
+        "state": "open",
+        "labels": [],
+    }
+
+
+def test_create_issue_includes_labels_when_set(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["labels"] == ["aidlc-spawned", "adopt"]
+        return httpx.Response(
+            201,
+            json={
+                "number": 52,
+                "html_url": "https://github.com/o/r/issues/52",
+                "state": "open",
+                "labels": [
+                    {"name": "aidlc-spawned"},
+                    {"name": "adopt"},
+                ],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "create_issue",
+                "repo": "o/r",
+                "title": "Adopt X",
+                "body": "Body",
+                "labels": ["aidlc-spawned", "adopt"],
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["labels"] == ["aidlc-spawned", "adopt"]
+
+
+def test_create_issue_prepends_parent_backlink(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    captured: dict[str, str] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)["body"]
+        return httpx.Response(
+            201,
+            json={
+                "number": 53,
+                "html_url": "https://github.com/o/r/issues/53",
+                "state": "open",
+                "labels": [],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "create_issue",
+                "repo": "o/r",
+                "title": "T",
+                "body": "Detail.",
+                "parent_issue_url": "https://github.com/o/r/issues/34",
+                "requestor": "jplock",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert captured["body"].startswith(
+        "> Spawned from https://github.com/o/r/issues/34 by @jplock\n\n",
+    )
+    assert captured["body"].endswith("Detail.")
+
+
+def test_create_issue_backlink_omits_attribution_without_requestor(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    captured: dict[str, str] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)["body"]
+        return httpx.Response(
+            201,
+            json={
+                "number": 54,
+                "html_url": "https://github.com/o/r/issues/54",
+                "state": "open",
+                "labels": [],
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "create_issue",
+                "repo": "o/r",
+                "title": "T",
+                "body": "Body.",
+                "parent_issue_url": "https://github.com/o/r/issues/34",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert captured["body"].startswith("> Spawned from https://github.com/o/r/issues/34\n\n")
+
+
+def test_create_issue_validates_repo_format() -> None:
+    out = h.handler(
+        {"input": {"op": "create_issue", "repo": "no-slash", "title": "T", "body": "B"}},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"
+
+
+def test_list_issue_comments_returns_chronological_thread(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/issues/34/comments"
+        assert request.url.params["per_page"] == "100"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 4408803319,
+                    "user": {"login": "jplock", "type": "User"},
+                    "body": "/aidlc go",
+                    "created_at": "2026-05-08T18:12:29Z",
+                    "updated_at": "2026-05-08T18:12:29Z",
+                    "html_url": "https://github.com/o/r/issues/34#issuecomment-4408803319",
+                },
+                {
+                    "id": 4409066197,
+                    "user": {"login": "ai-dlc-dev", "type": "Bot"},
+                    "body": "## Synthesis...",
+                    "created_at": "2026-05-08T18:56:53Z",
+                    "updated_at": "2026-05-08T18:56:53Z",
+                    "html_url": "https://github.com/o/r/issues/34#issuecomment-4409066197",
+                },
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "list_issue_comments", "repo": "o/r", "issue_number": 34}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    comments = out["result"]["comments"]
+    assert len(comments) == 2
+    assert comments[0]["user"] == "jplock"
+    assert comments[1]["user_type"] == "Bot"
+    assert comments[1]["body"].startswith("## Synthesis")
+
+
+def test_list_issue_comments_passes_since_filter(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    captured: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json=[])
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "list_issue_comments",
+                "repo": "o/r",
+                "issue_number": 1,
+                "since": "2026-05-08T00:00:00Z",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert captured[0].url.params.get("since") == "2026-05-08T00:00:00Z"
+
+
 def test_list_issues_filters_out_pull_requests(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:

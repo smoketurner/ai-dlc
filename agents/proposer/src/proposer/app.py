@@ -122,15 +122,19 @@ def run_research(payload: ProposerInput) -> None:
         intent=payload.intent,
         issue_number=payload.issue_number,
         run_id=payload.run_id,
+        target_repo=payload.target_repo,
+        triggering_comment_body=payload.triggering_comment_body,
+        triggering_commenter=payload.triggering_commenter,
     )
     if proposal.summary_comment.strip():
         post_research_comment(payload=payload, body=proposal.summary_comment)
     else:
         logger.warning("research proposal had empty summary_comment", run_id=payload.run_id)
+    spawned_issue_urls = create_proposed_issues(payload=payload, proposal=proposal)
     pr_url: str | None = None
     if proposal.edits:
         pr_url = open_proposal_pr(payload=payload, proposal=proposal)
-    publish_run_completed(payload, pr_url=pr_url)
+    publish_run_completed(payload, pr_url=pr_url, spawned_issue_urls=spawned_issue_urls)
 
 
 def post_research_comment(*, payload: ProposerInput, body: str) -> None:
@@ -143,8 +147,57 @@ def post_research_comment(*, payload: ProposerInput, body: str) -> None:
     )
 
 
-def publish_run_completed(payload: ProposerInput, *, pr_url: str | None) -> None:
-    """Emit ``RUN.COMPLETED`` so the projector advances the run to ``done``."""
+def create_proposed_issues(*, payload: ProposerInput, proposal: Proposal) -> list[str]:
+    """Spawn one issue per ``proposal.proposed_issues`` entry. Returns URLs.
+
+    Each spawned issue is backlinked to the parent via
+    ``parent_issue_url`` so ``repo_helper.create_issue`` injects the
+    ``> Spawned from <url> by @<requestor>`` blockquote consistently.
+    """
+    if not proposal.proposed_issues:
+        return []
+    parent_url = parent_issue_url(payload)
+    requestor = payload.triggering_commenter or None
+    spawned: list[str] = []
+    for proposed in proposal.proposed_issues:
+        out = invoke_repo_helper(
+            op="create_issue",
+            repo=payload.target_repo,
+            title=proposed.title,
+            body=proposed.body,
+            labels=list(proposed.labels) or ["aidlc-spawned"],
+            parent_issue_url=parent_url,
+            requestor=requestor,
+        )
+        issue_url = out.get("result", {}).get("issue_url")
+        if isinstance(issue_url, str):
+            spawned.append(issue_url)
+    logger.info(
+        "spawned issues from proposal",
+        run_id=payload.run_id,
+        issue_count=len(spawned),
+    )
+    return spawned
+
+
+def parent_issue_url(payload: ProposerInput) -> str:
+    """Derive the parent issue's URL from ``target_repo`` + ``issue_number``."""
+    return f"https://github.com/{payload.target_repo}/issues/{payload.issue_number}"
+
+
+def publish_run_completed(
+    payload: ProposerInput,
+    *,
+    pr_url: str | None,
+    spawned_issue_urls: list[str] | None = None,
+) -> None:
+    """Emit ``RUN.COMPLETED`` so the projector advances the run to ``done``.
+
+    ``spawned_issue_urls`` is logged but not surfaced on the event —
+    spawned issues are inert work items, the run completes regardless of
+    how many were created.
+    """
+    spawned = spawned_issue_urls or []
     envelope = EventEnvelope[RunCompleted](
         event_id=new_event_id(),
         type="RUN.COMPLETED",
@@ -158,6 +211,12 @@ def publish_run_completed(payload: ProposerInput, *, pr_url: str | None) -> None
         ),
     )
     publish(envelope)
+    if spawned:
+        logger.info(
+            "research run completed with spawned issues",
+            run_id=payload.run_id,
+            spawned_count=len(spawned),
+        )
 
 
 def open_proposal_pr(*, payload: ProposerInput, proposal: Proposal) -> str:

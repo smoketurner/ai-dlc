@@ -86,6 +86,12 @@ class IssueContext:
     The Triage agent's ``TriageInput`` requires every one of these fields,
     so the webhook captures them at trigger time and the state-router's
     ``invoke_triage`` reads them off the STATE row when dispatching.
+
+    ``triggering_comment_body`` / ``triggering_commenter`` are populated
+    when the run was minted from an ``issue_comment`` event (a reply with
+    ``/aidlc go`` or an ``@aidlc-bot`` mention) so the downstream agent
+    can read the human's free-form ask alongside the original issue body.
+    Empty for runs minted from the initial issue assignment / opening.
     """
 
     issue_url: str
@@ -93,6 +99,8 @@ class IssueContext:
     issue_title: str
     issue_body: str
     issue_labels: tuple[str, ...] = ()
+    triggering_comment_body: str = ""
+    triggering_commenter: str = ""
 
 
 def start_run(  # noqa: PLR0913
@@ -211,6 +219,10 @@ def write_state_row(  # noqa: PLR0913
         item["issue_body"] = {"S": issue.issue_body}
         if issue.issue_labels:
             item["issue_labels"] = {"SS": list(issue.issue_labels)}
+        if issue.triggering_comment_body:
+            item["triggering_comment_body"] = {"S": issue.triggering_comment_body}
+        if issue.triggering_commenter:
+            item["triggering_commenter"] = {"S": issue.triggering_commenter}
     ddb().put_item(
         TableName=runs_table(),
         Item=item,

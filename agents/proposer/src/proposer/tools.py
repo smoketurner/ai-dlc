@@ -26,6 +26,7 @@ from common.agentcore_browser import browse_url
 from common.memory_md import read_memory_md
 
 if TYPE_CHECKING:
+    from mypy_boto3_lambda.client import LambdaClient
     from mypy_boto3_s3.client import S3Client
 
 EVALS_RESULTS_PREFIX = "evals/results/"
@@ -150,6 +151,54 @@ def read_few_shot_summary(*, days: int = DEFAULT_LOOKBACK_DAYS) -> dict[str, Any
     }
 
 
+@cache
+def lambda_client() -> LambdaClient:
+    """Process-cached boto3 Lambda client (used for repo_helper invocation)."""
+    return boto3.client("lambda")
+
+
+def repo_helper_function_name() -> str:
+    """Function name of the repo_helper Lambda — same env var ``app.py`` reads."""
+    return os.environ["AIDLC_REPO_HELPER_FUNCTION_NAME"]
+
+
+def list_issue_comments(repo: str, issue_number: int) -> dict[str, Any]:
+    """List comments on an issue in chronological order.
+
+    Used by the proposer to read its own prior synthesis comment + any
+    follow-up reply when the user is asking for issue spawning based on
+    earlier research output.
+
+    Args:
+        repo: ``owner/name`` of the GitHub repository.
+        issue_number: Issue number to read comments from.
+
+    Returns:
+        A dict with ``comments`` — a list of ``{id, user, user_type,
+        body, created_at, updated_at, html_url}`` entries — or
+        ``{"error": ...}`` if the repo_helper Lambda returned a failure
+        envelope.
+    """
+    response = lambda_client().invoke(
+        FunctionName=repo_helper_function_name(),
+        InvocationType="RequestResponse",
+        Payload=json.dumps(
+            {
+                "input": {
+                    "op": "list_issue_comments",
+                    "repo": repo,
+                    "issue_number": issue_number,
+                },
+            },
+        ).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read())
+    if not body.get("ok"):
+        return {"error": body.get("error")}
+    result = body.get("result") or {}
+    return {"comments": result.get("comments", [])}
+
+
 # Strands wrappers — exposed to the agent.
 read_eval_aggregate_tool = tool(read_eval_aggregate)
 read_drift_report_tool = tool(read_drift_report)
@@ -157,3 +206,4 @@ read_rejection_summary_tool = tool(read_rejection_summary)
 read_few_shot_summary_tool = tool(read_few_shot_summary)
 read_memory_md_tool = tool(read_memory_md)
 browse_url_tool = tool(browse_url)
+list_issue_comments_tool = tool(list_issue_comments)

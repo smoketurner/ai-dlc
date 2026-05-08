@@ -149,6 +149,8 @@ def invoke_proposer_research(run: Run, arn: str, *, advance_from: RunState) -> I
             "trigger_reason": "research",
             "intent": intent,
             "issue_number": run.issue_number,
+            "triggering_comment_body": run.triggering_comment_body or "",
+            "triggering_commenter": run.triggering_commenter or "",
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,

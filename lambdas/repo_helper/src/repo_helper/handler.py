@@ -150,6 +150,29 @@ class GetIssueInput(BaseOp):
     issue_number: int = Field(ge=1)
 
 
+class CreateIssueInput(BaseOp):
+    """Open a new GitHub issue, optionally backlinked to a parent issue.
+
+    When ``parent_issue_url`` is set, a ``> Spawned from <url>`` blockquote
+    is prepended to ``body`` (with ``by @<requestor>`` appended when
+    ``requestor`` is set). Keeps the spawned-issue provenance consistent
+    regardless of which agent builds the body.
+    """
+
+    op: Literal["create_issue"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    title: str = Field(min_length=1, max_length=256)
+    body: str = Field(max_length=65_536)
+    labels: list[str] = Field(default_factory=list, max_length=16)
+    parent_issue_url: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        pattern=r"^https://github\.com/.+$",
+    )
+    requestor: str | None = Field(default=None, min_length=1, max_length=64)
+
+
 class ListIssuesInput(BaseOp):
     """List open issues (optionally filtered by labels) for the cron backstop."""
 
@@ -158,6 +181,21 @@ class ListIssuesInput(BaseOp):
     labels: list[str] | None = Field(default=None, max_length=16)
     state: Literal["open", "closed", "all"] = "open"
     per_page: int = Field(default=30, ge=1, le=100)
+
+
+class ListIssueCommentsInput(BaseOp):
+    """List comments on an issue in chronological order.
+
+    Used by the proposer to read its own prior synthesis comment + any
+    follow-up reply when interpreting a conversational request to spawn
+    issues from prior research.
+    """
+
+    op: Literal["list_issue_comments"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    issue_number: int = Field(ge=1)
+    since: str | None = Field(default=None, max_length=32)
+    per_page: int = Field(default=100, ge=1, le=100)
 
 
 class MintCloneTokenInput(BaseOp):
@@ -274,7 +312,9 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "comment_issue": CommentIssueInput,
     "label_issue": LabelIssueInput,
     "get_issue": GetIssueInput,
+    "create_issue": CreateIssueInput,
     "list_issues": ListIssuesInput,
+    "list_issue_comments": ListIssueCommentsInput,
     "mint_clone_token": MintCloneTokenInput,
     "list_pr_comments": ListPrCommentsInput,
     "list_pr_review_comments": ListPrReviewCommentsInput,
@@ -579,6 +619,36 @@ def get_issue(req: GetIssueInput, client: httpx.Client) -> dict[str, Any]:
     }
 
 
+def create_issue(req: CreateIssueInput, client: httpx.Client) -> dict[str, Any]:
+    """Open a new issue. Prepends a backlink blockquote when a parent is set."""
+    body = render_create_issue_body(req.body, req.parent_issue_url, req.requestor)
+    payload: dict[str, Any] = {"title": req.title, "body": body}
+    if req.labels:
+        payload["labels"] = req.labels
+    response = client.post(f"/repos/{req.repo}/issues", json=payload)
+    response.raise_for_status()
+    issue = response.json()
+    return {
+        "issue_number": issue["number"],
+        "issue_url": issue["html_url"],
+        "state": issue["state"],
+        "labels": [label["name"] for label in issue.get("labels", [])],
+    }
+
+
+def render_create_issue_body(
+    body: str,
+    parent_issue_url: str | None,
+    requestor: str | None,
+) -> str:
+    """Prepend ``> Spawned from <url> by @<requestor>`` when a parent is set."""
+    if not parent_issue_url:
+        return body
+    attribution = f" by @{requestor}" if requestor else ""
+    backlink = f"> Spawned from {parent_issue_url}{attribution}\n\n"
+    return backlink + body
+
+
 def list_issues(req: ListIssuesInput, client: httpx.Client) -> dict[str, Any]:
     """List issues on a repo, optionally filtered by labels.
 
@@ -600,6 +670,35 @@ def list_issues(req: ListIssuesInput, client: httpx.Client) -> dict[str, Any]:
                 "labels": [label["name"] for label in item.get("labels", [])],
             }
             for item in items
+        ],
+    }
+
+
+def list_issue_comments(
+    req: ListIssueCommentsInput,
+    client: httpx.Client,
+) -> dict[str, Any]:
+    """List comments on an issue in chronological order."""
+    params: dict[str, str] = {"per_page": str(req.per_page)}
+    if req.since:
+        params["since"] = req.since
+    response = client.get(
+        f"/repos/{req.repo}/issues/{req.issue_number}/comments",
+        params=params,
+    )
+    response.raise_for_status()
+    return {
+        "comments": [
+            {
+                "id": item["id"],
+                "user": (item.get("user") or {}).get("login", ""),
+                "user_type": (item.get("user") or {}).get("type", ""),
+                "body": item.get("body") or "",
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                "html_url": item.get("html_url"),
+            }
+            for item in response.json()
         ],
     }
 
@@ -851,7 +950,9 @@ OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     CommentIssueInput: ("comment_issue", comment_issue),
     LabelIssueInput: ("label_issue", label_issue),
     GetIssueInput: ("get_issue", get_issue),
+    CreateIssueInput: ("create_issue", create_issue),
     ListIssuesInput: ("list_issues", list_issues),
+    ListIssueCommentsInput: ("list_issue_comments", list_issue_comments),
     MintCloneTokenInput: ("mint_clone_token", mint_clone_token),
     ListPrCommentsInput: ("list_pr_comments", list_pr_comments),
     ListPrReviewCommentsInput: ("list_pr_review_comments", list_pr_review_comments),

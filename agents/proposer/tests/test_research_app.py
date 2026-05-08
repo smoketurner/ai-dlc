@@ -15,7 +15,7 @@ import pytest
 
 from common.runtime import ProposerInput
 from proposer import app
-from proposer.proposal import FileEdit, Proposal
+from proposer.proposal import FileEdit, Proposal, ProposedIssue
 
 
 def make_input(**overrides: Any) -> ProposerInput:
@@ -160,3 +160,140 @@ def test_run_proposer_routes_scheduled_path() -> None:
     p_research.assert_not_called()
     p_sched.assert_called_once_with(payload)
     p_done.assert_called_once_with(7)
+
+
+def test_research_forwards_triggering_comment_to_agent() -> None:
+    payload = make_input(
+        triggering_comment_body="@aidlc-bot create issues for the top 2 adopt items",
+        triggering_commenter="jplock",
+    )
+    proposal = make_proposal(comment="ok")
+    with (
+        patch("proposer.app.propose_research", return_value=proposal) as p_research,
+        patch("proposer.app.invoke_repo_helper", return_value={"ok": True, "result": {}}),
+        patch("proposer.app.publish"),
+    ):
+        app.run_research(payload)
+
+    kwargs = p_research.call_args.kwargs
+    assert kwargs["triggering_comment_body"] == (
+        "@aidlc-bot create issues for the top 2 adopt items"
+    )
+    assert kwargs["triggering_commenter"] == "jplock"
+    assert kwargs["target_repo"] == "smoketurner/ai-dlc"
+
+
+def test_research_spawns_issues_from_proposed_issues() -> None:
+    payload = make_input(
+        triggering_comment_body="@aidlc-bot create issues for the highest-impact items",
+        triggering_commenter="jplock",
+    )
+    proposal = Proposal(
+        rationale="user asked for issue creation",
+        summary_comment="Spawned 2 issues for the top adopt items.",
+        proposed_issues=[
+            ProposedIssue(
+                title="Adopt scoped rule files split by directory",
+                body="## Scope\nSplit MEMORY.md.",
+                labels=["aidlc-spawned", "adopt"],
+            ),
+            ProposedIssue(
+                title="Pre-warm sandbox snapshots",
+                body="## Scope\nModal-style snapshots.",
+                labels=["aidlc-spawned", "adopt"],
+            ),
+        ],
+    )
+
+    repo_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
+        repo_calls.append((op, fields))
+        if op == "create_issue":
+            return {
+                "ok": True,
+                "result": {
+                    "issue_number": 99,
+                    "issue_url": f"https://github.com/x/y/issues/{len(repo_calls)}",
+                    "state": "open",
+                    "labels": list(fields.get("labels", [])),
+                },
+            }
+        return {"ok": True, "result": {}}
+
+    with (
+        patch("proposer.app.propose_research", return_value=proposal),
+        patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
+        patch("proposer.app.publish"),
+    ):
+        app.run_research(payload)
+
+    create_calls = [fields for op, fields in repo_calls if op == "create_issue"]
+    assert len(create_calls) == 2
+    first = create_calls[0]
+    assert first["repo"] == "smoketurner/ai-dlc"
+    assert first["title"] == "Adopt scoped rule files split by directory"
+    assert first["labels"] == ["aidlc-spawned", "adopt"]
+    assert first["parent_issue_url"] == "https://github.com/smoketurner/ai-dlc/issues/34"
+    assert first["requestor"] == "jplock"
+
+
+def test_research_default_label_when_proposed_issue_omits_labels() -> None:
+    payload = make_input(
+        triggering_comment_body="@aidlc-bot please spawn one issue",
+        triggering_commenter="jplock",
+    )
+    proposal = Proposal(
+        rationale="single issue requested",
+        summary_comment="ok",
+        proposed_issues=[ProposedIssue(title="Adopt X", body="Body.")],
+    )
+    repo_calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
+        repo_calls.append((op, fields))
+        if op == "create_issue":
+            return {
+                "ok": True,
+                "result": {
+                    "issue_number": 1,
+                    "issue_url": "https://github.com/x/y/issues/1",
+                    "state": "open",
+                    "labels": fields.get("labels", []),
+                },
+            }
+        return {"ok": True, "result": {}}
+
+    with (
+        patch("proposer.app.propose_research", return_value=proposal),
+        patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
+        patch("proposer.app.publish"),
+    ):
+        app.run_research(payload)
+
+    create_calls = [fields for op, fields in repo_calls if op == "create_issue"]
+    assert create_calls[0]["labels"] == ["aidlc-spawned"]
+
+
+def test_research_skips_create_issue_when_proposed_issues_empty() -> None:
+    payload = make_input()
+    proposal = make_proposal(comment="findings")  # no proposed_issues
+    repo_calls: list[str] = []
+
+    def fake_repo_helper(*, op: str, **_fields: Any) -> dict[str, Any]:
+        repo_calls.append(op)
+        return {"ok": True, "result": {}}
+
+    with (
+        patch("proposer.app.propose_research", return_value=proposal),
+        patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
+        patch("proposer.app.publish"),
+    ):
+        app.run_research(payload)
+
+    assert "create_issue" not in repo_calls
+
+
+def test_parent_issue_url_builds_from_payload() -> None:
+    payload = make_input()
+    assert app.parent_issue_url(payload) == "https://github.com/smoketurner/ai-dlc/issues/34"

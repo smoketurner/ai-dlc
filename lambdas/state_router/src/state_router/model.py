@@ -53,6 +53,8 @@ class Run:
     issue_title: str | None = None
     issue_body: str | None = None
     issue_labels: tuple[str, ...] = ()
+    triggering_comment_body: str | None = None
+    triggering_commenter: str | None = None
     spec_slug: str | None = None
     spec_s3_prefix: str | None = None
     pr_url: str | None = None
@@ -124,6 +126,8 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         issue_title=data.get("issue_title"),
         issue_body=data.get("issue_body"),
         issue_labels=as_str_tuple(data.get("issue_labels")),
+        triggering_comment_body=data.get("triggering_comment_body"),
+        triggering_commenter=data.get("triggering_commenter"),
         spec_slug=data.get("spec_slug"),
         spec_s3_prefix=data.get("spec_s3_prefix"),
         pr_url=data.get("pr_url"),

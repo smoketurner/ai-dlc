@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from proposer.proposal import FileEdit, Proposal
+from proposer.proposal import FileEdit, Proposal, ProposedIssue
 
 
 def test_proposal_with_no_edits_validates() -> None:
@@ -86,3 +86,45 @@ def test_proposal_is_frozen() -> None:
     p = Proposal(rationale="x")
     with pytest.raises(ValidationError):
         p.rationale = "y"  # type: ignore[misc]  # frozen=True forbids assignment
+
+
+def test_proposal_with_proposed_issues() -> None:
+    p = Proposal(
+        rationale="user asked us to spawn issues for top adopt items",
+        summary_comment="Created 2 issues for the highest-impact recommendations.",
+        proposed_issues=[
+            ProposedIssue(
+                title="Adopt scoped rule files split by directory",
+                body="## Scope\nSplit MEMORY.md by subdirectory.\n\n## Acceptance\n- ...",
+                labels=["aidlc-spawned", "adopt"],
+            ),
+            ProposedIssue(
+                title="Pre-warm sandbox snapshots",
+                body="## Scope\nUse Modal-style snapshots.\n\n## Acceptance\n- ...",
+                labels=["aidlc-spawned", "adopt"],
+            ),
+        ],
+    )
+    assert len(p.proposed_issues) == 2
+    assert p.proposed_issues[0].title.startswith("Adopt")
+
+
+def test_proposed_issue_requires_title_and_body() -> None:
+    with pytest.raises(ValidationError):
+        ProposedIssue(title="", body="x")
+    with pytest.raises(ValidationError):
+        ProposedIssue(title="x", body="")
+
+
+def test_proposed_issue_max_labels_enforced() -> None:
+    with pytest.raises(ValidationError):
+        ProposedIssue(title="x", body="y", labels=[f"l{i}" for i in range(9)])
+
+
+def test_proposal_max_proposed_issues_enforced() -> None:
+    issues = [
+        ProposedIssue(title=f"Issue {i}", body="body")
+        for i in range(17)  # one over max
+    ]
+    with pytest.raises(ValidationError):
+        Proposal(rationale="too many issues", proposed_issues=issues)

@@ -765,10 +765,11 @@ def trigger_request_received(*, trigger: dict[str, Any]) -> dict[str, Any]:
     payload = trigger["payload"]
     source_issue_url = trigger["source_issue_url"]
     issue_payload = payload.get("issue") or {}
+    comment_payload = payload.get("comment") or {}
     repo = (payload.get("repository") or {}).get("full_name", "")
     requestor = (issue_payload.get("user") or {}).get("login", "github")
     intent = issue_payload.get("title") or "(no title)"
-    issue_ctx = build_issue_context(issue_payload, source_issue_url)
+    issue_ctx = build_issue_context(issue_payload, source_issue_url, comment_payload)
     run_id, _ = start_run(
         project_slug=slug_from_repo(repo) if repo else "unknown",
         intent=intent,
@@ -813,11 +814,17 @@ def emit_request_received(
 def build_issue_context(
     issue_payload: dict[str, Any],
     source_issue_url: str,
+    comment_payload: dict[str, Any] | None = None,
 ) -> IssueContext | None:
     """Pack the GitHub ``issue`` payload into an :class:`IssueContext`.
 
     Returns ``None`` for triggers without an issue number — caller treats
     this as a programmatic run rather than an issue-driven one.
+
+    When ``comment_payload`` is non-empty (``issue_comment`` triggers),
+    the comment body and commenter login are forwarded so the downstream
+    agent can interpret a free-form follow-up reply alongside the
+    original issue body.
     """
     if not source_issue_url:
         return None
@@ -829,12 +836,17 @@ def build_issue_context(
         for label in (issue_payload.get("labels") or [])
         if isinstance(label, dict) and label.get("name")
     )
+    comment = comment_payload or {}
+    triggering_body = (comment.get("body") or "").strip()
+    triggering_commenter = (comment.get("user") or {}).get("login") or ""
     return IssueContext(
         issue_url=source_issue_url,
         issue_number=raw_number,
         issue_title=issue_payload.get("title") or "(no title)",
         issue_body=issue_payload.get("body") or "",
         issue_labels=labels,
+        triggering_comment_body=triggering_body,
+        triggering_commenter=triggering_commenter,
     )
 
 

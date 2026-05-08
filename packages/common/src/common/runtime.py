@@ -385,6 +385,12 @@ class ProposerInput(_Frozen):
     evals_lookback_days: Annotated[int, Field(ge=1, le=365)] = 30
     intent: Annotated[str, Field(max_length=8192)] | None = None
     issue_number: Annotated[int, Field(ge=1)] | None = None
+    # Set when the run was triggered by a follow-up issue comment (a
+    # `/aidlc go` reply or an `@aidlc-bot` mention) — the agent reads
+    # the body to interpret the human's free-form ask alongside the
+    # original issue. Empty on runs minted from the initial issue.
+    triggering_comment_body: Annotated[str, Field(max_length=8192)] = ""
+    triggering_commenter: Annotated[str, Field(max_length=64)] = ""
     run_id: str
     correlation_id: str
     actor_id: str = "system"
