@@ -1,16 +1,10 @@
-# Tasks — Add /healthz liveness endpoint to the dashboard
+# Tasks — /healthz liveness endpoint for the dashboard
 
 > **Spec slug:** `add-healthz`
 
 Ordered, atomic units. Each task is one PR.
 
-- [ ] **T-001** — Add GET /healthz route and test
-  - **Implements:** R-001
-  - **Touches:** `services/dashboard/src/dashboard/app.py`, `services/dashboard/tests/test_healthz.py`
-  - **Done when:** GET /healthz returns HTTP 200 with JSON body {"status": "ok"} and content-type application/json; test in services/dashboard/tests/test_healthz.py passes via `uv run pytest services/dashboard/tests/test_healthz.py`
-
-- [ ] **T-002** — Upgrade ECS container health check to HTTP probe and install curl
-  - **Implements:** R-002
-  - **Touches:** `terraform/modules/dashboard/ecs.tf`, `services/dashboard/Dockerfile`
-  - **Depends on:** T-001
-  - **Done when:** The ECS task definition container healthCheck command is ["CMD-SHELL", "curl -sf http://127.0.0.1:8080/healthz"] and the Dockerfile runtime stage installs curl; `docker build` succeeds for services/dashboard/Dockerfile
+- [ ] **T-001** — Extract /healthz into dedicated route module with test
+  - **Implements:** AC-001, AC-002, AC-003
+  - **Touches:** `services/dashboard/src/dashboard/routes/healthz.py`, `services/dashboard/src/dashboard/routes/pages.py`, `services/dashboard/src/dashboard/app.py`, `services/dashboard/tests/test_healthz.py`
+  - **Done when:** GET /healthz returns 200 with Content-Type text/plain; charset=utf-8 and body ok; the endpoint requires no authentication (no CurrentUser dependency); the old healthz handler is removed from pages.py; services/dashboard/tests/test_healthz.py passes asserting status code, content-type header, and response body; ruff check and ty pass with no new warnings
