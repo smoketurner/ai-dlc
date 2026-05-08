@@ -55,6 +55,10 @@ class Proposal(_Frozen):
 
     An empty ``edits`` list means the Proposer judged the signals
     insufficient to warrant a change; ``rationale`` still explains why.
+
+    For research-trigger runs (issue-driven), :attr:`summary_comment`
+    holds the synthesis the Proposer posts as a comment on the source
+    issue. For schedule / regression runs it stays empty.
     """
 
     rationale: Annotated[str, Field(min_length=1, max_length=4096)]
@@ -64,6 +68,7 @@ class Proposal(_Frozen):
     edits: Annotated[NoneSafeList[FileEdit], Field(max_length=8)] = Field(default_factory=list)
     pr_title: Annotated[str, Field(min_length=1, max_length=72)] = "ai-dlc proposer: no-op"
     pr_body: Annotated[str, Field(min_length=1, max_length=65_536)] = "no edits"
+    summary_comment: Annotated[str, Field(max_length=8192)] = ""
 
     @model_validator(mode="after")
     def pr_body_must_not_dump_spec(self) -> Self:

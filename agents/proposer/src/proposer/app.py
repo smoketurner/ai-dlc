@@ -31,8 +31,11 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
+from common.event_emit import publish
+from common.events import EventEnvelope, RunCompleted
+from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ProposerInput
-from proposer.agent import propose
+from proposer.agent import propose, propose_research
 from proposer.proposal import FileEdit, Proposal
 
 if TYPE_CHECKING:
@@ -77,27 +80,84 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 def run_proposer(payload: ProposerInput, async_task_id: int) -> None:
     """Body of the proposer run — opens a PR if there are actionable edits.
 
-    Out-of-pipeline: no SDLC state machine to advance; an exception is
-    logged and the async task is still acknowledged so the microVM
-    can release its session. The EventBridge / alarm caller has its
-    own retry semantics if a periodic run needs to re-fire.
+    Schedule / regression: out-of-pipeline; no SDLC state machine to
+    advance. Research: in-pipeline; we emit ``RUN.COMPLETED`` so the
+    projector advances the run state ``proposer_running`` → ``done``.
+    Exceptions are logged either way and the async task is still
+    acknowledged so the microVM releases its session.
     """
     try:
-        proposal = propose(
-            project_slug=payload.project_slug,
-            trigger_reason=payload.trigger_reason,
-            lookback_days=payload.evals_lookback_days,
-            run_id=payload.run_id,
-        )
-        if not proposal.edits:
-            logger.info("proposer found no actionable signal", run_id=payload.run_id)
-            return
-        pr_url = open_proposal_pr(payload=payload, proposal=proposal)
-        logger.info("proposal opened", run_id=payload.run_id, pr_url=pr_url)
+        if payload.trigger_reason == "research":
+            run_research(payload)
+        else:
+            run_scheduled(payload)
     except Exception:
         logger.exception("proposer run failed", run_id=payload.run_id)
     finally:
         app.complete_async_task(async_task_id)
+
+
+def run_scheduled(payload: ProposerInput) -> None:
+    """Schedule / regression path — propose from telemetry, open a PR if any edits."""
+    proposal = propose(
+        project_slug=payload.project_slug,
+        trigger_reason=payload.trigger_reason,
+        lookback_days=payload.evals_lookback_days,
+        run_id=payload.run_id,
+    )
+    if not proposal.edits:
+        logger.info("proposer found no actionable signal", run_id=payload.run_id)
+        return
+    pr_url = open_proposal_pr(payload=payload, proposal=proposal)
+    logger.info("proposal opened", run_id=payload.run_id, pr_url=pr_url)
+
+
+def run_research(payload: ProposerInput) -> None:
+    """Research path — synthesise the issue's URLs, comment on the issue, optional PR."""
+    if payload.intent is None or payload.issue_number is None:
+        msg = "research trigger requires intent + issue_number"
+        raise ValueError(msg)
+    proposal = propose_research(
+        project_slug=payload.project_slug,
+        intent=payload.intent,
+        issue_number=payload.issue_number,
+        run_id=payload.run_id,
+    )
+    if proposal.summary_comment.strip():
+        post_research_comment(payload=payload, body=proposal.summary_comment)
+    else:
+        logger.warning("research proposal had empty summary_comment", run_id=payload.run_id)
+    pr_url: str | None = None
+    if proposal.edits:
+        pr_url = open_proposal_pr(payload=payload, proposal=proposal)
+    publish_run_completed(payload, pr_url=pr_url)
+
+
+def post_research_comment(*, payload: ProposerInput, body: str) -> None:
+    """Post the synthesis as a comment on the source issue via repo_helper."""
+    invoke_repo_helper(
+        op="comment_issue",
+        repo=payload.target_repo,
+        issue_number=payload.issue_number,
+        body=body,
+    )
+
+
+def publish_run_completed(payload: ProposerInput, *, pr_url: str | None) -> None:
+    """Emit ``RUN.COMPLETED`` so the projector advances the run to ``done``."""
+    envelope = EventEnvelope[RunCompleted](
+        event_id=new_event_id(),
+        type="RUN.COMPLETED",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="proposer",
+        payload=RunCompleted(
+            project_slug=payload.project_slug,
+            spec_slug=f"research-issue-{payload.issue_number}",
+            tasks_completed=1 if pr_url else 0,
+        ),
+    )
+    publish(envelope)
 
 
 def open_proposal_pr(*, payload: ProposerInput, proposal: Proposal) -> str:

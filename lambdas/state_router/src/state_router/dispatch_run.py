@@ -128,6 +128,28 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
     )
 
 
+def invoke_proposer_research(run: Run, arn: str, *, advance_from: RunState) -> InvokeAgent:
+    """Dispatch the proposer for an issue-driven research run."""
+    return InvokeAgent(
+        runtime_arn=arn,
+        runtime_session_id=f"{run.run_id}-proposer",
+        payload={
+            "project_slug": run.project_slug,
+            "target_repo": run.target_repo,
+            "trigger_reason": "research",
+            "intent": run.intent,
+            "issue_number": run.issue_number,
+            "run_id": run.run_id,
+            "correlation_id": run.correlation_id,
+            "actor_id": run.actor_id,
+        },
+        target_pk=f"RUN#{run.run_id}",
+        target_sk="STATE",
+        advance_from=advance_from.value,
+        advance_to=RunState.proposer_running.value,
+    )
+
+
 def handle_triage_decided(run: Run) -> Action:
     """Branch on the triage's ``action`` (and ``workflow_kind`` for proceed).
 
@@ -156,6 +178,11 @@ def handle_triage_proceed(run: Run) -> Action:
         if not arn:
             return Noop("architect runtime ARN not yet provisioned")
         return invoke_architect(run, arn, advance_from=RunState.triage_decided)
+    if run.workflow_kind == "research":
+        arn = runtime_arn("proposer")
+        if not arn:
+            return Noop("proposer runtime ARN not yet provisioned")
+        return invoke_proposer_research(run, arn, advance_from=RunState.triage_decided)
     if run.workflow_kind in {"bug_fix", "upgrade", "docs"}:
         return CompoundAction(
             actions=(
@@ -397,6 +424,7 @@ RUN_DISPATCH: Mapping[RunState, RunHandler] = {
     RunState.spec_pr_open: noop_waiting,
     RunState.spec_approved: handle_spec_approved,
     RunState.tasks_in_progress: handle_tasks_in_progress,
+    RunState.proposer_running: noop_waiting,
     RunState.tasks_complete: handle_tasks_complete,
     RunState.done: terminal,
     RunState.failed: terminal,

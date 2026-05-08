@@ -163,3 +163,55 @@ def compose_message(*, project_slug: str, trigger_reason: str, lookback_days: in
         "JSON — empty `edits` if not.",
     ]
     return "\n".join(parts)
+
+
+def propose_research(*, project_slug: str, intent: str, issue_number: int, run_id: str) -> Proposal:
+    """Run the agent against an issue body for the research workflow.
+
+    The agent reads the URLs in ``intent``, synthesises findings into
+    ``Proposal.summary_comment`` (which the platform posts as a comment
+    on issue ``issue_number``), and may also propose edits to MEMORY.md
+    or prompt files. Empty ``edits`` is fine — the comment is the
+    primary deliverable.
+
+    Args:
+        project_slug: Project the research targets (drives MEMORY.md lookup).
+        intent: GitHub issue body — typically contains URLs to read.
+        issue_number: Issue number for the run (referenced in the prompt
+            so the agent knows what's being commented on).
+        run_id: Run UUID7 — drives prompt-variant selection.
+
+    Returns:
+        A validated :class:`Proposal` with ``summary_comment`` populated.
+    """
+    user_message = compose_research_message(
+        project_slug=project_slug, intent=intent, issue_number=issue_number
+    )
+    agent, _tracker = build_agent(run_id)
+    return run_for_structured_output(agent, output_model=Proposal, prompt=user_message)
+
+
+def compose_research_message(*, project_slug: str, intent: str, issue_number: int) -> str:
+    """Compose the user-message prompt for an issue-driven research run."""
+    parts = [
+        agent_memory_preamble(project_slug=project_slug, query=intent),
+        f"Project: {project_slug}",
+        f"Source: GitHub issue #{issue_number}",
+        "Trigger: research",
+        "",
+        "Issue body:",
+        intent.strip(),
+        "",
+        "Steps:",
+        "  1. read_memory_md to see current project conventions.",
+        "  2. Identify URLs in the issue body and call browse_url on each.",
+        "  3. Synthesise findings into `summary_comment` (this is posted as "
+        "a comment on the issue). Aim for 8-15 short bullets an engineer can "
+        "scan in 30 seconds; lead with what we should adopt, what we should "
+        "avoid, and decisions worth deferring; cite the source URL on each "
+        "bullet.",
+        "  4. Optionally propose concrete `edits` to MEMORY.md or a prompts "
+        "file when a finding warrants a change. Empty edits is fine — the "
+        "comment is the primary deliverable.",
+    ]
+    return "\n".join(parts)

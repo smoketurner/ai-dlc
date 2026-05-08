@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common.validators import NoneSafeList
 
-WorkflowKind = Literal["spec_driven", "bug_fix", "upgrade", "docs"]
+WorkflowKind = Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"]
 """Which workflow phase Step Functions should branch into.
 
   * ``spec_driven`` — Feature / Task issue types; full architect → critic →
@@ -32,6 +32,9 @@ WorkflowKind = Literal["spec_driven", "bug_fix", "upgrade", "docs"]
   * ``bug_fix`` — Bug issue type; reproduce → fix → test, no spec bundle.
   * ``upgrade`` — dependency-upgrade issues; scan → bump → test.
   * ``docs`` — documentation-only changes; single-agent edit.
+  * ``research`` — read external resources (URLs in the issue body) and
+    synthesise findings; the Proposer posts a comment on the issue and
+    optionally opens a PR proposing prompt / MEMORY.md edits.
 """
 
 TriageAction = Literal["proceed", "ask", "defer", "decline"]

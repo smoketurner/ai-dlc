@@ -42,6 +42,8 @@ class RunState(StrEnum):
     tasks_in_progress = "tasks_in_progress"
     tasks_complete = "tasks_complete"
 
+    proposer_running = "proposer_running"
+
     done = "done"
     failed = "failed"
     cancelled = "cancelled"

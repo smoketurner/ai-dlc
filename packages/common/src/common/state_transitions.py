@@ -43,6 +43,7 @@ RUN_TRANSITIONS: Mapping[tuple[EventType, RunState | None], RunState] = {
     ("SPEC.APPROVED", RunState.spec_pr_open): RunState.spec_approved,
     ("SPEC.REJECTED", RunState.spec_pr_open): RunState.failed,
     ("RUN.COMPLETED", RunState.tasks_complete): RunState.done,
+    ("RUN.COMPLETED", RunState.proposer_running): RunState.done,
 }
 """Run-level state transitions keyed by (event_type, current_state)."""
 

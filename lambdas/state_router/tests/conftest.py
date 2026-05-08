@@ -15,6 +15,7 @@ AGENTS = (
     "architect",
     "critic",
     "implementer",
+    "proposer",
     "reviewer",
     "tester",
     "triage",

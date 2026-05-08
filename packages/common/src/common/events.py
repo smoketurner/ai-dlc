@@ -121,8 +121,10 @@ class RequestReceived(Payload):
     # this right after the run is recorded — ``spec_driven`` runs the
     # full Architect/Critic/spec-gate flow; ``bug_fix`` / ``upgrade`` /
     # ``docs`` skip the spec phase and run a synthetic 1-task spec the
-    # dispatcher generated from the issue context.
-    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] = "spec_driven"
+    # dispatcher generated from the issue context; ``research`` invokes
+    # the Proposer to read external URLs and post a synthesis comment
+    # (plus an optional PR for prompt / MEMORY.md edits).
+    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"] = "spec_driven"
     # Slug of the synthetic spec the state_router writes to S3 for
     # non-``spec_driven`` runs (bug_fix / upgrade / docs). ``None`` for
     # ``spec_driven`` — the Architect produces the spec at runtime.
@@ -145,7 +147,7 @@ class IssueTriaged(Payload):
     ]
     issue_number: Annotated[int, Field(ge=1)]
     action: Literal["proceed", "ask", "defer", "decline"]
-    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs"] | None = None
+    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"] | None = None
     decision_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     rationale: Annotated[str, Field(min_length=1, max_length=2048)]
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0

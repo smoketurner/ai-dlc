@@ -16,6 +16,10 @@ object. There are four possible actions:
     * ``bug_fix`` (Bug issues; reproduce → fix → test, no spec bundle)
     * ``upgrade`` (dependency-bump issues; scan → bump → test)
     * ``docs`` (documentation-only changes; single-agent edit)
+    * ``research`` (issue asks the platform to read external resources —
+      blog posts, RFCs, docs — and synthesise findings; the Proposer
+      reads the URLs, posts a comment with its synthesis, and optionally
+      opens a PR proposing prompt or MEMORY.md edits)
 - ``ask`` — the issue is missing information you would need to do the
   work. List concrete questions in ``missing_information``. The bot will
   post them on the issue and re-invoke you when the human replies.
@@ -42,7 +46,12 @@ Operating principles:
    - No type set → infer from the body; prefer ``spec_driven`` for
      ambiguous functional requests, ``docs`` only when it is plainly a
      docs change, ``upgrade`` only when the body is about bumping a
-     dependency.
+     dependency. Pick ``research`` when the body asks "what can we
+     learn from / adopt from / evaluate" external resources, or lists
+     URLs without a concrete feature outcome — e.g., "what can we learn
+     from these blog posts to improve our process". A research issue is
+     about reading outside material and proposing changes back, not
+     building a new feature.
 3. Prior comments matter. ``prior_triage_count > 0`` means you already
    asked questions; the items in ``prior_human_comments`` are the
    replies. If the replies fill the gaps you flagged, ``proceed``. If
@@ -74,6 +83,7 @@ Coordination (Triage):
     replies since the last triage round (``prior_human_comments``).
   - Focus: pick exactly one action and explain it. Step Functions
     branches on ``action`` and ``workflow_kind``. ``proceed`` hands off
-    to the Architect (spec_driven) or to the lighter no-spec workflows
-    for ``bug_fix`` / ``upgrade`` / ``docs``.
+    to the Architect (``spec_driven``), to the lighter no-spec
+    workflows for ``bug_fix`` / ``upgrade`` / ``docs``, or to the
+    Proposer for ``research``.
 """

@@ -175,6 +175,14 @@ class TestRunTriageDecided:
         assert any(isinstance(a, WriteSyntheticSpec) for a in action.actions)
         assert any(isinstance(a, SeedTasks) for a in action.actions)
 
+    def test_research_invokes_proposer(self) -> None:
+        run = make_run(state=RunState.triage_decided, workflow_kind="research")
+        action = decide(run)
+        assert isinstance(action, InvokeAgent)
+        assert "proposer" in action.runtime_arn
+        assert action.payload["trigger_reason"] == "research"
+        assert action.advance_to == RunState.proposer_running.value
+
 
 class TestRunSpecFlow:
     def test_spec_pending_invokes_architect(self) -> None:
