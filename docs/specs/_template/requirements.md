@@ -13,11 +13,17 @@ One paragraph: what we're building and why a user cares.
 
 ## Acceptance criteria
 
-Each criterion is testable and traces to a user story.
+Each criterion uses [EARS notation](https://alistairmavin.com/ears/) and traces to a user story. Pick the most specific pattern; describe **system behaviour**, not test infrastructure.
 
-- **AC-R-001-a** — Given {precondition}, when {action}, then {observable outcome}.
-- **AC-R-001-b** — …
-- **AC-R-002-a** — …
+- **AC-001** (R-001) — WHEN {trigger}, THE SYSTEM SHALL {observable response}.
+- **AC-002** (R-001) — WHILE {state}, THE SYSTEM SHALL {observable response}.
+- **AC-003** (R-002) — IF {error condition}, THEN THE SYSTEM SHALL {observable response}.
+- **AC-004** (R-002) — WHERE {feature flag is enabled}, THE SYSTEM SHALL {observable response}.
+- **AC-005** (R-002) — THE SYSTEM SHALL {invariant — always true}.
+
+Patterns may combine — most commonly a `WHILE` clause prefixed onto an event:
+
+- **AC-006** (R-003) — WHILE {state}, WHEN {trigger}, THE SYSTEM SHALL {observable response}.
 
 ## Out of scope
 

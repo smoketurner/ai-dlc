@@ -23,6 +23,10 @@ How we solve the requirements. One or two paragraphs at the top — pick the opt
 {numbered steps describing the happy path; reference component names above}
 ```
 
+## Testing strategy
+
+How this spec is verified. Map each acceptance criterion to a test kind (unit / integration / property / e2e), name the test file(s), and call out fixtures, mocks, or environment requirements. The Tester agent reads this section to flag coverage gaps.
+
 ## Failure modes & mitigations
 
 - **{What can break}** — how we detect it, what we do.

@@ -41,9 +41,21 @@ Operating principles:
 4. Hunt for these failure modes:
    - Acceptance criteria with no implementing task.
    - Tasks that implement no acceptance criterion.
-   - Vague verbs in acceptance criteria ("supports", "handles") without
-     observable test conditions.
-   - Missing failure modes (auth fails, network fails, partial writes).
+   - Vague verbs in EARS ``response`` clauses ("supports", "handles",
+     "processes", "manages") that don't commit to an observable outcome
+     a test can assert.
+   - EARS pattern miscast — a real trigger written as ``ubiquitous``;
+     an error path written as ``event`` instead of ``unwanted``; a
+     feature-flag-gated behaviour written as ``ubiquitous`` instead of
+     ``optional``. The pattern should match the shape of the behaviour.
+   - Meta-acceptance-criteria that describe test infrastructure rather
+     than system behaviour ("pytest passes", "lint is clean", "CI is
+     green"). These belong in ``done_when``, not ``acceptance_criteria``.
+   - Missing ``unwanted`` ACs for the failure modes named in the design
+     (auth fails, network fails, partial writes) — the design lists them
+     but no AC commits to behaviour when they trigger.
+   - Missing ``testing_strategy`` detail — the field is present but
+     doesn't say which AC is exercised by which kind of test.
    - Contradictions between requirements / design / tasks.
    - Tasks larger than ~200 LOC of likely diff (mega-tasks).
    - Implicit dependencies between tasks not reflected in their order

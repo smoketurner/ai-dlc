@@ -13,7 +13,7 @@ when the spec is approved.
 from __future__ import annotations
 
 import re
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -23,6 +23,10 @@ from common.validators import NoneSafeList
 SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,126}[a-z0-9]$")
 TASK_ID_PATTERN = re.compile(r"^T-\d{3,}$")
 REQUIREMENT_ID_PATTERN = re.compile(r"^R-\d{3,}$")
+
+EarsPattern = Literal["ubiquitous", "event", "state", "optional", "unwanted"]
+"""The five base EARS patterns. Combinations are expressed by also filling
+``state`` (WHILE) on any pattern."""
 
 
 class _Frozen(BaseModel):
@@ -41,13 +45,65 @@ class UserStory(_Frozen):
 
 
 class AcceptanceCriterion(_Frozen):
-    """Testable acceptance criterion linked to a user story."""
+    """EARS-formatted acceptance criterion linked to a user story.
+
+    Five base patterns plus combinations:
+
+    | pattern    | required clause | template                                         |
+    |------------|-----------------|--------------------------------------------------|
+    | ubiquitous | (none)          | THE SYSTEM SHALL <response>                      |
+    | event      | trigger         | WHEN <trigger>, THE SYSTEM SHALL <response>      |
+    | state      | state           | WHILE <state>, THE SYSTEM SHALL <response>       |
+    | optional   | feature         | WHERE <feature>, THE SYSTEM SHALL <response>     |
+    | unwanted   | condition       | IF <condition>, THEN THE SYSTEM SHALL <response> |
+
+    Any pattern may also fill ``state`` (WHILE) for a state-qualified
+    variant — e.g., ``pattern="event"`` with ``state`` set renders as
+    ``WHILE <state>, WHEN <trigger>, THE SYSTEM SHALL <response>``. The
+    ``unwanted`` pattern may not combine with ``trigger`` (WHEN and IF
+    are mutually exclusive in classical EARS).
+    """
 
     id: Annotated[str, Field(min_length=1, max_length=64)]
     requirement_id: Annotated[str, Field(pattern=REQUIREMENT_ID_PATTERN.pattern)]
-    given: Annotated[str, Field(min_length=1, max_length=512)]
-    when: Annotated[str, Field(min_length=1, max_length=512)]
-    then: Annotated[str, Field(min_length=1, max_length=512)]
+    pattern: EarsPattern
+    response: Annotated[str, Field(min_length=1, max_length=512)]
+    trigger: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    state: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    feature: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    condition: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+
+    @model_validator(mode="after")
+    def clauses_match_pattern(self) -> Self:
+        """Enforce the EARS invariants described in the class docstring."""
+        required = {
+            "ubiquitous": None,
+            "event": "trigger",
+            "state": "state",
+            "optional": "feature",
+            "unwanted": "condition",
+        }[self.pattern]
+        if required is not None and getattr(self, required) is None:
+            msg = (
+                f"acceptance criterion {self.id!r} has pattern {self.pattern!r} "
+                f"but is missing required clause {required!r}"
+            )
+            raise ValueError(msg)
+        if self.pattern == "ubiquitous" and any(
+            getattr(self, c) is not None for c in ("trigger", "feature", "condition")
+        ):
+            msg = (
+                f"acceptance criterion {self.id!r} is ubiquitous but carries an "
+                "event/optional/unwanted clause; pick the matching pattern instead"
+            )
+            raise ValueError(msg)
+        if self.pattern == "unwanted" and self.trigger is not None:
+            msg = (
+                f"acceptance criterion {self.id!r}: WHEN and IF cannot combine in "
+                "classical EARS — pick one"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class Requirements(_Frozen):
@@ -75,6 +131,7 @@ class Design(_Frozen):
     components: Annotated[list[DesignComponent], Field(min_length=1, max_length=32)]
     data_model: Annotated[str, Field(min_length=1, max_length=4096)]
     sequence: Annotated[str, Field(min_length=1, max_length=4096)]
+    testing_strategy: Annotated[str, Field(min_length=1, max_length=2048)]
     failure_modes: NoneSafeList[str] = Field(default_factory=list)
     trade_offs: NoneSafeList[str] = Field(default_factory=list)
     proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
@@ -118,6 +175,25 @@ class SpecBundle(_Frozen):
     tasks: Annotated[list[Task], Field(min_length=1, max_length=64)]
 
 
+def render_acceptance_criterion(ac: AcceptanceCriterion) -> str:
+    """Render one criterion as a single EARS sentence ending with a period.
+
+    Clause order WHILE → WHERE → WHEN → IF/THEN → SHALL matches the
+    reference EARS grammar (Mavin et al.).
+    """
+    parts: list[str] = []
+    if ac.state is not None:
+        parts.append(f"WHILE {ac.state.rstrip('.,')},")
+    if ac.feature is not None:
+        parts.append(f"WHERE {ac.feature.rstrip('.,')},")
+    if ac.trigger is not None:
+        parts.append(f"WHEN {ac.trigger.rstrip('.,')},")
+    if ac.condition is not None:
+        parts.append(f"IF {ac.condition.rstrip('.,')}, THEN")
+    parts.append(f"THE SYSTEM SHALL {ac.response.rstrip('.')}")
+    return " ".join(parts) + "."
+
+
 def render_requirements(spec: SpecBundle) -> str:
     """Render the spec's requirements document as Markdown."""
     lines = [
@@ -140,8 +216,7 @@ def render_requirements(spec: SpecBundle) -> str:
     lines += ["", "## Acceptance criteria", ""]
     for ac in spec.requirements.acceptance_criteria:
         lines.append(
-            f"- **{ac.id}** ({ac.requirement_id}) — Given {ac.given}, "
-            f"when {ac.when}, then {ac.then}.",
+            f"- **{ac.id}** ({ac.requirement_id}) — {render_acceptance_criterion(ac)}",
         )
     if spec.requirements.out_of_scope:
         lines += ["", "## Out of scope", ""]
@@ -172,6 +247,7 @@ def render_design(spec: SpecBundle) -> str:
         lines.append(f"- **{c.name}** (`{c.location}`) — {c.purpose}")
     lines += ["", "## Data model", "", "```text", d.data_model, "```", ""]
     lines += ["## Sequence", "", "```text", d.sequence, "```", ""]
+    lines += ["## Testing strategy", "", d.testing_strategy, ""]
     if d.failure_modes:
         lines += ["## Failure modes & mitigations", ""]
         lines += [f"- {item}" for item in d.failure_modes]

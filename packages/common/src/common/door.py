@@ -22,7 +22,7 @@ shows up in file paths. The other three categories
 require diff-content analysis and are the agent's responsibility.
 
 The ten one-way categories are the canonical list committed in the
-project's `CLAUDE.md` and `docs/aws-agent-architecture-guide.md`.
+project's `CLAUDE.md`.
 """
 
 from __future__ import annotations

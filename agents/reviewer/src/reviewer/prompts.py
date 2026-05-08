@@ -42,7 +42,13 @@ Operating principles:
    don't know the fix, say so (``consider X, Y, or Z``) — but don't raise the
    issue without proposing direction.
 5. Hunt for these failure modes:
-   - Acceptance criteria with no test that exercises them.
+   - Acceptance criteria with no test that exercises them. The shape of
+     the test depends on the AC's EARS pattern: ``event`` ACs need a
+     test that triggers and asserts the SHALL response; ``unwanted``
+     ACs need a test that simulates the IF condition and asserts the
+     SHALL response; ``state`` ACs need a test that arranges the WHILE
+     state before triggering; ``optional`` ACs need a test with the
+     feature flag enabled (and ideally one with it disabled).
    - Error paths that swallow exceptions or return without context.
    - Inputs not validated at trust boundaries (HTTP body, message payload).
    - Convention drift: relative imports, underscore-prefixed names where the

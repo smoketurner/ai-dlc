@@ -6,13 +6,12 @@ Six sections, in order. Agents fail-fast on unknown headers.
 
 ## Overview
 
-ai-dlc is the agentic SDLC platform itself. Two agents (Architect on Strands, Implementer on Claude Agent SDK) drive a spec-driven pipeline gated by GitHub PR reviews: the Architect writes a spec (requirements + design + tasks), reviewers approve it as a bundle, then the Implementer works through `tasks.md` opening one PR per task.
+ai-dlc is the agentic SDLC platform itself. Seven agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer) drive a spec-driven pipeline gated by GitHub PR reviews. The Architect writes a spec (requirements + design + tasks); the Critic advises on it; the spec PR is reviewed and merged as a bundle; the Implementer then works through `tasks.md` opening one PR per task with the Reviewer and Tester acting as advisors. Triage classifies issue-driven runs; Proposer drives memory and prompt updates. Orchestration is an SQS-beacon + DDB-state machine driven by a single `state_router` Lambda.
 
 ## Conventions
 
 - Python 3.14, Astral toolchain only (`uv`, `ruff`, `ty`).
 - All agents ship as `linux/arm64` container images on AgentCore Runtime.
-- Step Functions uses the native `aws-sdk:bedrockagentcore:invokeAgentRuntime` integration — no `runtime_invoker` Lambda hop.
 - Pin every dependency to an exact version. Pin every GitHub Action to a SHA with a version comment.
 - Replace, don't deprecate: when a new implementation supersedes an old one, remove the old one entirely.
 - **Spec-driven**: every feature ships as a three-document spec under `docs/specs/{slug}/{requirements,design,tasks}.md`. The Architect writes the spec; reviewers approve it as a bundle (one HITL gate). The Implementer works the `tasks.md` checklist, opening **one PR per task**.
@@ -39,7 +38,6 @@ Format the bullet here as: `- [{slug}](docs/specs/{slug}/): one-line summary`.
 
 - AgentCore Runtime allows only Python 3.10–3.13 in `code_configuration`; we use `container_configuration` with our own 3.14 image.
 - AgentCore Runtime requires `linux/arm64` images.
-- Step Functions state size limit: 1 MiB. Large agent outputs go to S3; only the key returns through the workflow.
 
 ## Glossary
 

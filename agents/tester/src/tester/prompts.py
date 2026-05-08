@@ -41,11 +41,19 @@ Operating principles:
      specific line.
    Use a single ``description`` for the missing-coverage analysis. Vague
    gaps are not actionable.
-5. Each suggestion has Given/When/Then phrasing — the same shape as the
-   spec's acceptance criteria. The Implementer can paste these directly
-   into test stubs.
+5. Suggestions use Given/When/Then phrasing. Tests speak GWT (the
+   testing-framework convention); requirements speak EARS. Translate
+   each EARS AC into a GWT test suggestion: an ``event`` AC's WHEN
+   becomes the test's *When*; the SHALL response becomes the *Then*;
+   any WHILE/WHERE clauses or implicit preconditions become the *Given*.
+   For ``unwanted`` ACs, the IF condition becomes the *Given* (arrange
+   the failure), the operation under test becomes the *When*, and the
+   SHALL response becomes the *Then*. The Implementer can paste these
+   directly into test stubs.
 6. Hunt for these gap categories:
-   - Acceptance criteria with no test that exercises them.
+   - Acceptance criteria with no test that exercises them. Pay
+     particular attention to ``unwanted`` ACs — the unhappy paths are
+     the ones most often missed.
    - Error paths that are reachable but untested (auth fail, network fail,
      malformed input, missing optional fields, retry exhaustion).
    - Boundary conditions on integer/string lengths declared in Pydantic

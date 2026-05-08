@@ -1,8 +1,8 @@
 # Roadmap
 
-Live tracker for the AI-DLC build. The architectural reference is [`aws-agent-architecture-guide.md`](aws-agent-architecture-guide.md); the orchestration design lives in [`SQS-DESIGN.md`](SQS-DESIGN.md).
+Live tracker for the AI-DLC build.
 
-The platform's seven agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed — `docs/eval-set/` cases remain as reference for when we rebuild it.
+The platform's seven agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed.
 
 **Current focus:** architect grounding + spec PR iteration. Detailed plan in [`ARCHITECT-GROUNDING-AND-SPEC-ITERATION.md`](ARCHITECT-GROUNDING-AND-SPEC-ITERATION.md). Triggered by run `019e0393` on issue smoketurner/ai-dlc#33: the architect produced a Next.js spec for a FastAPI project because both grounding sources (per-project MEMORY.md S3 snapshot + repo file-listing) returned empty. Two work streams: fix the architect's grounding so it stops inventing tech, then add a spec-iteration state so a human can comment on the spec PR and the architect regenerates.
 
@@ -49,7 +49,7 @@ Behavioural gaps the SFN→SQS cutover left behind. All shipped:
 
 ## Pre-deploy hardening ✅
 
-Audit findings against [`SQS-DESIGN.md`](SQS-DESIGN.md). All shipped.
+Audit findings from the SQS cutover. All shipped.
 
 ### Blockers (silent data loss or cost leakage) ✅
 
@@ -71,11 +71,10 @@ Audit findings against [`SQS-DESIGN.md`](SQS-DESIGN.md). All shipped.
 
 ### Out of scope for this round
 
-- Stuck-run detector schedule. SQS-DESIGN risk #2 — a beacon loss leaves a run stuck silently. Add a CloudWatch alarm on `non_terminal_runs_with_stale_last_event > 0` until the schedule is built.
+- Stuck-run detector schedule. Risk: a beacon loss leaves a run stuck silently. Add a CloudWatch alarm on `non_terminal_runs_with_stale_last_event > 0` until the schedule is built.
 - Reviewer/Tester parallelism (currently sequential via `dispatch_advisors`).
 - Per-run cost cap.
 - Auto-merge for TWO-WAY PRs.
-- Rebuilding the eval pipeline (`cases.yaml` + 10 case docs kept as reference).
 
 ---
 

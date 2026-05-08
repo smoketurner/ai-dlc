@@ -2,11 +2,11 @@
 
 An agentic Software Development Lifecycle (SDLC) platform on AWS Bedrock AgentCore.
 
-A Step Functions state machine drives a deterministic pipeline (Spec → Architecture → Implementation → QA → Deploy → Doc) where each stage is an AgentCore-hosted specialist agent. Mandatory human-in-the-loop gates run via GitHub PR reviews. Memory is hybrid: AgentCore Memory for cross-session semantic facts, `MEMORY.md` files for repository-scoped context.
+Seven AgentCore-hosted specialist agents drive a spec-driven SDLC pipeline (Triage → Architect → Critic → Implementer → Reviewer → Tester) coordinated by an SQS-beacon + DynamoDB-state machine. Mandatory human-in-the-loop gates run via GitHub PR reviews — one for the spec, one per task. Memory is hybrid: AgentCore Memory for cross-session semantic facts, `MEMORY.md` files for repository-scoped context.
 
 ## Status
 
-Initial scaffold. The full architecture is described in [`docs/aws-agent-architecture-guide.md`](docs/aws-agent-architecture-guide.md). The project manifest lives in [`CLAUDE.md`](CLAUDE.md).
+Initial scaffold. The project manifest lives in [`CLAUDE.md`](CLAUDE.md).
 
 ## Quick start
 
@@ -19,10 +19,9 @@ uv run pytest -q                          # tests
 
 ## Layout
 
-- `packages/common/` — shared models, event schemas, hybrid-memory utility.
-- `agents/architect/` — Strands-based architect agent (Opus 4.7).
-- `agents/implementer/` — Claude Agent SDK-based implementer (Sonnet 4.6).
-- `lambdas/` — AWS Lambda functions for entry, HITL, projection, and gateway tools.
+- `packages/common/` — shared models, event schemas, state machine, hybrid-memory utility.
+- `agents/` — seven AgentCore Runtime workers (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer) on Strands Agents + Claude Agent SDK.
+- `lambdas/` — entry adapter, state router (dispatch), event projector (state writer), gateway tools (artifact + repo helper), telemetry.
 - `services/dashboard/` — FastAPI + Jinja2 + Alpine.js pipeline UI.
 - `terraform/` — all infrastructure (modules, environments, bootstrap).
 
