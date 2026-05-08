@@ -400,6 +400,35 @@ class ProposerResult(_Frozen):
     session_id: str
 
 
+def default_retry_strategy(model_id: str) -> Any:
+    """Return a Bedrock-throttling retry policy tuned for our model tier.
+
+    Strands' default ``ModelRetryStrategy`` retries
+    ``ModelThrottledException`` with 6 attempts and 4s→128s exponential
+    backoff. Haiku tolerates fewer attempts and a tighter cap because it
+    runs in higher-volume contexts (Triage, Tester) where a long backoff
+    chain blocks the Step Functions task more than it helps. Opus and
+    Sonnet keep the default — Opus throttles are stickier, so we want
+    the full 6 attempts.
+
+    The return type is :class:`Any` so this module stays importable from
+    Implementer code that doesn't pull in Strands.
+
+    Args:
+        model_id: Bedrock model id (e.g., the value of
+            ``AIDLC_BEDROCK_MODEL_ID``).
+
+    Returns:
+        A Strands ``ModelRetryStrategy`` ready to pass into
+        ``Agent(retry_strategy=...)``.
+    """
+    from strands import ModelRetryStrategy  # noqa: PLC0415
+
+    if "haiku" in model_id.lower():
+        return ModelRetryStrategy(max_attempts=4, initial_delay=2, max_delay=30)
+    return ModelRetryStrategy(max_attempts=6, initial_delay=4, max_delay=128)
+
+
 def run_for_structured_output[T: BaseModel](
     agent: Any,
     *,

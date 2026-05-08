@@ -16,7 +16,7 @@ from strands.models import BedrockModel
 
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
-from common.runtime import run_for_structured_output
+from common.runtime import default_retry_strategy, run_for_structured_output
 from proposer.hooks import (
     ProposerCallTracker,
     build_hooks_with_tracker,
@@ -51,9 +51,10 @@ def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
     """
     variant = pick_variant(run_id, "proposer")
     hooks, tracker = build_hooks_with_tracker()
+    bedrock_model_id = model_id()
     agent = Agent(
         model=BedrockModel(
-            model_id=model_id(),
+            model_id=bedrock_model_id,
             region_name=os.environ["AWS_REGION"],
             temperature=0.3,
             max_tokens=8192,
@@ -69,6 +70,7 @@ def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
             browse_url_tool,
         ],
         hooks=hooks,
+        retry_strategy=default_retry_strategy(bedrock_model_id),
     )
     return agent, tracker
 
@@ -89,9 +91,9 @@ def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_i
         agent decides no action is warranted.
 
     Raises:
-        ValueError: When the proposal targets ``docs/MEMORY.md`` but the
-            agent did not first call ``read_memory_md`` and
-            ``read_drift_report``.
+        ValueError: When, after one corrective retry, the proposal still
+            targets ``docs/MEMORY.md`` without first calling
+            ``read_memory_md`` and ``read_drift_report``.
     """
     user_message = compose_message(
         project_slug=project_slug,
@@ -101,9 +103,44 @@ def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_i
     agent, tracker = build_agent(run_id)
     proposal = run_for_structured_output(agent, output_model=Proposal, prompt=user_message)
     violation = check_memory_md_prerequisites(proposal, tracker)
+    if violation is None:
+        return proposal
+    retry_message = compose_retry_message(user_message, violation)
+    proposal = run_for_structured_output(agent, output_model=Proposal, prompt=retry_message)
+    violation = check_memory_md_prerequisites(proposal, tracker)
     if violation is not None:
         raise ValueError(violation)
     return proposal
+
+
+def compose_retry_message(original_message: str, violation: str) -> str:
+    """Build a corrective prompt that surfaces the prerequisite violation.
+
+    Strands' agent loop resets per-invocation hook state on the next
+    ``Agent.__call__``, so the second pass starts with an empty tracker
+    and the agent must re-call the read tools before proposing edits.
+
+    Args:
+        original_message: The first-attempt prompt — replayed so the
+            agent has full task context on the retry.
+        violation: Reason returned by
+            :func:`proposer.hooks.check_memory_md_prerequisites`.
+
+    Returns:
+        A new prompt that asks the agent to address the violation and
+        retry.
+    """
+    return "\n".join(
+        [
+            original_message,
+            "",
+            "Your previous attempt was rejected:",
+            f"  {violation}",
+            "",
+            "Call read_memory_md and read_drift_report this time before "
+            "returning a Proposal that edits docs/MEMORY.md.",
+        ]
+    )
 
 
 def compose_message(*, project_slug: str, trigger_reason: str, lookback_days: int) -> str:

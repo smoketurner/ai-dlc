@@ -47,11 +47,17 @@ class Issue(_Frozen):
 
 
 class Critique(_Frozen):
-    """The full adversarial review produced by the Critic per session."""
+    """The full adversarial review produced by the Critic per session.
+
+    ``issues`` is required and non-empty: the Critic's job is to find at
+    least one thing — a Critique with zero issues is treated as a model
+    failure and surfaced to the agent as a Pydantic ``ValidationError``,
+    which Strands' structured-output mode lets the agent self-correct.
+    """
 
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     summary: Annotated[str, Field(min_length=1, max_length=2048)]
-    issues: Annotated[NoneSafeList[Issue], Field(max_length=64)] = Field(default_factory=list)
+    issues: Annotated[NoneSafeList[Issue], Field(min_length=1, max_length=64)]
     strengths: NoneSafeList[str] = Field(default_factory=list)
 
 
@@ -85,15 +91,14 @@ def render_critique(critique: Critique) -> str:
         critique.summary,
         "",
     ]
-    if critique.issues:
-        lines += ["## Issues", ""]
-        for ix, issue in enumerate(critique.issues, start=1):
-            lines.append(f"### {ix}. [{issue.severity}] {issue_anchor(issue)}")
-            lines.append("")
-            lines.append(f"**Problem:** {issue.description}")
-            lines.append("")
-            lines.append(f"**Recommendation:** {issue.recommendation}")
-            lines.append("")
+    lines += ["## Issues", ""]
+    for ix, issue in enumerate(critique.issues, start=1):
+        lines.append(f"### {ix}. [{issue.severity}] {issue_anchor(issue)}")
+        lines.append("")
+        lines.append(f"**Problem:** {issue.description}")
+        lines.append("")
+        lines.append(f"**Recommendation:** {issue.recommendation}")
+        lines.append("")
     if critique.strengths:
         lines += ["## Strengths", ""]
         lines += [f"- {item}" for item in critique.strengths]

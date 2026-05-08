@@ -3,23 +3,11 @@
 Caps ``read_spec_doc`` at 3 calls per invocation (one per spec document).
 A 4th call indicates a stuck loop, not legitimate re-reading.
 
-Note on the deferred severity-bucket completeness check
--------------------------------------------------------
-The original plan called for an ``AfterInvocationEvent`` that re-prompts
-when the produced :class:`critic.critique.Critique` is missing severity
-buckets. Two technical realities pushed that out of scope:
-
-  * Strands' ``Agent.structured_output`` returns the parsed object as a
-    return value; ``AfterInvocationEvent.result`` is ``None`` for those
-    calls (per the Strands 1.38 docstring on ``AfterInvocationEvent``),
-    so a hook can't read the validated :class:`Critique`.
-  * Forcing every severity bucket on every critique is the wrong rule:
-    a strong spec may legitimately produce only ``low``-severity issues.
-
-If we still want this, the right place is a ``model_validator`` on
-:class:`Critique` that rejects an entirely-empty ``issues`` list (i.e.
-"the Critic must find at least one thing"). That's a contract change
-better landed as its own PR.
+The "Critic must find at least one issue" rule lives on
+:class:`critic.critique.Critique` itself as a ``min_length=1`` constraint
+on ``issues``. Strands' structured-output mode surfaces the resulting
+Pydantic ``ValidationError`` to the agent, giving it a chance to
+self-correct before the run completes.
 """
 
 from __future__ import annotations

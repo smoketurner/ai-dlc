@@ -356,11 +356,18 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       # ``opentelemetry-instrumentation-logging`` only handles trace
       # correlation, not log forwarding. Live with the warning until AWS
       # ships their replacement handler.
-      AIDLC_ARTIFACTS_BUCKET  = var.artifacts_bucket
-      AIDLC_MEMORY_MD_BUCKET  = var.memory_md_bucket
-      AIDLC_MEMORY_ID         = aws_bedrockagentcore_memory.this.id
-      AIDLC_AGENT_GATEWAY_URL = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
-      AIDLC_BEDROCK_MODEL_ID  = var.agents[each.key].bedrock_model_id
+      #
+      # Opt into the stable OpenTelemetry GenAI semantic conventions so
+      # Strands emits ``gen_ai.*`` attributes plus per-tool definition
+      # spans on the existing trace pipeline. Without this Strands falls
+      # back to its older convention set, which omits the tool-definition
+      # attributes we use to slice latency / cost by tool in CloudWatch.
+      OTEL_SEMCONV_STABILITY_OPT_IN = "gen_ai_latest_experimental,gen_ai_tool_definitions"
+      AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
+      AIDLC_MEMORY_MD_BUCKET        = var.memory_md_bucket
+      AIDLC_MEMORY_ID               = aws_bedrockagentcore_memory.this.id
+      AIDLC_AGENT_GATEWAY_URL       = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
+      AIDLC_BEDROCK_MODEL_ID        = var.agents[each.key].bedrock_model_id
     },
     # Every agent emits its completion event on the platform bus when
     # finished — wire the bus name into the runtime env so each container

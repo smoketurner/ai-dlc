@@ -16,7 +16,7 @@ from strands.models import BedrockModel
 
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
-from common.runtime import run_for_structured_output
+from common.runtime import default_retry_strategy, run_for_structured_output
 from tester.hooks import build_hooks
 from tester.report import Report
 from tester.tools import read_memory_md_tool, read_spec_doc_tool, run_pr_in_sandbox_tool
@@ -35,9 +35,10 @@ def build_agent(run_id: str) -> Agent:
     Prompt variant routed via :func:`common.routing.pick_variant`.
     """
     variant = pick_variant(run_id, "tester")
+    bedrock_model_id = model_id()
     return Agent(
         model=BedrockModel(
-            model_id=model_id(),
+            model_id=bedrock_model_id,
             region_name=os.environ["AWS_REGION"],
             temperature=0.2,
             max_tokens=4096,
@@ -46,6 +47,7 @@ def build_agent(run_id: str) -> Agent:
         system_prompt=load_system_prompt("tester", variant),
         tools=[read_memory_md_tool, read_spec_doc_tool, run_pr_in_sandbox_tool],
         hooks=build_hooks(),
+        retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 
 

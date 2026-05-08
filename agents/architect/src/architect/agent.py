@@ -26,7 +26,7 @@ from architect.tools import (
 )
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
-from common.runtime import run_for_structured_output
+from common.runtime import default_retry_strategy, run_for_structured_output
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 
@@ -43,9 +43,10 @@ def build_agent(run_id: str) -> Agent:
     exists, half of runs (deterministically picked from ``run_id``) use it.
     """
     variant = pick_variant(run_id, "architect")
+    bedrock_model_id = model_id()
     return Agent(
         model=BedrockModel(
-            model_id=model_id(),
+            model_id=bedrock_model_id,
             region_name=os.environ["AWS_REGION"],
             temperature=0.4,
             max_tokens=8192,
@@ -59,6 +60,7 @@ def build_agent(run_id: str) -> Agent:
             read_repo_file_tool,
         ],
         hooks=build_hooks(),
+        retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 
 

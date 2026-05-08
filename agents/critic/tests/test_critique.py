@@ -8,36 +8,32 @@ from pydantic import ValidationError
 from critic.critique import Critique, Issue, render_critique, severity_counts
 
 
-def make_critique(*, with_issues: bool = True) -> Critique:
-    """Build a minimal valid critique; toggles issues for empty-critique tests."""
-    issues = (
-        [
-            Issue(
-                severity="high",
-                path="docs/specs/add-healthz/design.md",
-                symbol="components[2]",
-                description="No concrete file path named for the projector Lambda.",
-                recommendation="Add `lambdas/event_projector/src/event_projector/handler.py`.",
-            ),
-            Issue(
-                severity="medium",
-                path="docs/specs/add-healthz/requirements.md",
-                symbol="AC-R-001-a",
-                line=42,
-                description="`supports OAuth` is not observable.",
-                recommendation="Restate as `Given a Cognito JWT, when I POST /v1/runs, then 202`.",
-            ),
-            Issue(
-                severity="low",
-                path="docs/specs/add-healthz/tasks.md",
-                symbol="T-003",
-                description="Task estimated > 200 LOC.",
-                recommendation="Split into T-003a (route) and T-003b (validation).",
-            ),
-        ]
-        if with_issues
-        else []
-    )
+def make_critique() -> Critique:
+    """Build a minimal valid critique covering all three severity buckets."""
+    issues = [
+        Issue(
+            severity="high",
+            path="docs/specs/add-healthz/design.md",
+            symbol="components[2]",
+            description="No concrete file path named for the projector Lambda.",
+            recommendation="Add `lambdas/event_projector/src/event_projector/handler.py`.",
+        ),
+        Issue(
+            severity="medium",
+            path="docs/specs/add-healthz/requirements.md",
+            symbol="AC-R-001-a",
+            line=42,
+            description="`supports OAuth` is not observable.",
+            recommendation="Restate as `Given a Cognito JWT, when I POST /v1/runs, then 202`.",
+        ),
+        Issue(
+            severity="low",
+            path="docs/specs/add-healthz/tasks.md",
+            symbol="T-003",
+            description="Task estimated > 200 LOC.",
+            recommendation="Split into T-003a (route) and T-003b (validation).",
+        ),
+    ]
     return Critique(
         spec_slug="add-healthz",
         summary="Spec is mostly buildable; one high-severity gap on the projector path.",
@@ -82,9 +78,15 @@ def test_severity_counts_complete() -> None:
     assert counts == {"high": 1, "medium": 1, "low": 1}
 
 
-def test_severity_counts_zero_for_clean_critique() -> None:
-    counts = severity_counts(make_critique(with_issues=False))
-    assert counts == {"high": 0, "medium": 0, "low": 0}
+def test_empty_issues_rejected() -> None:
+    """Strands surfaces this ValidationError to the agent for self-correction."""
+    with pytest.raises(ValidationError):
+        Critique(
+            spec_slug="add-healthz",
+            summary="No problems found.",
+            issues=[],
+            strengths=[],
+        )
 
 
 def test_render_critique_includes_counts_and_issues() -> None:
@@ -94,12 +96,6 @@ def test_render_critique_includes_counts_and_issues() -> None:
     assert "### 1. [high] docs/specs/add-healthz/design.md (components[2])" in out
     assert "## Strengths" in out
     assert out.endswith("\n")
-
-
-def test_render_critique_skips_issues_section_when_empty() -> None:
-    out = render_critique(make_critique(with_issues=False))
-    assert "## Issues" not in out
-    assert "## Strengths" in out
 
 
 def test_critique_is_frozen() -> None:
