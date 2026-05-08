@@ -129,7 +129,17 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
 
 
 def invoke_proposer_research(run: Run, arn: str, *, advance_from: RunState) -> InvokeAgent:
-    """Dispatch the proposer for an issue-driven research run."""
+    """Dispatch the proposer for an issue-driven research run.
+
+    The agent's research substrate is the issue body (which carries the
+    URLs the user asked us to read). ``run.intent`` holds only the issue
+    title — useful for a one-line preamble but not for fetching. We send
+    ``title + body`` as the agent's ``intent`` so the URLs are visible
+    to ``browse_url``-based extraction.
+    """
+    body = run.issue_body or ""
+    title = run.intent or ""
+    intent = f"{title}\n\n{body}".strip() if body else title
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-proposer",
@@ -137,7 +147,7 @@ def invoke_proposer_research(run: Run, arn: str, *, advance_from: RunState) -> I
             "project_slug": run.project_slug,
             "target_repo": run.target_repo,
             "trigger_reason": "research",
-            "intent": run.intent,
+            "intent": intent,
             "issue_number": run.issue_number,
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,

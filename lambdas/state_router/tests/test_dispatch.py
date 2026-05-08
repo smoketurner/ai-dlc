@@ -176,12 +176,19 @@ class TestRunTriageDecided:
         assert any(isinstance(a, SeedTasks) for a in action.actions)
 
     def test_research_invokes_proposer(self) -> None:
-        run = make_run(state=RunState.triage_decided, workflow_kind="research")
+        run = make_run(
+            state=RunState.triage_decided,
+            workflow_kind="research",
+            issue_body="please review:\n- https://example.com/post-a\n- https://example.com/post-b",
+        )
         action = decide(run)
         assert isinstance(action, InvokeAgent)
         assert "proposer" in action.runtime_arn
         assert action.payload["trigger_reason"] == "research"
         assert action.advance_to == RunState.proposer_running.value
+        # The agent must see the URLs from the body, not just the title.
+        assert "https://example.com/post-a" in action.payload["intent"]
+        assert "https://example.com/post-b" in action.payload["intent"]
 
 
 class TestRunSpecFlow:
