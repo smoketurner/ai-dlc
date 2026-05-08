@@ -34,6 +34,7 @@ module "tool_lambda" {
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
   environment_variables = each.key == "repo_helper" ? merge(
+    local.common_aws_env,
     {
       AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
       AIDLC_MEMORY_MD_BUCKET       = var.memory_md_bucket
@@ -45,12 +46,12 @@ module "tool_lambda" {
       AIDLC_GITHUB_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.github[0].name
       AIDLC_AGENT_WORKLOAD_NAME        = aws_bedrockagentcore_workload_identity.platform[0].name
     },
-    ) : {
-    AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
-    AIDLC_MEMORY_MD_BUCKET       = var.memory_md_bucket
-    POWERTOOLS_SERVICE_NAME      = each.key
-    POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
-  }
+    ) : merge(local.common_aws_env, {
+      AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
+      AIDLC_MEMORY_MD_BUCKET       = var.memory_md_bucket
+      POWERTOOLS_SERVICE_NAME      = each.key
+      POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
+  })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 

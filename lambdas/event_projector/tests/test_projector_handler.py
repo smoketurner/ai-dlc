@@ -699,3 +699,170 @@ def test_forward_to_memory_calls_create_event_with_required_shape(aws_env: Magic
     assert isinstance(entry["blob"], dict)
     assert entry["blob"]["type"] == "SPEC.READY"
     assert entry["blob"]["run_id"] == "run-1"
+
+
+# ---------------------------------------------------------------------------
+# Dispatch circuit-breaker counter reset
+# ---------------------------------------------------------------------------
+
+
+def test_spec_ready_resets_run_dispatch_failure_count() -> None:
+    """A successful architect dispatch zeroes the run-row breaker counter.
+
+    The state-router increments ``dispatch_failure_count`` atomically on
+    each rollback. An eventual SPEC.READY proves the dispatch reached the
+    agent and ran; the projector clears the counter so a future
+    intermittent failure starts from zero rather than the accumulated
+    history.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+            "dispatch_failure_count": {"N": "2"},
+        },
+    )
+    handler(eb_event(envelope(type="SPEC.READY")), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "spec_drafted"
+    assert state["dispatch_failure_count"]["N"] == "0"
+
+
+def test_critique_ready_resets_run_dispatch_failure_count() -> None:
+    """CRITIQUE.READY closes the breaker on the run row.
+
+    Same shape as the SPEC.READY case; CRITIQUE.READY is the critic
+    agent's terminal event, equally proof of a successful dispatch.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "critic_running"},
+            "dispatch_failure_count": {"N": "1"},
+        },
+    )
+    critique = envelope(
+        type="CRITIQUE.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "critique_s3_key": "runs/run-1/critique.md",
+            "issue_count": 0,
+            "summary": "no issues",
+            "session_id": "run-1-critic",
+        },
+    )
+    handler(eb_event(critique), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["dispatch_failure_count"]["N"] == "0"
+
+
+def test_task_ready_resets_task_dispatch_failure_count() -> None:
+    """TASK.READY zeroes the breaker counter on the task row."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+            "dispatch_failure_count": {"N": "2"},
+        },
+    )
+    task_ready = envelope(
+        type="TASK.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "diff_summary": "fix",
+            "session_id": "run-1-T-001",
+        },
+    )
+    handler(eb_event(task_ready), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["dispatch_failure_count"]["N"] == "0"
+
+
+def test_task_blocked_also_resets_task_dispatch_failure_count() -> None:
+    """TASK.BLOCKED is also a successful dispatch (the agent ran).
+
+    The agent decided it couldn't produce a diff and self-reported
+    ``BLOCKED`` — that's a clean run-to-completion, not a dispatch
+    failure. The counter should reset so the next iteration starts
+    fresh.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+            "dispatch_failure_count": {"N": "1"},
+        },
+    )
+    task_blocked = envelope(
+        type="TASK.BLOCKED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "blocked_reason": "agent produced no diff",
+            "session_id": "run-1-T-001",
+        },
+    )
+    handler(eb_event(task_blocked), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["dispatch_failure_count"]["N"] == "0"
+
+
+def test_task_approved_does_not_touch_dispatch_failure_count() -> None:
+    """Non-dispatch-completion events leave the counter alone.
+
+    TASK.APPROVED is a human action (reviewer approved the PR), not a
+    proof that the most recent dispatch worked. The counter only resets
+    on the events listed in ``DISPATCH_RESET_EVENTS``.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "pending_approval"},
+            "dispatch_failure_count": {"N": "2"},
+        },
+    )
+    task_approved = envelope(
+        type="TASK.APPROVED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "reviewer": "alice",
+        },
+    )
+    handler(eb_event(task_approved), ctx())
+    task = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "TASK#T-001"}},
+    )["Item"]
+    assert task["status"]["S"] == "merged"
+    assert task["dispatch_failure_count"]["N"] == "2"  # unchanged

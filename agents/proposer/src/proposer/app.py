@@ -5,11 +5,13 @@ schedule (weekly) and on alerts from the eval-regression alarm. The
 entrypoint:
 
   1. Validates the input as :class:`ProposerInput`.
-  2. Asks the Strands agent for a :class:`Proposal`.
-  3. If the proposal contains edits, calls ``repo_helper`` (via Lambda
-     invoke) to create a branch, commit the proposed file contents, and
-     open a PR. Otherwise short-circuits with ``proposal_made=False``.
-  4. Returns a :class:`ProposerResult` for downstream auditing.
+  2. Registers an async task with the AgentCore SDK so ``/ping``
+     reports ``HealthyBusy`` while the proposal runs.
+  3. Spawns a daemon thread that asks the Strands agent for a
+     :class:`Proposal`, opens a PR via ``repo_helper`` if there are
+     edits, logs the outcome, and acknowledges the async task.
+  4. Returns ``{"status": "dispatched", ...}`` to the caller in
+     ~100ms.
 
 The Proposer authenticates as ``ai-dlc[bot]`` (installation token) — its
 PRs are explicitly bot-attributed because they're system-initiated and
@@ -21,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -28,7 +31,7 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from common.runtime import ProposerInput, ProposerResult
+from common.runtime import ProposerInput
 from proposer.agent import propose
 from proposer.proposal import FileEdit, Proposal
 
@@ -53,8 +56,8 @@ def repo_helper_function_name() -> str:
 
 
 @app.entrypoint
-async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Proposer entrypoint. Returns a JSON-serialisable ProposerResult."""
+def handler(event: dict[str, Any]) -> dict[str, Any]:
+    """Validate the input, kick off background work, return immediately."""
     payload = ProposerInput.model_validate(event)
     logger.info(
         "proposer invoked",
@@ -62,32 +65,39 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         project_slug=payload.project_slug,
         trigger_reason=payload.trigger_reason,
     )
+    task_id = app.add_async_task("proposer_run", {"run_id": payload.run_id})
+    threading.Thread(
+        target=run_proposer,
+        args=(payload, task_id),
+        daemon=True,
+    ).start()
+    return {"status": "dispatched", "run_id": payload.run_id, "task_id": task_id}
 
-    proposal = propose(
-        project_slug=payload.project_slug,
-        trigger_reason=payload.trigger_reason,
-        lookback_days=payload.evals_lookback_days,
-        run_id=payload.run_id,
-    )
 
-    if not proposal.edits:
-        logger.info("proposer found no actionable signal", run_id=payload.run_id)
-        return ProposerResult(
-            proposal_made=False,
-            target_files=[],
-            summary=proposal.rationale[:2048],
-            session_id=payload.run_id,
-        ).model_dump()
+def run_proposer(payload: ProposerInput, async_task_id: int) -> None:
+    """Body of the proposer run — opens a PR if there are actionable edits.
 
-    pr_url = open_proposal_pr(payload=payload, proposal=proposal)
-    logger.info("proposal opened", run_id=payload.run_id, pr_url=pr_url)
-    return ProposerResult(
-        proposal_made=True,
-        pr_url=pr_url,
-        target_files=[edit.target_file for edit in proposal.edits],
-        summary=proposal.rationale[:2048],
-        session_id=payload.run_id,
-    ).model_dump()
+    Out-of-pipeline: no SDLC state machine to advance; an exception is
+    logged and the async task is still acknowledged so the microVM
+    can release its session. The EventBridge / alarm caller has its
+    own retry semantics if a periodic run needs to re-fire.
+    """
+    try:
+        proposal = propose(
+            project_slug=payload.project_slug,
+            trigger_reason=payload.trigger_reason,
+            lookback_days=payload.evals_lookback_days,
+            run_id=payload.run_id,
+        )
+        if not proposal.edits:
+            logger.info("proposer found no actionable signal", run_id=payload.run_id)
+            return
+        pr_url = open_proposal_pr(payload=payload, proposal=proposal)
+        logger.info("proposal opened", run_id=payload.run_id, pr_url=pr_url)
+    except Exception:
+        logger.exception("proposer run failed", run_id=payload.run_id)
+    finally:
+        app.complete_async_task(async_task_id)
 
 
 def open_proposal_pr(*, payload: ProposerInput, proposal: Proposal) -> str:

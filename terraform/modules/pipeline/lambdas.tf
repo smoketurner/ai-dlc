@@ -28,7 +28,7 @@ module "entry_adapter" {
   build_in_docker = true
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
-  environment_variables = {
+  environment_variables = merge(local.common_aws_env, {
     AIDLC_BUS_NAME               = var.bus_name
     AIDLC_IDEMPOTENCY_TABLE      = var.idempotency_table
     AIDLC_IDEMPOTENCY_TTL        = "86400"
@@ -38,7 +38,7 @@ module "entry_adapter" {
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     POWERTOOLS_LOG_LEVEL         = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT  = "false"
-  }
+  })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
@@ -99,7 +99,7 @@ module "state_router" {
   build_in_docker = true
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
-  environment_variables = {
+  environment_variables = merge(local.common_aws_env, {
     AIDLC_RUNS_TABLE                = var.runs_table
     AIDLC_BUS_NAME                  = var.bus_name
     AIDLC_ARTIFACTS_BUCKET          = var.artifacts_bucket
@@ -114,7 +114,7 @@ module "state_router" {
     POWERTOOLS_METRICS_NAMESPACE    = "ai-dlc"
     POWERTOOLS_LOG_LEVEL            = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT     = "false"
-  }
+  })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
@@ -224,14 +224,14 @@ module "event_projector" {
   build_in_docker = true
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
-  environment_variables = {
+  environment_variables = merge(local.common_aws_env, {
     AIDLC_RUNS_TABLE             = var.runs_table
     AIDLC_MEMORY_ID              = var.memory_id
     POWERTOOLS_SERVICE_NAME      = "event_projector"
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     POWERTOOLS_LOG_LEVEL         = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT  = "false"
-  }
+  })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 

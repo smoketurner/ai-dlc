@@ -404,6 +404,7 @@ def apply_run_state_transition(
         to_state=next_state,
         event_id=event_id,
         timestamp=timestamp,
+        event_type=event_type,
     )
 
 
@@ -524,6 +525,25 @@ def read_task_state(run_id: str, task_id: str) -> TaskState | None:
         return None
 
 
+DISPATCH_RESET_EVENTS = frozenset(
+    {
+        "SPEC.READY",
+        "CRITIQUE.READY",
+        "TASK.READY",
+        "TASK.BLOCKED",
+    },
+)
+"""Events that prove the prior dispatch reached the agent and ran.
+
+Each one resets ``dispatch_failure_count`` to 0 on the row whose state
+the projector advances. Advisor events (``REVIEW.READY``,
+``TEST_REPORT.READY``) are not listed because the dispatches that
+produce them are advisor invokes — gated by an outer ``GuardedAdvance``
+with ``target_pk``/``target_sk`` ``None`` — and so don't increment the
+counter in the first place.
+"""
+
+
 def advance_run_state(
     *,
     run_id: str,
@@ -531,14 +551,28 @@ def advance_run_state(
     to_state: RunState,
     event_id: str,
     timestamp: str,
+    event_type: str,
 ) -> None:
-    """Conditional UpdateItem that advances ``current_state``."""
+    """Conditional UpdateItem that advances ``current_state``.
+
+    On a state-advancing :data:`DISPATCH_RESET_EVENTS` event, the same
+    update zeroes ``dispatch_failure_count`` so a successful dispatch
+    closes the breaker.
+    """
+    set_parts = [
+        "current_state = :to",
+        "last_event_id = :eid",
+        "last_event_at = :ts",
+    ]
     values: dict[str, dict[str, str | int]] = {
         ":to": {"S": to_state.value},
         ":eid": {"S": event_id},
         ":ts": {"S": timestamp},
         ":one": {"N": "1"},
     }
+    if event_type in DISPATCH_RESET_EVENTS:
+        set_parts.append("dispatch_failure_count = :zero")
+        values[":zero"] = {"N": "0"}
     if from_state is None:
         condition = "attribute_not_exists(current_state)"
     else:
@@ -548,10 +582,7 @@ def advance_run_state(
         ddb().update_item(
             TableName=runs_table(),
             Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            UpdateExpression=(
-                "SET current_state = :to, last_event_id = :eid, last_event_at = :ts "
-                "ADD state_transitions :one"
-            ),
+            UpdateExpression=("SET " + ", ".join(set_parts) + " ADD state_transitions :one"),
             ConditionExpression=condition,
             ExpressionAttributeValues=values,
         )
@@ -609,6 +640,9 @@ def advance_task_state(
         remove_parts=remove_parts,
         values=values,
     )
+    if event_type in DISPATCH_RESET_EVENTS:
+        set_parts.append("dispatch_failure_count = :zero")
+        values[":zero"] = {"N": "0"}
     pr_url = payload.get("pr_url")
     if isinstance(pr_url, str) and pr_url:
         set_parts.append("pr_url = :pr_url")

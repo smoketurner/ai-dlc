@@ -12,4 +12,9 @@ locals {
   alb_log_prefix = "alb/${local.prefix}-dashboard"
   use_https      = var.dashboard_fqdn != null && var.route53_zone_id != null
   webhook_path   = "/webhooks/github"
+
+  common_aws_env = {
+    AWS_DEFAULTS_MODE = "in-region"
+    AWS_ACCOUNT_ID    = local.aws_account_id
+  }
 }

@@ -36,6 +36,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError, ReadTimeoutError
 
 from common.event_emit import publish
+from common.events import EventEnvelope, RunFailed, TaskBlocked
+from common.ids import CorrelationId, RunId, new_event_id
 from common.state import TERMINAL_RUN_STATES
 from state_router.actions import (
     Action,
@@ -50,7 +52,7 @@ from state_router.actions import (
     WriteSyntheticSpec,
 )
 from state_router.dispatch import decide
-from state_router.model import Run, parse_run
+from state_router.model import Run, Task, parse_run
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
@@ -61,8 +63,15 @@ logger = Logger(service="state_router")
 tracer = Tracer(service="state_router")
 metrics = Metrics(namespace="ai-dlc", service="state_router")
 
-DISPATCH_READ_TIMEOUT_SECONDS = 2.0
+DISPATCH_READ_TIMEOUT_SECONDS = 10.0
 DISPATCH_CONNECT_TIMEOUT_SECONDS = 10.0
+
+MAX_DISPATCH_FAILURES = 3
+"""Open the per-row circuit breaker after this many consecutive
+``rollback_invoke_advance`` cycles. Each rollback increments
+``dispatch_failure_count`` on the target row; a successful agent
+completion (``*.READY`` event) resets it to 0 in the projector.
+"""
 
 
 @cache
@@ -85,11 +94,19 @@ def s3() -> S3Client:
 
 @cache
 def runtime_client() -> Any:
-    """Process-cached AgentCore Runtime client with short read timeout.
+    """Process-cached AgentCore Runtime client.
 
-    Same 2s read-timeout pattern as the runtime_invoker shim — the
-    container accepts the request well before the timeout fires; the
-    agent will emit its completion event when done.
+    The agents use the AgentCore SDK's async-task pattern
+    (``add_async_task`` + a daemon thread), so the entrypoint returns
+    in ~100ms and the dispatch is a clean fast call. The 10s read
+    timeout covers the AgentCore frontend's worst-case acknowledge
+    time — anything longer is a real failure, not the
+    ReadTimeoutError-as-success pattern this client used to have.
+
+    Client-side retries stay disabled because the dispatch contract
+    is at-least-once via the SQS beacon: a real failure rolls back
+    state, the breaker counter increments, and the next beacon
+    re-attempts.
     """
     return boto3.client(
         "bedrock-agentcore",
@@ -248,7 +265,7 @@ def execute_emit_event(_run: Run, action: Action) -> None:
 # args through and is wrapped only for the same forward-ref reason.
 EXECUTORS: dict[type[Action], Any] = {
     Noop: execute_noop,
-    InvokeAgent: lambda _run, a: execute_invoke_agent(a),
+    InvokeAgent: lambda run, a: execute_invoke_agent(run, a),  # noqa: PLW0108
     EmitEvent: execute_emit_event,
     InvokeRepoHelper: lambda _run, a: execute_invoke_repo_helper(a),
     WriteSyntheticSpec: lambda _run, a: execute_write_synthetic_spec(a),
@@ -258,7 +275,7 @@ EXECUTORS: dict[type[Action], Any] = {
 }
 
 
-def execute_invoke_agent(action: InvokeAgent) -> None:
+def execute_invoke_agent(run: Run, action: InvokeAgent) -> None:
     """Optionally advance state, then fire the agent.
 
     When ``advance_from`` / ``advance_to`` / ``target_pk`` / ``target_sk``
@@ -266,18 +283,27 @@ def execute_invoke_agent(action: InvokeAgent) -> None:
     four are ``None`` the agent fires unconditionally — used for
     advisors gated by an outer :class:`GuardedAdvance`.
 
+    Before any of that, the per-row dispatch circuit breaker is
+    checked: when ``dispatch_failure_count >= MAX_DISPATCH_FAILURES``
+    on the addressed row, the dispatch is suppressed and the
+    appropriate breaker event (``TASK.BLOCKED`` or ``RUN.FAILED``) is
+    emitted instead. This bounds the rollback-redeliver loop that
+    would otherwise burn cost on a deterministically-failing agent.
+
     If :func:`dispatch_to_runtime` reports a synchronous dispatch failure
     (4xx / 5xx from the runtime — the agent never received the work, or
     the agent's container raised before doing any work), the state
     advance is rolled back so the next beacon cycle re-dispatches from
-    the original state. Without this, a transient runtime error or a
-    misconfigured agent (missing env var, IAM gap, etc.) wedges the run
-    in ``*_running`` forever with no completion event ever arriving.
+    the original state. The rollback also bumps
+    ``dispatch_failure_count`` atomically so the breaker eventually
+    trips.
 
     Asynchronous agent crashes (runtime accepted the work, agent
     started, then died mid-execution) aren't visible from this path —
     those need the stuck-run detector to recover.
     """
+    if circuit_breaker_open(run, action):
+        return
     if not invoke_advance_succeeds(action):
         return
     if dispatch_to_runtime(
@@ -289,12 +315,133 @@ def execute_invoke_agent(action: InvokeAgent) -> None:
     rollback_invoke_advance(action)
 
 
+def circuit_breaker_open(run: Run, action: InvokeAgent) -> bool:
+    """Return ``True`` when the per-row dispatch breaker should suppress the dispatch.
+
+    Reads ``dispatch_failure_count`` from the addressed row (already
+    parsed off the run by :func:`read_run`). When the count is at or
+    above :data:`MAX_DISPATCH_FAILURES`, emits the appropriate breaker
+    event (``TASK.BLOCKED`` if the action targets a task with a PR;
+    ``RUN.FAILED`` otherwise) and returns ``True``.
+
+    Actions without an addressable row (``target_pk``/``target_sk``
+    ``None`` — advisors gated by an outer :class:`GuardedAdvance`) are
+    not subject to the per-row breaker.
+    """
+    if action.target_pk is None or action.target_sk is None:
+        return False
+    failure_count = lookup_dispatch_failure_count(run, action.target_sk)
+    if failure_count < MAX_DISPATCH_FAILURES:
+        return False
+    logger.warning(
+        "circuit breaker tripped — suppressing dispatch",
+        extra={
+            "target_sk": action.target_sk,
+            "dispatch_failure_count": failure_count,
+            "max_dispatch_failures": MAX_DISPATCH_FAILURES,
+        },
+    )
+    metrics.add_metric(name="DispatchCircuitTripped", unit=MetricUnit.Count, value=1)
+    emit_circuit_breaker_event(run, action, failure_count)
+    return True
+
+
+def lookup_dispatch_failure_count(run: Run, target_sk: str) -> int:
+    """Resolve the breaker counter for the addressed row off the parsed run."""
+    if target_sk == "STATE":
+        return run.dispatch_failure_count
+    if target_sk.startswith("TASK#"):
+        task_id = target_sk.removeprefix("TASK#")
+        for task in run.tasks:
+            if task.task_id == task_id:
+                return task.dispatch_failure_count
+    return 0
+
+
+def emit_circuit_breaker_event(run: Run, action: InvokeAgent, count: int) -> None:
+    """Emit ``TASK.BLOCKED`` (task with PR) or ``RUN.FAILED`` (otherwise).
+
+    ``TaskBlocked`` requires a ``pr_url`` because the human-recovery
+    surface is a PR comment. When the breaker trips before the
+    implementer ever produced a PR, fall back to ``RUN.FAILED`` so the
+    run terminates and surfaces in the dashboard rather than wedging
+    forever.
+    """
+    target_sk = action.target_sk or ""
+    if target_sk.startswith("TASK#") and run.spec_slug:
+        task_id = target_sk.removeprefix("TASK#")
+        task = next((t for t in run.tasks if t.task_id == task_id), None)
+        if task is not None and task.pr_url:
+            emit_breaker_task_blocked(run, task, count, action.runtime_session_id)
+            return
+    emit_breaker_run_failed(run, action, count)
+
+
+def emit_breaker_task_blocked(
+    run: Run,
+    task: Task,
+    count: int,
+    runtime_session_id: str,
+) -> None:
+    """Emit ``TASK.BLOCKED`` on circuit-trip — humans drive recovery via the PR."""
+    if not run.spec_slug or not task.pr_url:
+        return
+    envelope = EventEnvelope[TaskBlocked](
+        event_id=new_event_id(),
+        type="TASK.BLOCKED",
+        run_id=RunId(run.run_id),
+        correlation_id=CorrelationId(run.correlation_id),
+        actor_id="state_router",
+        payload=TaskBlocked(
+            project_slug=run.project_slug,
+            spec_slug=run.spec_slug,
+            task_id=task.task_id,
+            pr_url=task.pr_url,
+            blocked_reason=(
+                f"dispatch failed {count} times — circuit breaker tripped; "
+                "comment on this PR to retry, close to abort"
+            ),
+            session_id=runtime_session_id,
+        ),
+    )
+    publish(envelope)
+
+
+def emit_breaker_run_failed(run: Run, action: InvokeAgent, count: int) -> None:
+    """Emit ``RUN.FAILED`` on circuit-trip when no PR exists to comment on."""
+    failed_state = str(run.current_state) if run.current_state is not None else "unknown"
+    envelope = EventEnvelope[RunFailed](
+        event_id=new_event_id(),
+        type="RUN.FAILED",
+        run_id=RunId(run.run_id),
+        correlation_id=CorrelationId(run.correlation_id),
+        actor_id="state_router",
+        payload=RunFailed(
+            project_slug=run.project_slug,
+            failed_state=failed_state,
+            error_class="dispatch_circuit_open",
+            error_message=(
+                f"agent dispatch failed {count} times for "
+                f"{action.target_sk or 'unknown'}; "
+                "see state_router CloudWatch logs"
+            ),
+            retryable=True,
+        ),
+    )
+    publish(envelope)
+
+
 def rollback_invoke_advance(action: InvokeAgent) -> None:
     """Reverse a state advance that we made before a failed dispatch.
 
     Conditional on the state still being at ``advance_to`` — if the
     projector has already moved the state forward (e.g., a stale
     completion event for a prior attempt landed), the rollback no-ops.
+
+    The same conditional ``UpdateItem`` also increments
+    ``dispatch_failure_count`` and stamps ``last_dispatch_failure_at``
+    — both happen atomically with the state reversal so a successful
+    rollback is the only path that bumps the breaker counter.
     """
     if (
         action.target_pk is None
@@ -308,8 +455,15 @@ def rollback_invoke_advance(action: InvokeAgent) -> None:
         target_sk=action.target_sk,
         advance_from=action.advance_to,
         advance_to=action.advance_from,
+        extra_attrs={"last_dispatch_failure_at": now_iso()},
+        extra_increments={"dispatch_failure_count": 1},
     )
     if rolled_back:
+        metrics.add_metric(
+            name="DispatchFailureCount",
+            unit=MetricUnit.Count,
+            value=1,
+        )
         logger.info(
             "rolled back state after dispatch failure",
             extra={
@@ -506,6 +660,7 @@ def advance_state(
     advance_from: str,
     advance_to: str,
     extra_attrs: dict[str, str] | None = None,
+    extra_increments: dict[str, int] | None = None,
 ) -> bool:
     """Conditionally update ``current_state`` (or task ``status``) → next.
 
@@ -515,6 +670,11 @@ def advance_state(
 
     Run rows use the ``current_state`` attribute; task rows use
     ``status``. Picked by ``target_sk``.
+
+    ``extra_attrs`` adds ``SET`` clauses (string values).
+    ``extra_increments`` adds ``ADD`` clauses (integer deltas) — used
+    by the rollback path to bump ``dispatch_failure_count`` atomically
+    with the state reversal.
     """
     attr = "status" if target_sk.startswith("TASK#") else "current_state"
     set_parts = ["#a = :to", "updated_at = :ts"]
@@ -528,7 +688,14 @@ def advance_state(
         set_parts.append(f"#k{i} = :v{i}")
         values[f":v{i}"] = {"S": v}
         names[f"#k{i}"] = k
+    add_parts: list[str] = []
+    for i, (k, n) in enumerate(extra_increments.items() if extra_increments else ()):
+        add_parts.append(f"#i{i} :n{i}")
+        values[f":n{i}"] = {"N": str(n)}
+        names[f"#i{i}"] = k
     expression = "SET " + ", ".join(set_parts)
+    if add_parts:
+        expression += " ADD " + ", ".join(add_parts)
     try:
         ddb().update_item(
             TableName=runs_table(),
@@ -551,18 +718,20 @@ def dispatch_to_runtime(
     runtime_session_id: str,
     payload: dict[str, Any],
 ) -> bool:
-    """Invoke the AgentCore Runtime; return ``True`` if the agent received the work.
+    """Invoke the AgentCore Runtime; return ``True`` when the agent acknowledged the work.
 
-    The 2s read-timeout is intentional — the agent runs for much longer
-    than that, so we don't wait for the response. A
-    :class:`ReadTimeoutError` means the request was sent and the runtime
-    accepted it; the agent will emit its completion event when done.
+    The agents implement the AgentCore async-task pattern: the
+    entrypoint validates the input, spawns a daemon thread for the
+    actual work, and returns ``{"status": "dispatched", ...}`` in
+    ~100ms. So a normal dispatch returns a clean 200 well inside the
+    10s read timeout.
 
-    A :class:`ClientError` (4xx / 5xx) means the runtime synchronously
-    rejected the request OR the agent's container raised before doing
-    any work (today's KeyError-on-startup pattern). The caller must
-    treat this as "agent never started," roll back the state advance,
-    and let the next beacon cycle retry the dispatch.
+    A :class:`ReadTimeoutError` now means a real failure — AgentCore
+    didn't acknowledge within 10s. A :class:`ClientError` (4xx / 5xx)
+    means the runtime rejected the request or the entrypoint raised
+    before kicking off the background thread. Both feed the rollback
+    path: ``execute_invoke_agent`` reverses the state advance and
+    bumps ``dispatch_failure_count`` so the breaker eventually trips.
     """
     try:
         runtime_client().invoke_agent_runtime(
@@ -574,12 +743,15 @@ def dispatch_to_runtime(
             payload=json.dumps(payload).encode("utf-8"),
         )
     except ReadTimeoutError:
-        logger.info("dispatched (read-timeout)", extra={"runtime_arn": runtime_arn})
-        return True
+        logger.warning(
+            "dispatch read timeout — treating as failure",
+            extra={"runtime_arn": runtime_arn},
+        )
+        return False
     except ClientError as exc:
         logger.warning("dispatch failed", extra={"runtime_arn": runtime_arn, "err": str(exc)})
         return False
-    logger.info("dispatched (sub-2s response)", extra={"runtime_arn": runtime_arn})
+    logger.info("dispatched", extra={"runtime_arn": runtime_arn})
     return True
 
 

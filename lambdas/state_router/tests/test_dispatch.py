@@ -9,6 +9,8 @@ fail.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from common.events import RunCompleted
@@ -68,9 +70,9 @@ def make_run(  # noqa: PLR0913
     )
 
 
-def make_task(state: TaskState, **overrides: object) -> Task:
+def make_task(state: TaskState, **overrides: Any) -> Task:
     """Build a Task with sane defaults."""
-    base: dict[str, object] = {
+    base: dict[str, Any] = {
         "task_id": "T-001",
         "state": state,
         "pr_url": None,
@@ -80,7 +82,7 @@ def make_task(state: TaskState, **overrides: object) -> Task:
         "pending_feedback": (),
     }
     base.update(overrides)
-    return Task(**base)  # type: ignore[arg-type]
+    return Task(**base)
 
 
 # ---------------------------------------------------------------------------

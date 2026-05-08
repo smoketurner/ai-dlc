@@ -1,6 +1,13 @@
 locals {
+  aws_account_id = data.aws_caller_identity.current.account_id
+
   prefix     = "${var.project}-${var.env}"
   source_dir = "${path.module}/../../../lambdas"
+
+  common_aws_env = {
+    AWS_DEFAULTS_MODE = "in-region"
+    AWS_ACCOUNT_ID    = local.aws_account_id
+  }
 
   # Resolve runtime ARNs at template-rendering time. Empty strings when
   # an agent image hasn't been pushed yet — the state_router's dispatch

@@ -8,6 +8,11 @@ locals {
   memory_id  = replace("${var.project}_${var.env}_memory", "-", "_")
   source_dir = "${path.module}/../../../lambdas"
 
+  common_aws_env = {
+    AWS_DEFAULTS_MODE = "in-region"
+    AWS_ACCOUNT_ID    = local.aws_account_id
+  }
+
   # Tool Lambda identifiers used as map keys for resources keyed by tool name.
   # Each tool Lambda corresponds to one entry in `var.agents[*].targets`.
   tools = toset(["artifact_tool", "repo_helper"])

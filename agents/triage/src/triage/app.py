@@ -1,24 +1,24 @@
 """AgentCore Runtime entrypoint for the Triage agent.
 
 Serves ``POST /invocations`` and ``GET /ping`` on :8080. The state-router
-Lambda invokes this runtime fire-and-forget when a run reaches
-``triaging`` (an issue-driven trigger arrived via the GitHub webhook).
-The entrypoint:
+Lambda invokes this runtime when a run reaches ``triaging`` (an
+issue-driven trigger arrived via the GitHub webhook). The entrypoint:
 
   1. Validates the input as :class:`TriageInput`.
-  2. Calls :func:`triage_issue` to get a :class:`TriageDecision`.
-  3. Uploads the decision as JSON to
-     ``s3://{artifacts_bucket}/runs/{run_id}/triage.json`` so the
-     dashboard can read the full structured output.
-  4. Emits ``ISSUE.TRIAGED`` so the projector advances the run to
-     ``triage_decided`` (carrying ``action`` and ``workflow_kind`` for
-     the router's ``handle_triage_decided`` to branch on), then returns
-     the result body.
+  2. Registers an async task with the AgentCore SDK so ``/ping``
+     reports ``HealthyBusy`` while the LLM call runs.
+  3. Spawns a daemon thread that calls :func:`triage_issue`, uploads
+     the decision JSON to S3, emits ``ISSUE.TRIAGED``, and
+     acknowledges the async task.
+  4. Returns ``{"status": "dispatched", ...}`` to the caller in
+     ~100ms so the state-router doesn't sit in a long synchronous
+     wait.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +27,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.event_emit import publish
-from common.events import EventEnvelope, IssueTriaged
+from common.events import EventEnvelope, IssueTriaged, RunFailed
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TriageInput, TriageResult
 from triage.agent import triage_issue
@@ -69,8 +69,8 @@ def upload_decision(run_id: str, decision_json: str) -> str:
 
 
 @app.entrypoint
-async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Triage entrypoint. Returns a JSON-serialisable TriageResult."""
+def handler(event: dict[str, Any]) -> dict[str, Any]:
+    """Validate the input, kick off background work, return immediately."""
     payload = TriageInput.model_validate(event)
     logger.info(
         "triage invoked",
@@ -80,29 +80,44 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         issue_type=payload.issue_type,
         prior_triage_count=payload.prior_triage_count,
     )
+    task_id = app.add_async_task("triage_run", {"run_id": payload.run_id})
+    threading.Thread(
+        target=run_triage,
+        args=(payload, task_id),
+        daemon=True,
+    ).start()
+    return {"status": "dispatched", "run_id": payload.run_id, "task_id": task_id}
 
-    decision = triage_issue(payload)
-    decision_key = upload_decision(payload.run_id, decision.model_dump_json())
 
-    result = TriageResult(
-        decision_s3_key=decision_key,
-        action=decision.action,
-        workflow_kind=decision.workflow_kind,
-        rationale=decision.rationale[:2048],
-        missing_information_count=len(decision.missing_information),
-        confidence=decision.confidence,
-        session_id=payload.run_id,
-    )
-    logger.info(
-        "triage decided",
-        run_id=payload.run_id,
-        action=result.action,
-        workflow_kind=result.workflow_kind,
-        missing_information=result.missing_information_count,
-        confidence=result.confidence,
-    )
-    publish_issue_triaged(payload, result)
-    return result.model_dump()
+def run_triage(payload: TriageInput, task_id: int) -> None:
+    """Body of the triage run — produces decision, emits event."""
+    try:
+        decision = triage_issue(payload)
+        decision_key = upload_decision(payload.run_id, decision.model_dump_json())
+
+        result = TriageResult(
+            decision_s3_key=decision_key,
+            action=decision.action,
+            workflow_kind=decision.workflow_kind,
+            rationale=decision.rationale[:2048],
+            missing_information_count=len(decision.missing_information),
+            confidence=decision.confidence,
+            session_id=payload.run_id,
+        )
+        logger.info(
+            "triage decided",
+            run_id=payload.run_id,
+            action=result.action,
+            workflow_kind=result.workflow_kind,
+            missing_information=result.missing_information_count,
+            confidence=result.confidence,
+        )
+        publish_issue_triaged(payload, result)
+    except Exception as exc:
+        logger.exception("triage run failed", run_id=payload.run_id)
+        publish_run_failed(payload, exc)
+    finally:
+        app.complete_async_task(task_id)
 
 
 def publish_issue_triaged(payload: TriageInput, result: TriageResult) -> None:
@@ -124,6 +139,25 @@ def publish_issue_triaged(payload: TriageInput, result: TriageResult) -> None:
             rationale=result.rationale,
             confidence=result.confidence,
             session_id=result.session_id,
+        ),
+    )
+    publish(envelope)
+
+
+def publish_run_failed(payload: TriageInput, exc: BaseException) -> None:
+    """Emit RUN.FAILED so the projector terminates the run on agent crash."""
+    envelope = EventEnvelope[RunFailed](
+        event_id=new_event_id(),
+        type="RUN.FAILED",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="triage",
+        payload=RunFailed(
+            project_slug=payload.project_slug,
+            failed_state="triaging",
+            error_class=type(exc).__name__,
+            error_message=str(exc)[:1024],
+            retryable=True,
         ),
     )
     publish(envelope)

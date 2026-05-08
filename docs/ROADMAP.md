@@ -81,7 +81,6 @@ Audit findings against [`SQS-DESIGN.md`](SQS-DESIGN.md). All shipped.
 
 ## Deferred (no concrete trigger yet)
 
-- **Correctness gap — implementer dead-ends on no-diff.** When `agents/implementer/src/implementer/client.py:check_blocked` returns a `BlockedShortCircuit`, `app.py:49` emits no event because `result.pr_url is None`. The task stays in `implementer_running` forever; the only escape is manual DDB intervention. Fix: emit a `TASK.BLOCKED` event (or `TASK.READY` with a `blocked_reason` flag) and teach the projector + state-router to advance the run to a human-action-needed state. Trigger: run `019e0408-6408-76c0-b6be-6449205ba9bd` on issue smoketurner/ai-dlc#33.
 - **Implementer judgement — partial matches read as "done".** Same run: an existing `/healthz` handler in `pages.py` returning HTMLResponse satisfied the implementer that the spec was already implemented, even though the spec asked for a separate `routes/healthz.py` returning `JSONResponse({"status": "ok"})`. Likely a prompt tweak in `agents/implementer/src/implementer/prompts.py` — "a route already existing isn't proof the spec is satisfied; confirm response shape + module path against the design".
 - Switch AgentCore Runtime to VPC mode.
 - Migrate to AgentCore Harness when GA.

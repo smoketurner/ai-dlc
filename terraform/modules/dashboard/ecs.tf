@@ -100,24 +100,27 @@ resource "aws_ecs_task_definition" "this" {
         { containerPort = 8080, protocol = "tcp" },
       ]
 
-      environment = [
-        { name = "AIDLC_ENV", value = var.env },
-        { name = "AWS_REGION", value = local.aws_region },
-        { name = "AIDLC_BUS_NAME", value = var.bus_name },
-        { name = "AIDLC_RUNS_TABLE", value = var.runs_table },
-        { name = "AIDLC_IDEMPOTENCY_TABLE", value = var.idempotency_table },
-        { name = "AIDLC_BEACON_QUEUE_URL", value = var.beacon_queue_url },
-        { name = "AIDLC_ARTIFACTS_BUCKET", value = var.artifacts_bucket },
-        { name = "AIDLC_GITHUB_APP_SECRET_ARN", value = var.github_app_secret_arn },
-        { name = "AIDLC_GITHUB_WEBHOOK_SECRET_ID", value = var.github_webhook_secret_id },
-        { name = "AIDLC_COGNITO_REGION", value = local.aws_region },
-        { name = "AIDLC_COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
-        { name = "AIDLC_COGNITO_CLIENT_ID", value = var.cognito_user_pool_client_id },
-        { name = "AIDLC_DASHBOARD_WORKLOAD_NAME", value = var.dashboard_workload_name },
-        { name = "AIDLC_GITHUB_OAUTH_PROVIDER_NAME", value = var.github_oauth_provider_name },
-        { name = "AIDLC_DASHBOARD_OAUTH_RETURN_URL", value = var.dashboard_oauth_return_url },
-        { name = "AIDLC_GITHUB_BOT_LOGIN", value = var.github_bot_login },
-      ]
+      environment = concat(
+        [for k, v in local.common_aws_env : { name = k, value = v }],
+        [
+          { name = "AIDLC_ENV", value = var.env },
+          { name = "AWS_REGION", value = local.aws_region },
+          { name = "AIDLC_BUS_NAME", value = var.bus_name },
+          { name = "AIDLC_RUNS_TABLE", value = var.runs_table },
+          { name = "AIDLC_IDEMPOTENCY_TABLE", value = var.idempotency_table },
+          { name = "AIDLC_BEACON_QUEUE_URL", value = var.beacon_queue_url },
+          { name = "AIDLC_ARTIFACTS_BUCKET", value = var.artifacts_bucket },
+          { name = "AIDLC_GITHUB_APP_SECRET_ARN", value = var.github_app_secret_arn },
+          { name = "AIDLC_GITHUB_WEBHOOK_SECRET_ID", value = var.github_webhook_secret_id },
+          { name = "AIDLC_COGNITO_REGION", value = local.aws_region },
+          { name = "AIDLC_COGNITO_USER_POOL_ID", value = var.cognito_user_pool_id },
+          { name = "AIDLC_COGNITO_CLIENT_ID", value = var.cognito_user_pool_client_id },
+          { name = "AIDLC_DASHBOARD_WORKLOAD_NAME", value = var.dashboard_workload_name },
+          { name = "AIDLC_GITHUB_OAUTH_PROVIDER_NAME", value = var.github_oauth_provider_name },
+          { name = "AIDLC_DASHBOARD_OAUTH_RETURN_URL", value = var.dashboard_oauth_return_url },
+          { name = "AIDLC_GITHUB_BOT_LOGIN", value = var.github_bot_login },
+        ],
+      )
 
       logConfiguration = {
         logDriver = "awslogs"

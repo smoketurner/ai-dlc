@@ -1,21 +1,32 @@
 """AgentCore Runtime entrypoint for the Implementer.
 
 The state-router invokes this once per dispatch — first run or iteration.
-The entrypoint validates the input, runs one Claude Agent SDK session,
-emits ``TASK.READY`` (real implementation) or ``TASK.BLOCKED`` (the
-agent could not produce a diff and needs human guidance), and returns
-the result.
+The entrypoint:
+
+  1. Validates the input as :class:`ImplementerInput`.
+  2. Registers an async task with the AgentCore SDK so ``/ping``
+     reports ``HealthyBusy`` while the Claude Agent SDK session runs.
+  3. Spawns a daemon thread that runs one Claude Agent SDK session,
+     emits ``TASK.READY`` (real implementation), ``TASK.BLOCKED``
+     (the agent could not produce a diff and needs human guidance),
+     or ``RUN.FAILED`` (uncaught exception, or the agent produced
+     no PR), and acknowledges the async task.
+  4. Returns ``{"status": "dispatched", ...}`` to the caller in
+     ~100ms so the state-router doesn't wait for the agent's full
+     runtime and AgentCore's frontend never retries the dispatch.
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.event_emit import publish
-from common.events import EventEnvelope, TaskBlocked, TaskReady
+from common.events import EventEnvelope, RunFailed, TaskBlocked, TaskReady
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ImplementerInput, ImplementerResult
 from implementer.client import execute_task
@@ -25,14 +36,15 @@ app = BedrockAgentCoreApp()
 
 
 @app.entrypoint
-async def handler(event: dict[str, Any]) -> dict[str, Any]:
-    """Run the implementer task and emit ``TASK.READY`` or ``TASK.BLOCKED``.
+def handler(event: dict[str, Any]) -> dict[str, Any]:
+    """Validate the input, kick off background work, return immediately.
 
-    The router advanced the task state to ``implementer_running`` (or
-    ``iterating`` for a re-dispatch) before invoking us. The next event
-    advances the task per ``common.state_transitions.TASK_TRANSITIONS``:
-    ``TASK.READY`` → ``pr_open`` (advisors fire next), ``TASK.BLOCKED``
-    → ``blocked`` (waits for a human comment on the draft PR).
+    The router has already advanced the task state to
+    ``implementer_running`` (or ``iterating`` for a re-dispatch). The
+    background thread emits ``TASK.READY`` → ``pr_open`` (advisors
+    fire next), ``TASK.BLOCKED`` → ``blocked`` (waits for a human
+    comment on the draft PR), or ``RUN.FAILED`` if the agent crashed
+    or produced no PR.
     """
     payload = ImplementerInput.model_validate(event)
     logger.info(
@@ -42,14 +54,59 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
         spec_slug=payload.spec_slug,
         iteration=payload.iteration_count,
     )
-    result = await execute_task(payload)
+    task_id = app.add_async_task(
+        "implementer_run",
+        {"run_id": payload.run_id, "task_id": payload.task_id},
+    )
+    threading.Thread(
+        target=run_implementer,
+        args=(payload, task_id),
+        daemon=True,
+    ).start()
+    return {
+        "status": "dispatched",
+        "run_id": payload.run_id,
+        "task_id": payload.task_id,
+        "async_task_id": task_id,
+    }
+
+
+def run_implementer(payload: ImplementerInput, async_task_id: int) -> None:
+    """Body of the implementer run — invokes Claude Agent SDK, emits event.
+
+    Runs in a daemon thread spawned from :func:`handler`. ``execute_task``
+    is async (the Claude Agent SDK driver is awaitable), so the body
+    runs it under :func:`asyncio.run`.
+    """
+    try:
+        result = asyncio.run(execute_task(payload))
+        emit_terminal_event(payload, result)
+    except Exception as exc:
+        logger.exception(
+            "implementer run failed",
+            run_id=payload.run_id,
+            task_id=payload.task_id,
+        )
+        publish_run_failed(payload, exc)
+    finally:
+        app.complete_async_task(async_task_id)
+
+
+def emit_terminal_event(payload: ImplementerInput, result: ImplementerResult) -> None:
+    """Branch on the agent's result to emit TASK.READY / TASK.BLOCKED / RUN.FAILED.
+
+    A ``None`` ``pr_url`` is the historical "implementer dead-ended"
+    case; without an event the task wedges. Emit ``RUN.FAILED`` so the
+    run terminates and a human can investigate.
+    """
     if result.pr_url is None:
         logger.error(
             "implementer returned no pr_url",
             run_id=payload.run_id,
             task_id=payload.task_id,
         )
-        return result.model_dump()
+        publish_run_failed_no_pr(payload)
+        return
     if result.blocked_reason is not None:
         logger.info(
             "task blocked",
@@ -59,15 +116,14 @@ async def handler(event: dict[str, Any]) -> dict[str, Any]:
             blocked_reason=result.blocked_reason,
         )
         emit_task_blocked(payload, result, pr_url=result.pr_url)
-    else:
-        logger.info(
-            "task ready",
-            run_id=payload.run_id,
-            task_id=payload.task_id,
-            pr_url=result.pr_url,
-        )
-        emit_task_ready(payload, result, pr_url=result.pr_url)
-    return result.model_dump()
+        return
+    logger.info(
+        "task ready",
+        run_id=payload.run_id,
+        task_id=payload.task_id,
+        pr_url=result.pr_url,
+    )
+    emit_task_ready(payload, result, pr_url=result.pr_url)
 
 
 def emit_task_ready(
@@ -126,6 +182,50 @@ def emit_task_blocked(
             token_out=result.token_out,
             cost_usd=result.cost_usd,
             duration_ms=result.duration_ms,
+        ),
+    )
+    publish(envelope)
+
+
+def publish_run_failed(payload: ImplementerInput, exc: BaseException) -> None:
+    """Emit RUN.FAILED on uncaught exception in the agent body."""
+    envelope = EventEnvelope[RunFailed](
+        event_id=new_event_id(),
+        type="RUN.FAILED",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="implementer",
+        payload=RunFailed(
+            project_slug=payload.project_slug,
+            failed_state="implementer_running",
+            error_class=type(exc).__name__,
+            error_message=str(exc)[:1024],
+            retryable=True,
+        ),
+    )
+    publish(envelope)
+
+
+def publish_run_failed_no_pr(payload: ImplementerInput) -> None:
+    """Emit RUN.FAILED when the agent ran clean but produced no PR.
+
+    The historical "dead-end" case — the agent decides not to make a
+    change and returns without ``pr_url``. Without an event the task
+    wedges in ``implementer_running``; this terminates the run so a
+    human can investigate.
+    """
+    envelope = EventEnvelope[RunFailed](
+        event_id=new_event_id(),
+        type="RUN.FAILED",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="implementer",
+        payload=RunFailed(
+            project_slug=payload.project_slug,
+            failed_state="implementer_running",
+            error_class="implementer_no_pr",
+            error_message=(f"implementer for task {payload.task_id} returned without a PR url"),
+            retryable=True,
         ),
     )
     publish(envelope)

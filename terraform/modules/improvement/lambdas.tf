@@ -27,7 +27,7 @@ module "telemetry" {
   build_in_docker = true
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
-  environment_variables = {
+  environment_variables = merge(local.common_aws_env, {
     AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
     AIDLC_RUNS_TABLE             = var.runs_table
     AIDLC_TELEMETRY_MODEL_ID     = var.telemetry_model_id
@@ -35,7 +35,7 @@ module "telemetry" {
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     POWERTOOLS_LOG_LEVEL         = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT  = "false"
-  }
+  })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 
@@ -89,14 +89,14 @@ module "few_shot_miner" {
   build_in_docker = true
   docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
 
-  environment_variables = {
+  environment_variables = merge(local.common_aws_env, {
     AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
     AIDLC_RUNS_TABLE             = var.runs_table
     POWERTOOLS_SERVICE_NAME      = "few_shot_miner"
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     POWERTOOLS_LOG_LEVEL         = "INFO"
     POWERTOOLS_LOGGER_LOG_EVENT  = "false"
-  }
+  })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
 

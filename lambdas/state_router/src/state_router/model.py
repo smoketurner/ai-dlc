@@ -9,9 +9,14 @@ attribute-name drift (the raw DDB items are just dicts).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from decimal import Decimal
+from typing import Any, cast
+
+from boto3.dynamodb.types import TypeDeserializer
 
 from common.state import RunState, TaskState
+
+DESERIALIZER = TypeDeserializer()
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +30,7 @@ class Task:
     iteration_count: int = 0
     delivery_ids: frozenset[str] = field(default_factory=frozenset)
     pending_feedback: tuple[dict[str, Any], ...] = ()
+    dispatch_failure_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +59,41 @@ class Run:
     synthetic_spec_slug: str | None = None
     task_ids: tuple[str, ...] = ()
     tasks: tuple[Task, ...] = ()
+    dispatch_failure_count: int = 0
+
+
+def deserialize_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Deserialize a raw DynamoDB item map into native Python values."""
+    return {k: DESERIALIZER.deserialize(v) for k, v in item.items()}
+
+
+def as_int(value: Any) -> int | None:
+    """Coerce a deserialized DDB ``N`` value (``Decimal``) to ``int``."""
+    return int(value) if isinstance(value, Decimal) else None
+
+
+def as_str_tuple(value: Any) -> tuple[str, ...]:
+    """Sort a deserialized DDB ``SS`` value into a deterministic tuple."""
+    return tuple(sorted(value)) if isinstance(value, set) else ()
+
+
+def as_str_frozenset(value: Any) -> frozenset[str]:
+    """Wrap a deserialized DDB ``SS`` value as a ``frozenset[str]``."""
+    return cast("frozenset[str]", frozenset(value)) if isinstance(value, set) else frozenset()
+
+
+def normalize_feedback(items: Any) -> tuple[dict[str, Any], ...]:
+    """Convert nested ``Decimal`` values to ``int`` inside feedback rows.
+
+    ``pending_feedback`` is shipped to the Implementer as JSON; downstream
+    JSON encoders don't accept ``Decimal``, and the surrounding code has
+    always seen plain ``int`` for numeric fields.
+    """
+    if not isinstance(items, list):
+        return ()
+    return tuple(
+        {k: int(v) if isinstance(v, Decimal) else v for k, v in row.items()} for row in items
+    )
 
 
 def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | None:
@@ -63,94 +104,47 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
     """
     if not item:
         return None
-    state_str = ddb_str(item.get("current_state"))
-    pk = ddb_str(item.get("pk")) or ""
-    run_id = ddb_str(item.get("run_id")) or pk.removeprefix("RUN#")
+    data = deserialize_item(item)
+    state = data.get("current_state")
+    pk = data.get("pk") or ""
     return Run(
-        run_id=run_id,
-        correlation_id=ddb_str(item.get("correlation_id")) or "",
-        project_slug=ddb_str(item.get("project_slug")) or "",
-        intent=ddb_str(item.get("intent")) or "",
-        requestor=ddb_str(item.get("requestor")) or "",
-        actor_id=ddb_str(item.get("actor_id")) or "system",
-        current_state=RunState(state_str) if state_str else None,
-        workflow_kind=ddb_str(item.get("workflow_kind")),
-        triage_action=ddb_str(item.get("triage_action")),
-        target_repo=ddb_str(item.get("target_repo")),
-        requestor_sub=ddb_str(item.get("requestor_sub")),
-        source_issue_url=ddb_str(item.get("source_issue_url")),
-        issue_number=ddb_int(item.get("issue_number")),
-        issue_title=ddb_str(item.get("issue_title")),
-        issue_body=ddb_str(item.get("issue_body")),
-        issue_labels=tuple(ddb_str_set(item.get("issue_labels"))),
-        spec_slug=ddb_str(item.get("spec_slug")),
-        spec_s3_prefix=ddb_str(item.get("spec_s3_prefix")),
-        pr_url=ddb_str(item.get("pr_url")),
-        synthetic_spec_slug=ddb_str(item.get("synthetic_spec_slug")),
-        task_ids=tuple(ddb_str_set(item.get("task_ids"))),
+        run_id=data.get("run_id") or pk.removeprefix("RUN#"),
+        correlation_id=data.get("correlation_id") or "",
+        project_slug=data.get("project_slug") or "",
+        intent=data.get("intent") or "",
+        requestor=data.get("requestor") or "",
+        actor_id=data.get("actor_id") or "system",
+        current_state=RunState(state) if state else None,
+        workflow_kind=data.get("workflow_kind"),
+        triage_action=data.get("triage_action"),
+        target_repo=data.get("target_repo"),
+        requestor_sub=data.get("requestor_sub"),
+        source_issue_url=data.get("source_issue_url"),
+        issue_number=as_int(data.get("issue_number")),
+        issue_title=data.get("issue_title"),
+        issue_body=data.get("issue_body"),
+        issue_labels=as_str_tuple(data.get("issue_labels")),
+        spec_slug=data.get("spec_slug"),
+        spec_s3_prefix=data.get("spec_s3_prefix"),
+        pr_url=data.get("pr_url"),
+        synthetic_spec_slug=data.get("synthetic_spec_slug"),
+        task_ids=as_str_tuple(data.get("task_ids")),
         tasks=tuple(parse_task(t) for t in task_items),
+        dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
     )
 
 
 def parse_task(item: dict[str, Any]) -> Task:
     """Build a :class:`Task` from one ``sk=TASK#{task_id}`` row."""
-    sk = ddb_str(item.get("sk")) or ""
-    task_id = sk.removeprefix("TASK#")
+    data = deserialize_item(item)
+    sk = data.get("sk") or ""
     return Task(
-        task_id=task_id,
-        state=TaskState(ddb_str(item.get("status")) or "pending"),
-        pr_url=ddb_str(item.get("pr_url")),
-        pr_number=ddb_int(item.get("pr_number")),
-        iteration_count=ddb_int(item.get("iteration_count")) or 0,
-        delivery_ids=frozenset(ddb_str_set(item.get("delivery_ids"))),
-        pending_feedback=tuple(ddb_list(item.get("pending_feedback"))),
+        task_id=sk.removeprefix("TASK#"),
+        state=TaskState(data.get("status") or "pending"),
+        pr_url=data.get("pr_url"),
+        pr_number=as_int(data.get("pr_number")),
+        iteration_count=as_int(data.get("iteration_count")) or 0,
+        delivery_ids=as_str_frozenset(data.get("delivery_ids")),
+        pending_feedback=normalize_feedback(data.get("pending_feedback")),
+        dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
     )
-
-
-def ddb_str(attr: dict[str, Any] | None) -> str | None:
-    """Read a DynamoDB ``S`` attribute as ``str | None``."""
-    if attr is None:
-        return None
-    return attr.get("S")
-
-
-def ddb_int(attr: dict[str, Any] | None) -> int | None:
-    """Read a DynamoDB ``N`` attribute as ``int | None``."""
-    if attr is None:
-        return None
-    raw = attr.get("N")
-    return int(raw) if raw is not None else None
-
-
-def ddb_str_set(attr: dict[str, Any] | None) -> list[str]:
-    """Read a DynamoDB ``SS`` (string set) as a list."""
-    if attr is None:
-        return []
-    return list(attr.get("SS") or [])
-
-
-def ddb_list(attr: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Read a DynamoDB ``L`` (list of maps) as a list of plain dicts."""
-    if attr is None:
-        return []
-    raw = attr.get("L") or []
-    return [unmap(item.get("M") or {}) for item in raw]
-
-
-def unmap(item: dict[str, Any]) -> dict[str, Any]:
-    """Decode a single-level DDB map into a plain dict.
-
-    Sufficient for ``pending_feedback`` entries (FeedbackItem JSON).
-    Nested maps would need recursion; we don't need that here.
-    """
-    out: dict[str, Any] = {}
-    for k, v in item.items():
-        if "S" in v:
-            out[k] = v["S"]
-        elif "N" in v:
-            out[k] = int(v["N"])
-        elif "BOOL" in v:
-            out[k] = v["BOOL"]
-        elif "NULL" in v:
-            out[k] = None
-    return out
