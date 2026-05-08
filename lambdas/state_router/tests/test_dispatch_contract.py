@@ -18,10 +18,8 @@ from unittest.mock import patch
 
 from botocore.exceptions import ClientError, ReadTimeoutError
 
-from state_router.handler import (
-    DISPATCH_READ_TIMEOUT_SECONDS,
-    dispatch_to_runtime,
-)
+from state_router.aws import dispatch_to_runtime
+from state_router.config import DISPATCH_READ_TIMEOUT_SECONDS
 
 
 def test_read_timeout_is_failure() -> None:
@@ -33,7 +31,7 @@ def test_read_timeout_is_failure() -> None:
     failure: rollback + bump the breaker counter.
     """
     fake_client = patch(
-        "state_router.handler.runtime_client",
+        "state_router.aws.runtime_client",
         return_value=type(
             "C",
             (),
@@ -62,7 +60,7 @@ def test_client_error_is_failure() -> None:
         operation_name="InvokeAgentRuntime",
     )
     fake_client = patch(
-        "state_router.handler.runtime_client",
+        "state_router.aws.runtime_client",
         return_value=type(
             "C",
             (),
@@ -81,7 +79,7 @@ def test_client_error_is_failure() -> None:
 def test_clean_response_is_success() -> None:
     """A normal dispatch returns ``True`` and consumes no rollback path."""
     fake_client = patch(
-        "state_router.handler.runtime_client",
+        "state_router.aws.runtime_client",
         return_value=type(
             "C",
             (),

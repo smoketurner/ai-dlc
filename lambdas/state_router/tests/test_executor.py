@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from common.state import RunState, TaskState
 from state_router.actions import GuardedAdvance, InvokeAgent, Noop
-from state_router.handler import execute, execute_guarded_advance
+from state_router.execute import execute, execute_guarded_advance
 from state_router.model import Run
 
 
@@ -60,8 +60,8 @@ def test_winning_advance_runs_on_success() -> None:
     """When the conditional advance succeeds, on_success actions execute."""
     action = guarded_advance((make_reviewer_invoke(), make_tester_invoke()))
     with (
-        patch("state_router.handler.advance_state", return_value=True),
-        patch("state_router.handler.dispatch_to_runtime") as dispatch,
+        patch("state_router.execute.advance_state", return_value=True),
+        patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute_guarded_advance(make_run(), action)
     assert dispatch.call_count == 2
@@ -79,8 +79,8 @@ def test_losing_advance_skips_on_success() -> None:
     """
     action = guarded_advance((make_reviewer_invoke(), make_tester_invoke()))
     with (
-        patch("state_router.handler.advance_state", return_value=False),
-        patch("state_router.handler.dispatch_to_runtime") as dispatch,
+        patch("state_router.execute.advance_state", return_value=False),
+        patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute_guarded_advance(make_run(), action)
     assert dispatch.call_count == 0
@@ -95,8 +95,8 @@ def test_concurrent_routers_fire_advisors_exactly_once() -> None:
     action = guarded_advance((make_reviewer_invoke(), make_tester_invoke()))
     advance_results = iter([True, False])  # router 1 wins, router 2 loses
     with (
-        patch("state_router.handler.advance_state", side_effect=lambda **_: next(advance_results)),
-        patch("state_router.handler.dispatch_to_runtime") as dispatch,
+        patch("state_router.execute.advance_state", side_effect=lambda **_: next(advance_results)),
+        patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute_guarded_advance(make_run(), action)
         execute_guarded_advance(make_run(), action)
@@ -108,8 +108,8 @@ def test_invoke_agent_without_advance_fires_unconditionally() -> None:
     invoke = make_reviewer_invoke()
     assert invoke.advance_from is None
     with (
-        patch("state_router.handler.advance_state") as advance,
-        patch("state_router.handler.dispatch_to_runtime") as dispatch,
+        patch("state_router.execute.advance_state") as advance,
+        patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute(make_run(), invoke)
     advance.assert_not_called()
@@ -128,8 +128,8 @@ def test_invoke_agent_with_advance_uses_race_guard() -> None:
         advance_to=TaskState.implementer_running.value,
     )
     with (
-        patch("state_router.handler.advance_state", return_value=False) as advance,
-        patch("state_router.handler.dispatch_to_runtime") as dispatch,
+        patch("state_router.execute.advance_state", return_value=False) as advance,
+        patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute(make_run(), invoke)
     advance.assert_called_once()
@@ -155,8 +155,8 @@ def test_invoke_agent_rolls_back_on_dispatch_failure() -> None:
     )
     with (
         # First call (forward advance) wins; second call (rollback) wins too.
-        patch("state_router.handler.advance_state", return_value=True) as advance,
-        patch("state_router.handler.dispatch_to_runtime", return_value=False),
+        patch("state_router.execute.advance_state", return_value=True) as advance,
+        patch("state_router.execute.dispatch_to_runtime", return_value=False),
     ):
         execute(make_run(), invoke)
     assert advance.call_count == 2
@@ -179,8 +179,8 @@ def test_invoke_agent_no_rollback_on_dispatch_success() -> None:
         advance_to=RunState.architect_running.value,
     )
     with (
-        patch("state_router.handler.advance_state", return_value=True) as advance,
-        patch("state_router.handler.dispatch_to_runtime", return_value=True),
+        patch("state_router.execute.advance_state", return_value=True) as advance,
+        patch("state_router.execute.dispatch_to_runtime", return_value=True),
     ):
         execute(make_run(), invoke)
     assert advance.call_count == 1  # forward advance only; no rollback
@@ -195,8 +195,8 @@ def test_invoke_agent_no_rollback_when_no_advance_specified() -> None:
     invoke = make_reviewer_invoke()
     assert invoke.advance_from is None
     with (
-        patch("state_router.handler.advance_state") as advance,
-        patch("state_router.handler.dispatch_to_runtime", return_value=False),
+        patch("state_router.execute.advance_state") as advance,
+        patch("state_router.execute.dispatch_to_runtime", return_value=False),
     ):
         execute(make_run(), invoke)
     advance.assert_not_called()
@@ -206,6 +206,6 @@ def test_unknown_action_type_logs_and_no_ops() -> None:
     """A foreign action type doesn't crash the executor."""
     # Noop is a known type, so use a fresh placeholder by constructing
     # a Noop and verifying execute() handles it without side effects.
-    with patch("state_router.handler.dispatch_to_runtime") as dispatch:
+    with patch("state_router.execute.dispatch_to_runtime") as dispatch:
         execute(make_run(), Noop("just because"))
     assert dispatch.call_count == 0

@@ -22,11 +22,11 @@ from unittest.mock import patch
 from common.events import EventEnvelope, RunFailed, TaskBlocked
 from common.state import RunState, TaskState
 from state_router.actions import InvokeAgent
-from state_router.handler import (
-    MAX_DISPATCH_FAILURES,
-    circuit_breaker_open,
+from state_router.circuit_breaker import is_open
+from state_router.config import MAX_DISPATCH_FAILURES
+from state_router.execute import (
     execute_invoke_agent,
-    rollback_invoke_advance,
+    rollback_after_failure,
 )
 from state_router.model import Run, Task
 
@@ -104,7 +104,7 @@ def advisor_invoke() -> InvokeAgent:
 
 
 # ---------------------------------------------------------------------------
-# circuit_breaker_open: gating logic
+# is_open: gating logic
 # ---------------------------------------------------------------------------
 
 
@@ -113,7 +113,7 @@ class TestCircuitBreakerOpen:
         """A row with count below the limit lets the dispatch proceed."""
         task = make_task(dispatch_failure_count=MAX_DISPATCH_FAILURES - 1)
         run = make_run(tasks=(task,))
-        assert circuit_breaker_open(run, implementer_invoke()) is False
+        assert is_open(run, implementer_invoke()) is False
 
     def test_at_threshold_returns_true_and_emits(self) -> None:
         """At the limit, the breaker trips and an event is emitted."""
@@ -122,8 +122,8 @@ class TestCircuitBreakerOpen:
             dispatch_failure_count=MAX_DISPATCH_FAILURES,
         )
         run = make_run(tasks=(task,))
-        with patch("state_router.handler.publish") as publish:
-            assert circuit_breaker_open(run, implementer_invoke()) is True
+        with patch("state_router.circuit_breaker.publish") as publish:
+            assert is_open(run, implementer_invoke()) is True
         publish.assert_called_once()
 
     def test_advisor_invoke_skips_breaker(self) -> None:
@@ -134,7 +134,7 @@ class TestCircuitBreakerOpen:
         them either.
         """
         run = make_run()
-        assert circuit_breaker_open(run, advisor_invoke()) is False
+        assert is_open(run, advisor_invoke()) is False
 
     def test_run_level_at_threshold_trips(self) -> None:
         """Architect / critic dispatches consult the run STATE row counter."""
@@ -143,12 +143,12 @@ class TestCircuitBreakerOpen:
             spec_slug=None,
             dispatch_failure_count=MAX_DISPATCH_FAILURES,
         )
-        with patch("state_router.handler.publish"):
-            assert circuit_breaker_open(run, architect_invoke()) is True
+        with patch("state_router.circuit_breaker.publish"):
+            assert is_open(run, architect_invoke()) is True
 
 
 # ---------------------------------------------------------------------------
-# circuit_breaker_open: emit shape
+# is_open: emit shape
 # ---------------------------------------------------------------------------
 
 
@@ -158,8 +158,8 @@ class TestBreakerEvent:
         pr = "https://github.com/o/r/pull/1"
         task = make_task(pr_url=pr, dispatch_failure_count=MAX_DISPATCH_FAILURES)
         run = make_run(tasks=(task,))
-        with patch("state_router.handler.publish") as publish:
-            circuit_breaker_open(run, implementer_invoke())
+        with patch("state_router.circuit_breaker.publish") as publish:
+            is_open(run, implementer_invoke())
         envelope = publish.call_args.args[0]
         assert isinstance(envelope, EventEnvelope)
         assert envelope.type == "TASK.BLOCKED"
@@ -178,8 +178,8 @@ class TestBreakerEvent:
         """
         task = make_task(pr_url=None, dispatch_failure_count=MAX_DISPATCH_FAILURES)
         run = make_run(tasks=(task,))
-        with patch("state_router.handler.publish") as publish:
-            circuit_breaker_open(run, implementer_invoke())
+        with patch("state_router.circuit_breaker.publish") as publish:
+            is_open(run, implementer_invoke())
         envelope = publish.call_args.args[0]
         assert envelope.type == "RUN.FAILED"
         assert isinstance(envelope.payload, RunFailed)
@@ -192,8 +192,8 @@ class TestBreakerEvent:
             spec_slug=None,
             dispatch_failure_count=MAX_DISPATCH_FAILURES,
         )
-        with patch("state_router.handler.publish") as publish:
-            circuit_breaker_open(run, architect_invoke())
+        with patch("state_router.circuit_breaker.publish") as publish:
+            is_open(run, architect_invoke())
         envelope = publish.call_args.args[0]
         assert envelope.type == "RUN.FAILED"
         assert envelope.payload.failed_state == RunState.spec_pending.value
@@ -213,9 +213,9 @@ class TestExecuteInvokeAgentWithBreaker:
         )
         run = make_run(tasks=(task,))
         with (
-            patch("state_router.handler.publish"),
-            patch("state_router.handler.advance_state") as advance,
-            patch("state_router.handler.dispatch_to_runtime") as dispatch,
+            patch("state_router.circuit_breaker.publish"),
+            patch("state_router.execute.advance_state") as advance,
+            patch("state_router.execute.dispatch_to_runtime") as dispatch,
         ):
             execute_invoke_agent(run, implementer_invoke())
         advance.assert_not_called()
@@ -226,8 +226,8 @@ class TestExecuteInvokeAgentWithBreaker:
         task = make_task(dispatch_failure_count=0)
         run = make_run(tasks=(task,))
         with (
-            patch("state_router.handler.advance_state", return_value=True) as advance,
-            patch("state_router.handler.dispatch_to_runtime", return_value=True) as dispatch,
+            patch("state_router.execute.advance_state", return_value=True) as advance,
+            patch("state_router.execute.dispatch_to_runtime", return_value=True) as dispatch,
         ):
             execute_invoke_agent(run, implementer_invoke())
         advance.assert_called_once()
@@ -248,8 +248,8 @@ class TestRollbackIncrement:
         write, a partial failure could double-count or under-count.
         """
         invoke = implementer_invoke()
-        with patch("state_router.handler.advance_state", return_value=True) as advance:
-            rollback_invoke_advance(invoke)
+        with patch("state_router.execute.advance_state", return_value=True) as advance:
+            rollback_after_failure(invoke)
         advance.assert_called_once()
         kwargs = advance.call_args.kwargs
         assert kwargs["extra_increments"] == {"dispatch_failure_count": 1}
@@ -263,14 +263,14 @@ class TestRollbackIncrement:
         Counting that as a dispatch failure would falsely trip the breaker.
         """
         invoke = implementer_invoke()
-        with patch("state_router.handler.advance_state", return_value=False):
+        with patch("state_router.execute.advance_state", return_value=False):
             # No exception, no metric — the metric assertion lives in the
             # successful path.
-            rollback_invoke_advance(invoke)
+            rollback_after_failure(invoke)
 
     def test_rollback_noop_when_no_advance_fields(self) -> None:
         """Advisor invokes have no state to roll back and no counter to bump."""
         invoke = advisor_invoke()
-        with patch("state_router.handler.advance_state") as advance:
-            rollback_invoke_advance(invoke)
+        with patch("state_router.execute.advance_state") as advance:
+            rollback_after_failure(invoke)
         advance.assert_not_called()
