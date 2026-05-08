@@ -67,12 +67,6 @@ async def submit_page(request: Request, user: CurrentUser) -> HTMLResponse:
     )
 
 
-@router.get("/healthz", response_class=HTMLResponse)
-async def healthz() -> HTMLResponse:
-    """ALB health-check endpoint."""
-    return HTMLResponse("ok")
-
-
 def first_known_run(run_id: str, events: list) -> dict[str, str]:  # type: ignore[type-arg]
     """Build a run summary from the STATE row, falling back to event payload.
 
