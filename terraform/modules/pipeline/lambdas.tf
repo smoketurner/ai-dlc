@@ -107,6 +107,7 @@ module "state_router" {
     AIDLC_ARCHITECT_RUNTIME_ARN     = local.architect_runtime_arn
     AIDLC_CRITIC_RUNTIME_ARN        = local.critic_runtime_arn
     AIDLC_IMPLEMENTER_RUNTIME_ARN   = local.implementer_runtime_arn
+    AIDLC_PROPOSER_RUNTIME_ARN      = local.proposer_runtime_arn
     AIDLC_REVIEWER_RUNTIME_ARN      = local.reviewer_runtime_arn
     AIDLC_TESTER_RUNTIME_ARN        = local.tester_runtime_arn
     AIDLC_TRIAGE_RUNTIME_ARN        = var.triage_runtime_arn

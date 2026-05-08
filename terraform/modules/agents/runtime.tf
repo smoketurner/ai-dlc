@@ -158,9 +158,9 @@ data "aws_iam_policy_document" "runtime_inline" {
     resources = [aws_bedrockagentcore_gateway.agent[each.key].gateway_arn]
   }
 
-  # AgentCore Browser. Granted to agents whose ``features`` include
-  # ``browser`` (currently the Proposer for external research). Sessions
-  # are derived ARNs under the parent browser, so we authorize both.
+  # AgentCore Browser — resource-bound lifecycle / session-management
+  # actions. Scoped to the shared browser ARN and the derived session
+  # ARNs underneath it.
   dynamic "statement" {
     for_each = contains(each.value.features, "browser") ? [1] : []
     content {
@@ -171,12 +171,25 @@ data "aws_iam_policy_document" "runtime_inline" {
         "bedrock-agentcore:GetBrowserSession",
         "bedrock-agentcore:ListBrowserSessions",
         "bedrock-agentcore:UpdateBrowserStream",
-        "bedrock-agentcore:ConnectBrowserAutomationStream",
       ]
       resources = [
         aws_bedrockagentcore_browser.shared.browser_arn,
         "${aws_bedrockagentcore_browser.shared.browser_arn}/*",
       ]
+    }
+  }
+
+  # AgentCore Browser — automation-stream connect. The IAM action takes
+  # no resource constraint per AWS service-authorization docs, so it
+  # must use ``Resource = "*"``. Without this, the WSS handshake against
+  # the browser-streams endpoint fails with 403 even when the rest of
+  # the browser policy is in place.
+  dynamic "statement" {
+    for_each = contains(each.value.features, "browser") ? [1] : []
+    content {
+      sid       = "AgentCoreBrowserStream"
+      actions   = ["bedrock-agentcore:ConnectBrowserAutomationStream"]
+      resources = ["*"]
     }
   }
 
