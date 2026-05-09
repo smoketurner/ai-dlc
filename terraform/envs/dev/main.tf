@@ -50,14 +50,9 @@ locals {
     reviewer    = "latest"
     tester      = "latest"
     triage      = "latest"
-    # retrospector is intentionally omitted until its image is pushed
-    # via images-build. Procedure (per AGENTS.md → "Adding a new agent"):
-    #   1. apply with var.agents.retrospector defined → creates ECR repo,
-    #      IAM, gateway, workload identity (no runtime yet).
-    #   2. trigger the images-build workflow → pushes the retrospector
-    #      image to the new ECR repo.
-    #   3. add `retrospector = "latest"` here → apply again creates the
-    #      AgentCore Runtime + the dispatcher Lambda + EventBridge rule.
+    # retrospector intentionally omitted until its image lands in ECR.
+    # Re-add `retrospector = "latest"` after the images-build workflow
+    # has run successfully on the matrix-update commit.
   }
 }
 

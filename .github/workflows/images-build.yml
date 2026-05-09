@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [architect, critic, implementer, reviewer, tester, proposer, triage]
+        agent: [architect, critic, implementer, reviewer, tester, proposer, retrospector, triage]
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REPOSITORY: ${{ vars.ECR_REGISTRY }}/ai-dlc/${{ matrix.agent }}
