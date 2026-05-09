@@ -375,6 +375,7 @@ def test_has_uncommitted_changes_returns_true_when_dirty(
 def test_agent_made_real_changes_false_on_clean_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fixed_diff(monkeypatch, [])
     monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: "")
     assert agent_made_real_changes("my-spec") is False
 
@@ -382,6 +383,7 @@ def test_agent_made_real_changes_false_on_clean_tree(
 def test_agent_made_real_changes_false_when_only_spec_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fixed_diff(monkeypatch, [])
     porcelain = " M docs/specs/my-spec/tasks.md\nA  docs/specs/my-spec/design.md\n"
     monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: porcelain)
     assert agent_made_real_changes("my-spec") is False
@@ -390,6 +392,7 @@ def test_agent_made_real_changes_false_when_only_spec_paths(
 def test_agent_made_real_changes_true_when_other_paths_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fixed_diff(monkeypatch, [])
     porcelain = " M docs/specs/my-spec/tasks.md\nA  src/feature.py\n"
     monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: porcelain)
     assert agent_made_real_changes("my-spec") is True
@@ -399,8 +402,43 @@ def test_agent_made_real_changes_handles_renames(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`R  old -> new` lines should classify on the destination path."""
+    fixed_diff(monkeypatch, [])
     porcelain = "R  docs/specs/my-spec/old.md -> src/new.py\n"
     monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: porcelain)
+    assert agent_made_real_changes("my-spec") is True
+
+
+def test_agent_made_real_changes_true_when_committed_outside_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for PR #51: changes committed in a prior run on the same branch
+    (or by the agent itself mid-session) must still register as real work even
+    when the working tree is clean.
+    """
+    fixed_diff(monkeypatch, ["agents/implementer/src/implementer/lint_gate.py"])
+    monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: "")
+    assert agent_made_real_changes("my-spec") is True
+
+
+def test_agent_made_real_changes_false_when_only_committed_spec_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spec materialization on a no-op rerun: only ``docs/specs/<slug>/`` paths
+    show up against ``origin/main`` and the working tree is clean.
+    """
+    fixed_diff(monkeypatch, ["docs/specs/my-spec/tasks.md", "docs/specs/my-spec/design.md"])
+    monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: "")
+    assert agent_made_real_changes("my-spec") is False
+
+
+def test_agent_made_real_changes_true_when_committed_in_spec_uncommitted_outside(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mixed sources: a committed spec-only path plus an uncommitted code edit
+    still counts as real work via the uncommitted path.
+    """
+    fixed_diff(monkeypatch, ["docs/specs/my-spec/tasks.md"])
+    monkeypatch.setattr(repo_ops, "run_git", lambda *_a, **_k: " M src/feature.py\n")
     assert agent_made_real_changes("my-spec") is True
 
 

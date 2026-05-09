@@ -262,28 +262,25 @@ def has_uncommitted_changes() -> bool:
 
 
 def agent_made_real_changes(spec_slug: str) -> bool:
-    """``True`` when the agent's edits touch any path outside the spec tree.
+    """``True`` when committed or uncommitted edits touch any path outside the spec tree.
 
-    The platform writes the spec bundle to ``docs/specs/<spec_slug>/`` after
-    the agent finishes, but those files come from the platform — not the
-    agent. Re-runs that hit a Bedrock auth failure or otherwise short-
-    circuit produce zero agent edits; we want to detect that and skip the
-    PR-creation flow rather than emit a 1-line "diff" PR.
+    Compares ``HEAD`` against ``origin/main`` (the merge base) so this catches
+    edits the agent made and committed during its session, edits inherited
+    from a prior run on the same branch, and edits still in the working
+    tree. The platform writes the spec bundle to ``docs/specs/<spec_slug>/``
+    after the agent finishes, so those paths are excluded — they don't
+    represent agent work. Re-runs that hit a Bedrock auth failure or
+    otherwise short-circuit produce zero edits anywhere; detecting that is
+    what skips the PR-creation flow rather than emit a 1-line "diff" PR.
     """
-    # ``rstrip`` instead of ``strip``: the porcelain format leads with status
-    # flags ('` M`', '`A `', etc.), so a leading space is meaningful and
-    # must survive the trim.
-    porcelain = run_git("status", "--porcelain").rstrip()
-    if not porcelain:
-        return False
     spec_prefix = f"docs/specs/{spec_slug}/"
-    for line in porcelain.splitlines():
-        # ``git status --porcelain`` format: two status chars, a space, then
-        # the path (and optionally `` -> path`` for renames).
-        path = line[3:].split(" -> ")[-1]
-        if not path.startswith(spec_prefix):
-            return True
-    return False
+    # ``rstrip`` instead of ``strip``: porcelain leads with two status chars
+    # plus a space, so a leading space is meaningful and must survive trim.
+    porcelain = run_git("status", "--porcelain").rstrip().splitlines()
+    # ``XY <path>`` (or ``XY <old> -> <new>`` for renames); strip the flags.
+    uncommitted = [line[3:].split(" -> ")[-1] for line in porcelain]
+    committed = changed_paths(base="main")
+    return any(not p.startswith(spec_prefix) for p in committed + uncommitted)
 
 
 def changed_paths(*, base: str) -> list[str]:
