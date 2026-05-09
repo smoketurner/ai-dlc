@@ -404,7 +404,14 @@ def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
 
 
 def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
-    """Read the three spec docs from S3, branch, commit them, open the PR."""
+    """Read the three spec docs from S3, branch, commit them, open the PR.
+
+    When the spec docs match what's already on ``base`` (a re-run that
+    produced an identical bundle to a previously-merged spec), the new
+    tree's SHA equals the base tree's SHA. Short-circuit before
+    creating an empty commit + 0-file-change PR — return ``no_change``
+    so the state-router can advance straight to ``spec_approved``.
+    """
     docs = read_spec_docs(req.spec_s3_prefix)
     branch = f"aidlc/spec/{req.spec_slug}"
     files = [
@@ -418,6 +425,13 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
     base_tree_sha = commit_tree_sha(req.repo, base_commit_sha, client)
     tree_entries = [build_blob_entry(req.repo, f, client) for f in files]
     new_tree_sha = create_tree(req.repo, base_tree_sha, tree_entries, client)
+    if new_tree_sha == base_tree_sha:
+        return {
+            "no_change": True,
+            "spec_slug": req.spec_slug,
+            "branch": branch,
+            "base_commit_sha": base_commit_sha,
+        }
     new_commit_sha = create_commit(
         req.repo,
         f"spec: {req.spec_slug}",

@@ -45,6 +45,7 @@ def make_run(  # noqa: PLR0913
     target_repo: str | None = "owner/repo",
     task_ids: tuple[str, ...] = (),
     tasks: tuple[Task, ...] = (),
+    triggering_comment_body: str | None = None,
 ) -> Run:
     """Build a Run with sane defaults for tests."""
     return Run(
@@ -67,6 +68,7 @@ def make_run(  # noqa: PLR0913
         spec_s3_prefix=spec_s3_prefix,
         task_ids=task_ids,
         tasks=tasks,
+        triggering_comment_body=triggering_comment_body,
     )
 
 
@@ -106,6 +108,27 @@ class TestRunReceived:
         assert action.payload["issue_number"] == 1
         assert action.payload["issue_title"] == "bug: foo"
         assert action.payload["issue_body"] == "describe"
+        assert action.payload["triggering_comment_body"] is None
+
+    def test_received_with_triggering_comment_threads_into_triage_payload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``@aidlc-bot please reconsider X`` reaches triage with the bot mention stripped."""
+        monkeypatch.setenv("AIDLC_GITHUB_BOT_LOGIN", "ai-dlc[bot]")
+        run = make_run(
+            state=RunState.received,
+            source_issue_url="https://github.com/o/r/issues/1",
+            issue_number=1,
+            issue_title="bug: foo",
+            issue_body="describe",
+            triggering_comment_body="@ai-dlc[bot] please reconsider — needs a 503 path",
+        )
+        action = decide(run)
+        assert isinstance(action, InvokeAgent)
+        assert action.payload["triggering_comment_body"] == (
+            "please reconsider — needs a 503 path"
+        )
 
     def test_received_with_issue_url_only_is_noop(self) -> None:
         run = make_run(
@@ -121,6 +144,22 @@ class TestRunReceived:
         assert isinstance(action, InvokeAgent)
         assert "architect" in action.runtime_arn
         assert action.advance_to == RunState.architect_running.value
+        assert action.payload["triggering_comment_body"] is None
+
+    def test_received_without_issue_threads_triggering_comment_to_architect(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the architect runs directly, the same comment threading applies."""
+        monkeypatch.setenv("AIDLC_GITHUB_BOT_LOGIN", "ai-dlc[bot]")
+        run = make_run(
+            state=RunState.received,
+            triggering_comment_body="@ai-dlc[bot] add a feature flag",
+        )
+        action = decide(run)
+        assert isinstance(action, InvokeAgent)
+        assert "architect" in action.runtime_arn
+        assert action.payload["triggering_comment_body"] == "add a feature flag"
 
     def test_received_noop_when_runtime_arn_missing(
         self,
@@ -210,6 +249,10 @@ class TestRunSpecFlow:
         assert isinstance(action, InvokeRepoHelper)
         assert action.op == "open_spec_pr"
         assert action.advance_to == RunState.spec_pr_open.value
+        # When the architect re-produced an identical spec, the open_spec_pr
+        # short-circuit returns ``no_change`` and the run advances directly
+        # to ``spec_approved`` instead of waiting for a PR merge.
+        assert action.advance_on_no_change_to == RunState.spec_approved.value
 
     def test_spec_critiqued_noop_without_target_repo(self) -> None:
         run = make_run(state=RunState.spec_critiqued, spec_slug="demo", target_repo=None)

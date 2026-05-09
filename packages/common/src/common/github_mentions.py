@@ -40,3 +40,26 @@ def has_bot_mention(body: str | None, bot_login: str) -> bool:
     if not body or not bot_login:
         return False
     return bot_mention_re(bot_login).search(body) is not None
+
+
+def strip_bot_mention(body: str | None, bot_login: str) -> str | None:
+    """Strip a leading ``@<bot_login>`` from ``body`` and return the rest.
+
+    The webhook captures the entire comment as ``triggering_comment_body``
+    so triage and architect see the user's full intent, but the bot
+    mention itself is noise to the LLM. Returns ``None`` when nothing
+    meaningful remains (a bare ``@<bot>`` with no guidance).
+
+    Uses :func:`bot_mention_re` so the strip stays in sync with the
+    webhook's match rule. Only the *first* leading occurrence is
+    stripped; mentions inside the body (e.g., a quoted reply) survive.
+    """
+    if not body:
+        return None
+    text = body.lstrip()
+    if bot_login:
+        match = bot_mention_re(bot_login).match(text)
+        if match:
+            text = text[match.end() :].lstrip()
+    cleaned = text.strip()
+    return cleaned or None

@@ -16,16 +16,16 @@ Issue-derived events look up the run via the ``gsi1`` index
 (``ISSUE#{url}``) when needed — the projector populated it on the
 matching ``REQUEST.RECEIVED``.
 
-Trigger conventions:
+Trigger convention:
 
-* ``/aidlc <verb>`` — terse state-machine commands. ``/aidlc cancel``,
-  ``/aidlc approve``, ``/aidlc reject``, ``/aidlc go``. Verb is the
-  whole signal; the rest of the comment is ignored except for
-  ``reject`` which uses the trailing text as the rejection reason.
-* ``@aidlc-bot <natural language>`` — directives that carry intent.
-  On a PR/PR-review comment the body becomes feedback for the
+* ``@aidlc-bot <natural language>`` — the only comment-driven trigger.
+  On a PR / PR-review comment the body becomes feedback for the
   implementer (iteration). On a non-PR issue comment it triggers a
-  fresh triage run, same as ``/aidlc go``.
+  fresh triage run.
+
+Everything else is GitHub-native: merge a PR to approve, close a PR
+to reject, close an issue to cancel its in-flight run, unassign the
+bot from an issue to cancel.
 
 Every accepted trigger posts a 👀 reaction on the source object — the
 issue itself for assignment-driven triggers, the comment id for any
@@ -39,12 +39,10 @@ Event mapping:
 * ``pull_request_review`` changes_requested → ``TASK.ITERATION_REQUESTED``
 * ``pull_request_review_comment`` w/ ``@aidlc-bot``       → ``TASK.ITERATION_REQUESTED``
 * ``issue_comment`` on a PR w/ ``@aidlc-bot``             → ``TASK.ITERATION_REQUESTED``
-* ``issue_comment`` w/ ``/aidlc cancel``                  → ``RUN.CANCEL_REQUESTED``
-* ``issue_comment`` w/ ``/aidlc approve|reject``          → ``TASK.APPROVED`` / ``TASK.REJECTED``
 * ``workflow_run.completed`` failure                      → ``TASK.ITERATION_REQUESTED``
 * ``issues`` opened/labeled/assigned (triage)             → ``REQUEST.RECEIVED``
-* ``issues`` unassigned (bot)                             → ``RUN.CANCEL_REQUESTED``
-* ``issue_comment`` ``/aidlc go`` / ``@aidlc-bot`` / awaiting-response → ``REQUEST.RECEIVED``
+* ``issues`` unassigned (bot) / closed                    → ``RUN.CANCEL_REQUESTED``
+* ``issue_comment`` w/ ``@aidlc-bot`` / awaiting-response → ``REQUEST.RECEIVED``
 """
 
 from __future__ import annotations
@@ -53,7 +51,6 @@ import hashlib
 import hmac
 import json
 import os
-import re
 from functools import cache
 from typing import Any
 
@@ -111,11 +108,6 @@ idempotency_config = IdempotencyConfig(
     expires_after_seconds=86_400,
     raise_on_no_idempotency_key=True,
 )
-
-APPROVE_RE = re.compile(r"/aidlc\s+approve\b", re.IGNORECASE)
-REJECT_RE = re.compile(r"/aidlc\s+reject\s*(.*)", re.IGNORECASE)
-CANCEL_RE = re.compile(r"/aidlc\s+cancel\b", re.IGNORECASE)
-GO_RE = re.compile(r"/aidlc\s+go\b", re.IGNORECASE)
 
 READY_LABEL = "aidlc:ready"
 AWAITING_RESPONSE_LABEL = "aidlc:awaiting-response"
@@ -491,60 +483,22 @@ def classify_pr_comment(
 ) -> dict[str, Any]:
     """Pick the right event for a PR conversation comment + emit it.
 
-    Posts a 👀 reaction on the comment when the body matches a verb
-    (``/aidlc cancel|approve|reject``) or carries an ``@aidlc-bot``
-    mention — gives users immediate visual confirmation before the
-    asynchronous downstream pipeline does anything visible.
+    The only comment-driven trigger is ``@aidlc-bot``; merging or
+    closing the PR handles approval / rejection natively. Posts a 👀
+    reaction on the comment when the mention matches so users see
+    immediate confirmation before the async pipeline runs.
     """
-    if CANCEL_RE.search(body):
-        react_to_issue_comment(repository, comment)
-        return emit_run_cancel(row, requestor=commenter, source="comment_command")
-    is_task = attr(row, "sk").startswith("TASK#")
-    if APPROVE_RE.search(body) and is_task:
-        react_to_issue_comment(repository, comment)
-        return emit_task_close(row, pr_url=pr_url, merged=True, reviewer=commenter)
-    match = REJECT_RE.search(body)
-    if match and is_task:
-        react_to_issue_comment(repository, comment)
-        return emit_task_reject_from_comment(row, pr_url=pr_url, commenter=commenter, match=match)
-    if has_bot_mention(body, settings().github_bot_login) and is_task:
-        react_to_issue_comment(repository, comment)
-        feedback = IssueCommentMentionFeedback(
-            comment_id=int(comment.get("id", 0)),
-            body=body,
-            commenter=commenter,
-        )
-        return emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
-    return {"ok": True, "ignored": "no match"}
-
-
-def emit_task_reject_from_comment(
-    row: dict[str, Any],
-    *,
-    pr_url: str,
-    commenter: str,
-    match: re.Match[str],
-) -> dict[str, Any]:
-    """Build + publish a TASK.REJECTED event from a /aidlc reject comment."""
-    run_id = run_id_of(row)
-    correlation_id = attr(row, "correlation_id")
-    emit(
-        envelope_for(
-            event_type="TASK.REJECTED",
-            run_id=run_id,
-            correlation_id=correlation_id,
-            actor="webhook",
-            payload=TaskRejected(
-                project_slug=attr(row, "project_slug"),
-                spec_slug=attr(row, "spec_slug"),
-                task_id=task_id_of(row),
-                pr_url=pr_url,
-                reviewer=commenter,
-                reason=match.group(1).strip() or "rejected via /aidlc",
-            ),
-        )
+    if not has_bot_mention(body, settings().github_bot_login):
+        return {"ok": True, "ignored": "no match"}
+    if not attr(row, "sk").startswith("TASK#"):
+        return {"ok": True, "ignored": "not a task PR"}
+    react_to_issue_comment(repository, comment)
+    feedback = IssueCommentMentionFeedback(
+        comment_id=int(comment.get("id", 0)),
+        body=body,
+        commenter=commenter,
     )
-    return {"ok": True, "decision": "task_rejected"}
+    return emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
 
 
 def handle_issue_only_comment(
@@ -557,13 +511,11 @@ def handle_issue_only_comment(
 
     Recognised triggers (each posts a 👀 reaction on the comment):
 
-    * ``/aidlc cancel`` → cancel the in-flight run for this issue.
-    * ``/aidlc go`` → start a fresh triage run.
     * ``@aidlc-bot`` (anywhere in body) → start a fresh triage run.
-      Same effect as ``/aidlc go``; gives users one canonical "ping the
-      bot" syntax that matches the PR-comment iteration convention.
     * Any human comment when the issue carries ``aidlc:awaiting-response``
       → start a fresh triage run with the reply as additional context.
+
+    Cancellation is GitHub-native: close the issue or unassign the bot.
     """
     issue = payload.get("issue") or {}
     label_names = [label.get("name", "") for label in issue.get("labels", [])]
@@ -572,18 +524,10 @@ def handle_issue_only_comment(
     issue_url = issue.get("html_url") or ""
     repository = payload.get("repository") or {}
     comment = payload.get("comment") or {}
-    if CANCEL_RE.search(body):
-        state = lookup_run_by_issue(issue_url) if issue_url else None
-        if state is None:
-            return {"ok": True, "ignored": "no run for issue"}
-        commenter = (comment.get("user") or {}).get("login", "unknown")
-        react_to_issue_comment(repository, comment)
-        return emit_run_cancel(state, requestor=commenter, source="comment_command")
     if AWAITING_RESPONSE_LABEL in label_names and is_human_comment(comment):
         react_to_issue_comment(repository, comment)
         return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
-    bot_login = settings().github_bot_login
-    if GO_RE.search(body) or has_bot_mention(body, bot_login):
+    if has_bot_mention(body, settings().github_bot_login):
         react_to_issue_comment(repository, comment)
         return emit_request_received(payload, source_issue_url=issue_url, delivery_id=delivery_id)
     return {"ok": True, "ignored": "no match"}
@@ -641,6 +585,8 @@ def handle_issues(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
     action = payload.get("action")
     if action == "unassigned":
         return handle_issue_unassigned(payload)
+    if action == "closed":
+        return handle_issue_closed(payload)
     if action in {"opened", "labeled", "assigned"} and issues_action_is_trigger(action, payload):
         issue = payload.get("issue") or {}
         issue_url = issue.get("html_url") or ""
@@ -666,6 +612,26 @@ def handle_issue_unassigned(payload: dict[str, Any]) -> dict[str, Any]:
         requestor=sender,
         source="issue_unassigned",
         reason=f"bot unassigned from {issue_url} by {sender}",
+    )
+
+
+def handle_issue_closed(payload: dict[str, Any]) -> dict[str, Any]:
+    """Issue closed → cancel the in-flight run if there is one.
+
+    Replaces the previous ``/aidlc cancel`` comment trigger. Closing
+    the issue is the GitHub-native "I'm done with this" signal; the
+    in-flight run terminates so it doesn't keep firing agents.
+    """
+    issue_url = (payload.get("issue") or {}).get("html_url", "")
+    state = lookup_run_by_issue(issue_url) if issue_url else None
+    if state is None:
+        return {"ok": True, "ignored": "no run for issue"}
+    sender = (payload.get("sender") or {}).get("login", "unknown")
+    return emit_run_cancel(
+        state,
+        requestor=sender,
+        source="issue_closed",
+        reason=f"issue {issue_url} closed by {sender}",
     )
 
 

@@ -19,6 +19,7 @@ from common.events import (
     RunCancelRequested,
     RunCompleted,
 )
+from common.github_mentions import strip_bot_mention
 from common.ids import CorrelationId, RunId, new_event_id
 from common.state import (
     TERMINAL_TASK_STATES,
@@ -37,6 +38,7 @@ from state_router.actions import (
     WriteSyntheticSpec,
 )
 from state_router.config import (
+    github_bot_login,
     repo_helper_function_name,
     runtime_arn,
 )
@@ -95,6 +97,9 @@ def invoke_triage(run: Run, arn: str) -> Action:
             "issue_title": run.issue_title,
             "issue_body": run.issue_body or "",
             "issue_labels": list(run.issue_labels),
+            "triggering_comment_body": strip_bot_mention(
+                run.triggering_comment_body, github_bot_login(),
+            ),
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,
@@ -115,6 +120,9 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
         payload={
             "project_slug": run.project_slug,
             "intent": run.intent,
+            "triggering_comment_body": strip_bot_mention(
+                run.triggering_comment_body, github_bot_login(),
+            ),
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,
@@ -317,7 +325,15 @@ def handle_spec_drafted(run: Run) -> Action:
 
 
 def handle_spec_critiqued(run: Run) -> Action:
-    """Critic done — open the spec PR via repo_helper."""
+    """Critic done — open the spec PR via repo_helper.
+
+    When the architect re-produced a spec identical to what's already
+    on the base branch (a re-trigger that resulted in the same docs),
+    ``open_spec_pr`` short-circuits with ``no_change: true``. The run
+    skips ``spec_pr_open`` and lands directly on ``spec_approved`` —
+    the next beacon poll runs ``handle_spec_approved`` which seeds
+    tasks from the SPEC.READY-projected ``task_ids``.
+    """
     fn = repo_helper_function_name()
     if not fn or not run.spec_slug or not run.target_repo:
         return Noop("repo_helper or spec context not yet available")
@@ -338,6 +354,7 @@ def handle_spec_critiqued(run: Run) -> Action:
         target_sk="STATE",
         advance_from=RunState.spec_critiqued.value,
         advance_to=RunState.spec_pr_open.value,
+        advance_on_no_change_to=RunState.spec_approved.value,
         record_pr_url_attr="pr_url",
     )
 

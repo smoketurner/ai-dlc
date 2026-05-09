@@ -274,15 +274,18 @@ def test_push_branch_happy_path_uses_set_upstream(monkeypatch: pytest.MonkeyPatc
 def test_push_branch_falls_back_to_force_with_lease_on_reject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reject → fetch the remote branch → force-with-lease push it."""
+    """Reject → fetch the remote branch → force-with-lease push pinned to FETCH_HEAD."""
     seen: list[tuple[str, ...]] = []
+    remote_sha = "abc123def456abc123def456abc123def4567890"
 
     def fake_run_git(*args: str, cwd: Any = None) -> str:
         del cwd
         seen.append(args)
-        if args[0] == "push" and "--force-with-lease" not in args:
+        if args[0] == "push" and not any(a.startswith("--force-with-lease") for a in args):
             msg = "git push failed (exit 1) ... ! [rejected] ... non-fast-forward"
             raise RuntimeError(msg)
+        if args == ("rev-parse", "FETCH_HEAD"):
+            return f"{remote_sha}\n"
         return ""
 
     monkeypatch.setattr(repo_ops, "run_git", fake_run_git)
@@ -290,7 +293,13 @@ def test_push_branch_falls_back_to_force_with_lease_on_reject(
     assert seen == [
         ("push", "--set-upstream", "origin", "aidlc/spec/t-001"),
         ("fetch", "origin", "aidlc/spec/t-001"),
-        ("push", "--force-with-lease", "origin", "aidlc/spec/t-001"),
+        ("rev-parse", "FETCH_HEAD"),
+        (
+            "push",
+            f"--force-with-lease=aidlc/spec/t-001:{remote_sha}",
+            "origin",
+            "aidlc/spec/t-001",
+        ),
     ]
 
 

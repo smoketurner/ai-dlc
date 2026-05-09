@@ -82,6 +82,12 @@ class InvokeRepoHelper:
     advance state on success (e.g., ``spec_critiqued → spec_pr_open``
     after the PR is open). When ``advance_to`` is ``None``, the call is
     informational and state stays put.
+
+    ``advance_on_no_change_to`` lets a compound op (currently
+    ``open_spec_pr``) advance to a different state when its result
+    carries ``no_change: true`` — e.g., the architect re-produced a
+    spec identical to what's already on ``main``, so the run should
+    skip ``spec_pr_open`` and land on ``spec_approved`` directly.
     """
 
     op: str
@@ -90,6 +96,7 @@ class InvokeRepoHelper:
     target_sk: str | None = None
     advance_from: str | None = None
     advance_to: str | None = None
+    advance_on_no_change_to: str | None = None
     record_pr_url_attr: str | None = None
 
 

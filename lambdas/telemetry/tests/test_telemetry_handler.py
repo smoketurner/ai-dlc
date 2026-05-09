@@ -14,10 +14,9 @@ import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from moto import mock_aws
 
-from telemetry.handler import RejectionEnvelope, bedrock, build_record, ddb, handler, s3
+from telemetry.handler import RejectionEnvelope, bedrock, build_record, handler, s3
 
 ARTIFACTS = "test-artifacts"
-RUNS = "test-runs"
 
 
 def ctx() -> LambdaContext:
@@ -45,31 +44,16 @@ def fake_bedrock_client(label: str) -> Any:
 
 @pytest.fixture(autouse=True)
 def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Set env vars + create the runs table + artifacts bucket under moto."""
+    """Set env vars + create the artifacts bucket under moto."""
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", ARTIFACTS)
-    monkeypatch.setenv("AIDLC_RUNS_TABLE", RUNS)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     s3.cache_clear()
-    ddb.cache_clear()
     bedrock.cache_clear()
     monkeypatch.setattr("telemetry.handler.bedrock", lambda: fake_bedrock_client("test-failed"))
     with mock_aws():
         boto3.client("s3").create_bucket(Bucket=ARTIFACTS)
-        boto3.client("dynamodb").create_table(
-            TableName=RUNS,
-            AttributeDefinitions=[
-                {"AttributeName": "pk", "AttributeType": "S"},
-                {"AttributeName": "sk", "AttributeType": "S"},
-            ],
-            KeySchema=[
-                {"AttributeName": "pk", "KeyType": "HASH"},
-                {"AttributeName": "sk", "KeyType": "RANGE"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
         yield
     s3.cache_clear()
-    ddb.cache_clear()
     bedrock.cache_clear()
 
 
@@ -126,30 +110,6 @@ def test_record_persisted_to_s3() -> None:
         .get("Contents", [])
     ]
     assert any("/run-1/task_T-001.json" in k for k in keys)
-
-
-def test_run_state_counters_incremented() -> None:
-    handler(eb(envelope()), ctx())
-    item = ddb().get_item(
-        TableName=RUNS,
-        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
-    )["Item"]
-    assert item["category_test_failed"]["N"] == "1"
-    assert item["total_rejections"]["N"] == "1"
-
-
-def test_project_rolling_counter_incremented() -> None:
-    handler(eb(envelope()), ctx())
-    items = ddb().query(
-        TableName=RUNS,
-        KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
-        ExpressionAttributeValues={
-            ":p": {"S": "PROJECT#demo"},
-            ":prefix": {"S": "REJECTIONS#"},
-        },
-    )["Items"]
-    assert len(items) == 1
-    assert items[0]["category_test_failed"]["N"] == "1"
 
 
 def test_unknown_event_type_ignored() -> None:

@@ -293,15 +293,18 @@ class RunCancelRequested(Payload):
     """A user or system requested cancellation of an in-flight run.
 
     Emitted by the dashboard webhook on ``issues.unassigned`` (the bot
-    was unassigned from the source issue) or on an ``/aidlc cancel``
-    PR/issue comment, and may be emitted by other surfaces (dashboard
-    button) as the cancellation UX expands.
+    was unassigned from the source issue) or ``issues.closed`` (the
+    user is done with the issue), and by the state-router when triage
+    decides to ``ask`` / ``defer`` / ``decline`` (``comment_command``).
+    May be emitted by other surfaces (dashboard button) as the
+    cancellation UX expands.
     """
 
     project_slug: str
     requestor: Annotated[str, Field(min_length=1, max_length=128)]
     source: Literal[
         "issue_unassigned",
+        "issue_closed",
         "comment_command",
         "dashboard",
     ]

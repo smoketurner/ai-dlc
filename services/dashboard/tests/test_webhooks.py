@@ -360,48 +360,24 @@ async def test_review_comment_no_mention_ignored(
 
 
 @pytest.mark.asyncio
-async def test_pr_comment_aidlc_cancel_emits_run_cancel(
+async def test_pr_comment_without_mention_is_ignored(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
+    """Plain PR comments without a bot mention emit nothing.
+
+    Slash commands (`/aidlc cancel|approve|reject`) are no longer
+    recognised — humans approve via merge, reject via close, and
+    cancel by closing the issue.
+    """
     stub_pr_lookup(monkeypatch, sk="TASK#T-001")
     payload = {
         "action": "created",
-        "comment": {"body": "/aidlc cancel", "user": {"login": "alice"}},
+        "comment": {"body": "looks fine to me", "user": {"login": "alice"}},
         "issue": {"pull_request": {"html_url": "https://github.com/o/r/pull/1"}},
     }
     await post_webhook(event_type="issue_comment", payload=payload)
-    assert captured_events[0].type == "RUN.CANCEL_REQUESTED"
-
-
-@pytest.mark.asyncio
-async def test_pr_comment_aidlc_approve_emits_task_approved(
-    monkeypatch: pytest.MonkeyPatch,
-    captured_events: list[EventEnvelope[Any]],
-) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
-    payload = {
-        "action": "created",
-        "comment": {"body": "/aidlc approve", "user": {"login": "alice"}},
-        "issue": {"pull_request": {"html_url": "https://github.com/o/r/pull/1"}},
-    }
-    await post_webhook(event_type="issue_comment", payload=payload)
-    assert captured_events[0].type == "TASK.APPROVED"
-
-
-@pytest.mark.asyncio
-async def test_pr_comment_aidlc_reject_emits_task_rejected(
-    monkeypatch: pytest.MonkeyPatch,
-    captured_events: list[EventEnvelope[Any]],
-) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
-    payload = {
-        "action": "created",
-        "comment": {"body": "/aidlc reject reason", "user": {"login": "alice"}},
-        "issue": {"pull_request": {"html_url": "https://github.com/o/r/pull/1"}},
-    }
-    await post_webhook(event_type="issue_comment", payload=payload)
-    assert captured_events[0].type == "TASK.REJECTED"
+    assert captured_events == []
 
 
 @pytest.mark.asyncio
@@ -480,17 +456,22 @@ async def test_issue_unassigned_non_bot_ignored(
 
 
 # ---------------------------------------------------------------------------
-# issue_comment on a real issue — /aidlc go, awaiting-response
+# issue_comment on a real issue — @aidlc-bot mention, awaiting-response
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_issue_comment_aidlc_go_emits_request_received(
+async def test_issue_comment_without_mention_is_ignored(
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
+    """Plain issue comments without a bot mention emit nothing.
+
+    Slash commands (`/aidlc cancel|go`) are no longer recognised —
+    triggering uses ``@aidlc-bot`` and cancellation closes the issue.
+    """
     payload = {
         "action": "created",
-        "comment": {"body": "/aidlc go", "user": {"login": "alice", "type": "User"}},
+        "comment": {"body": "thinking about this", "user": {"login": "alice", "type": "User"}},
         "issue": {
             "html_url": "https://github.com/o/r/issues/9",
             "title": "x",
@@ -501,25 +482,43 @@ async def test_issue_comment_aidlc_go_emits_request_received(
         "repository": {"full_name": "o/r"},
     }
     await post_webhook(event_type="issue_comment", payload=payload)
-    assert captured_events[0].type == "REQUEST.RECEIVED"
+    assert captured_events == []
 
 
 @pytest.mark.asyncio
-async def test_issue_comment_cancel_emits_run_cancel(
+async def test_issue_closed_emits_run_cancel(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
+    """Closing an in-flight issue cancels its run.
+
+    Replaces the previous ``/aidlc cancel`` comment trigger.
+    """
     stub_run_by_issue(monkeypatch)
     payload = {
-        "action": "created",
-        "comment": {"body": "/aidlc cancel", "user": {"login": "alice", "type": "User"}},
-        "issue": {
-            "html_url": "https://github.com/o/r/issues/9",
-            "labels": [],
-        },
+        "action": "closed",
+        "issue": {"html_url": "https://github.com/o/r/issues/9"},
+        "sender": {"login": "alice"},
     }
-    await post_webhook(event_type="issue_comment", payload=payload)
+    await post_webhook(event_type="issues", payload=payload)
     assert captured_events[0].type == "RUN.CANCEL_REQUESTED"
+    assert captured_events[0].payload.source == "issue_closed"
+
+
+@pytest.mark.asyncio
+async def test_issue_closed_without_run_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """Closing an issue with no in-flight run emits nothing."""
+    monkeypatch.setattr("dashboard.routes.webhooks.lookup_run_by_issue", lambda _: None)
+    payload = {
+        "action": "closed",
+        "issue": {"html_url": "https://github.com/o/r/issues/9"},
+        "sender": {"login": "alice"},
+    }
+    await post_webhook(event_type="issues", payload=payload)
+    assert captured_events == []
 
 
 @pytest.mark.asyncio
@@ -552,11 +551,11 @@ async def test_issue_comment_bot_mention_emits_request_received(
 
 
 @pytest.mark.asyncio
-async def test_issue_comment_aidlc_go_reacts_on_comment(
+async def test_issue_comment_bot_mention_reacts_on_comment(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    """``/aidlc go`` on a non-PR issue posts a 👀 on the comment id."""
+    """``@aidlc-bot`` on a non-PR issue posts a 👀 on the comment id."""
     reactions: list[dict[str, str]] = []
     monkeypatch.setattr(
         "dashboard.routes.webhooks.react_eyes",
@@ -568,7 +567,7 @@ async def test_issue_comment_aidlc_go_reacts_on_comment(
         "action": "created",
         "comment": {
             "id": 4399714948,
-            "body": "/aidlc go",
+            "body": f"@{BOT_LOGIN} please retry",
             "user": {"login": "alice", "type": "User"},
         },
         "issue": {
@@ -709,10 +708,13 @@ def test_build_issue_context_strips_comment_whitespace() -> None:
     ctx = build_issue_context(
         issue_payload={"number": 9, "title": "x", "body": ""},
         source_issue_url="https://github.com/o/r/issues/9",
-        comment_payload={"body": "   /aidlc go   \n", "user": {"login": "alice"}},
+        comment_payload={
+            "body": f"   @{BOT_LOGIN} please retry  \n",
+            "user": {"login": "alice"},
+        },
     )
     assert ctx is not None
-    assert ctx.triggering_comment_body == "/aidlc go"
+    assert ctx.triggering_comment_body == f"@{BOT_LOGIN} please retry"
 
 
 def test_build_issue_context_returns_none_without_issue_url() -> None:

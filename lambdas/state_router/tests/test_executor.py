@@ -8,11 +8,17 @@ each state returns; these tests cover how the executor applies it.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
 
 from common.state import RunState, TaskState
-from state_router.actions import GuardedAdvance, InvokeAgent, Noop
-from state_router.execute import execute, execute_guarded_advance
+from state_router.actions import GuardedAdvance, InvokeAgent, InvokeRepoHelper, Noop
+from state_router.execute import (
+    execute,
+    execute_guarded_advance,
+    execute_invoke_repo_helper,
+    pick_advance_to,
+)
 from state_router.model import Run
 
 
@@ -209,3 +215,108 @@ def test_unknown_action_type_logs_and_no_ops() -> None:
     with patch("state_router.execute.dispatch_to_runtime") as dispatch:
         execute(make_run(), Noop("just because"))
     assert dispatch.call_count == 0
+
+
+def make_open_spec_pr_action() -> InvokeRepoHelper:
+    """Build the InvokeRepoHelper that ``handle_spec_critiqued`` returns."""
+    return InvokeRepoHelper(
+        op="open_spec_pr",
+        args={"repo": "o/r", "spec_slug": "demo", "spec_s3_prefix": "specs/demo/"},
+        target_pk="RUN#r-1",
+        target_sk="STATE",
+        advance_from=RunState.spec_critiqued.value,
+        advance_to=RunState.spec_pr_open.value,
+        advance_on_no_change_to=RunState.spec_approved.value,
+        record_pr_url_attr="pr_url",
+    )
+
+
+def make_lambda_response(payload: dict[str, object]) -> dict[str, object]:
+    """Build the boto3 ``invoke`` envelope around ``payload``."""
+    body = MagicMock()
+    body.read.return_value = json.dumps(payload).encode("utf-8")
+    return {"Payload": body}
+
+
+def test_pick_advance_to_returns_no_change_target_when_result_says_so() -> None:
+    """A ``no_change: true`` repo_helper result steers to the no-change target."""
+    action = make_open_spec_pr_action()
+    body = {"ok": True, "result": {"no_change": True}}
+    assert pick_advance_to(action, body) == RunState.spec_approved.value
+
+
+def test_pick_advance_to_returns_normal_target_when_pr_was_opened() -> None:
+    """The normal result (``pr_url`` present) steers to the regular target."""
+    action = make_open_spec_pr_action()
+    body = {"ok": True, "result": {"pr_url": "https://github.com/o/r/pull/9"}}
+    assert pick_advance_to(action, body) == RunState.spec_pr_open.value
+
+
+def test_pick_advance_to_falls_through_when_no_change_target_unset() -> None:
+    """An action without ``advance_on_no_change_to`` ignores the flag."""
+    action = InvokeRepoHelper(
+        op="comment_pr",
+        args={},
+        target_pk="RUN#r-1",
+        target_sk="STATE",
+        advance_from="x",
+        advance_to="y",
+    )
+    body = {"ok": True, "result": {"no_change": True}}
+    assert pick_advance_to(action, body) == "y"
+
+
+def test_execute_invoke_repo_helper_advances_to_no_change_target() -> None:
+    """When repo_helper returns ``no_change``, advance straight to spec_approved."""
+    action = make_open_spec_pr_action()
+    response = make_lambda_response(
+        {
+            "ok": True,
+            "op": "open_spec_pr",
+            "result": {
+                "no_change": True,
+                "spec_slug": "demo",
+                "branch": "aidlc/spec/demo",
+                "base_commit_sha": "abc",
+            },
+        },
+    )
+    fake_lambda = MagicMock()
+    fake_lambda.invoke.return_value = response
+    with (
+        patch("state_router.execute.lambda_client", return_value=fake_lambda),
+        patch("state_router.execute.repo_helper_function_name", return_value="repo-helper-fn"),
+        patch("state_router.execute.advance_state", return_value=True) as advance,
+    ):
+        execute_invoke_repo_helper(action)
+    advance.assert_called_once()
+    assert advance.call_args.kwargs["advance_to"] == RunState.spec_approved.value
+    # No PR was opened, so no pr_url is recorded.
+    assert advance.call_args.kwargs["extra_attrs"] == {}
+
+
+def test_execute_invoke_repo_helper_records_pr_url_on_normal_path() -> None:
+    """The non-no_change path advances to spec_pr_open and records the PR URL."""
+    action = make_open_spec_pr_action()
+    response = make_lambda_response(
+        {
+            "ok": True,
+            "op": "open_spec_pr",
+            "result": {
+                "pr_url": "https://github.com/o/r/pull/9",
+                "pr_number": 9,
+                "branch": "aidlc/spec/demo",
+            },
+        },
+    )
+    fake_lambda = MagicMock()
+    fake_lambda.invoke.return_value = response
+    with (
+        patch("state_router.execute.lambda_client", return_value=fake_lambda),
+        patch("state_router.execute.repo_helper_function_name", return_value="repo-helper-fn"),
+        patch("state_router.execute.advance_state", return_value=True) as advance,
+    ):
+        execute_invoke_repo_helper(action)
+    advance.assert_called_once()
+    assert advance.call_args.kwargs["advance_to"] == RunState.spec_pr_open.value
+    assert advance.call_args.kwargs["extra_attrs"] == {"pr_url": "https://github.com/o/r/pull/9"}

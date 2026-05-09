@@ -46,3 +46,15 @@ def runtime_arn(name: str) -> str:
 def repo_helper_function_name() -> str:
     """Lambda function name for ``repo_helper`` invocations."""
     return os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME", "")
+
+
+def github_bot_login() -> str:
+    """GitHub login of the App's bot user (e.g., ``ai-dlc[bot]``).
+
+    Used by :func:`common.github_mentions.strip_control_prefixes` when
+    the router prepares the triage / architect payload — a leading
+    ``@<bot_login>`` on the triggering comment is noise to the LLM.
+    Empty string when the env var isn't wired (the strip helper falls
+    back to slash-command-only stripping).
+    """
+    return os.environ.get("AIDLC_GITHUB_BOT_LOGIN", "")

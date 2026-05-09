@@ -1424,6 +1424,62 @@ def _existing_branch_routes() -> dict[
     }
 
 
+def test_open_spec_pr_short_circuits_when_tree_unchanged(
+    patch_client: Callable[[httpx.MockTransport], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``create_tree`` returns the base tree SHA, skip commit + PR.
+
+    A re-run that produces docs identical to a previously-merged spec
+    yields the same tree on the GitHub side. ``open_spec_pr`` returns
+    ``no_change: true`` so the state-router can advance straight to
+    ``spec_approved`` instead of opening a 0-file-change PR.
+    """
+    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
+    monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
+
+    def tree_returns_base(_: httpx.Request) -> httpx.Response:
+        # Same SHA as ``_ok_base_commit`` returns for the tree → no diff.
+        return httpx.Response(201, json={"sha": "basetree"})
+
+    routes = _spec_pr_routes(
+        branch="aidlc/spec/add-healthz",
+        base="main",
+        slug="add-healthz",
+        run_id="run-xyz",
+    )
+    routes[("POST", "/repos/o/r/git/trees")] = tree_returns_base
+
+    def fail_if_called(req: httpx.Request) -> httpx.Response:
+        msg = f"unexpected request after no_change short-circuit: {req.method} {req.url.path}"
+        raise AssertionError(msg)
+
+    routes[("POST", "/repos/o/r/git/commits")] = fail_if_called
+    routes[("PATCH", "/repos/o/r/git/refs/heads/aidlc/spec/add-healthz")] = fail_if_called
+    routes[("POST", "/repos/o/r/pulls")] = fail_if_called
+
+    patch_client(httpx.MockTransport(_route_with(routes)))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_spec_pr",
+                "repo": "o/r",
+                "spec_slug": "add-healthz",
+                "spec_s3_prefix": "specs/add-healthz/",
+                "run_id": "run-xyz",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"] == {
+        "no_change": True,
+        "spec_slug": "add-healthz",
+        "branch": "aidlc/spec/add-healthz",
+        "base_commit_sha": "mainsha",
+    }
+
+
 def test_open_spec_pr_reuses_existing_branch(
     patch_client: Callable[[httpx.MockTransport], None],
     monkeypatch: pytest.MonkeyPatch,

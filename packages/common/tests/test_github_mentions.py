@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from common.github_mentions import bot_mention_re, has_bot_mention
+from common.github_mentions import (
+    bot_mention_re,
+    has_bot_mention,
+    strip_bot_mention,
+)
 
 BOT = "ai-dlc[bot]"
 
@@ -55,3 +59,31 @@ def test_special_chars_in_bot_login_escaped() -> None:
     # If brackets weren't escaped, this would match too because [bot] would
     # be a character class meaning "any of b/o/t".
     assert pattern.search("@ai-dlcb") is None
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # Bare bot mention reduces to None — no guidance to forward.
+        ("@ai-dlc[bot]", None),
+        ("  @ai-dlc[bot]  ", None),
+        # Bot mention + free-text leaves the free-text behind.
+        ("@ai-dlc[bot] please add Z", "please add Z"),
+        ("  @ai-dlc[bot]\nplease add Z", "please add Z"),
+        # Plain text with no prefix passes through.
+        ("just plain guidance", "just plain guidance"),
+        # Empty / None inputs return None.
+        ("", None),
+        (None, None),
+        # Mid-body mentions are NOT stripped (only leading).
+        ("please ask @ai-dlc[bot] for X", "please ask @ai-dlc[bot] for X"),
+    ],
+)
+def test_strip_bot_mention(body: str | None, expected: str | None) -> None:
+    assert strip_bot_mention(body, BOT) == expected
+
+
+def test_strip_bot_mention_passes_through_when_bot_login_unset() -> None:
+    """Without a bot login, the @-prefix passes through verbatim."""
+    assert strip_bot_mention("@ai-dlc[bot] please do X", "") == "@ai-dlc[bot] please do X"
+    assert strip_bot_mention("plain text", "") == "plain text"

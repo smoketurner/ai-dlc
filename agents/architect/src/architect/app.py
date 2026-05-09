@@ -83,6 +83,7 @@ def run_architect(payload: ArchitectInput, task_id: int) -> None:
             payload.intent,
             project_slug=payload.project_slug,
             prior_feedback=payload.prior_feedback,
+            triggering_comment_body=payload.triggering_comment_body,
         )
         upload_spec(spec)
 

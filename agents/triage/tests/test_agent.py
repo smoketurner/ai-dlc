@@ -71,6 +71,21 @@ def test_compose_message_includes_prior_rounds_when_present() -> None:
     assert "[2] Returning {ok: true}" in msg
 
 
+def test_compose_message_includes_triggering_comment_when_set() -> None:
+    """``@aidlc-bot please reconsider X`` reaches the triage prompt."""
+    payload = make_input(triggering_comment_body="please reconsider — we want a 503 on backend down")
+    msg = compose_message(payload)
+    assert "User comment that retriggered this triage round:" in msg
+    assert "please reconsider — we want a 503 on backend down" in msg
+
+
+def test_compose_message_omits_triggering_comment_section_when_none() -> None:
+    """The retriggered-comment block is hidden when no comment is attached."""
+    payload = make_input(triggering_comment_body=None)
+    msg = compose_message(payload)
+    assert "retriggered this triage round" not in msg
+
+
 def test_triage_issue_wires_structured_output_against_decision_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -66,6 +66,16 @@ def compose_message(payload: TriageInput) -> str:
         "Body:",
         payload.issue_body.strip() or "(empty)",
     ]
+    if payload.triggering_comment_body:
+        # Distinct from ``prior_human_comments`` — that field is for the
+        # awaiting-response cycle (triage previously asked, user replied).
+        # This is a fresh ``@aidlc-bot <text>`` retrigger that may carry
+        # new context the user wants you to consider before classifying.
+        parts += [
+            "",
+            "User comment that retriggered this triage round:",
+            payload.triggering_comment_body.strip(),
+        ]
     if payload.prior_triage_count > 0:
         parts += ["", f"Prior triage rounds: {payload.prior_triage_count}"]
         if payload.prior_human_comments:

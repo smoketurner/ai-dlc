@@ -247,15 +247,33 @@ def execute_invoke_repo_helper(action: InvokeRepoHelper) -> None:
     if not body.get("ok"):
         logger.warning("repo_helper failed", extra={"op": action.op, "body": body})
         return
-    if action.target_pk and action.advance_from and action.advance_to:
-        extra_attrs = build_extra_attrs(action, body)
-        advance_state(
-            target_pk=action.target_pk,
-            target_sk=action.target_sk or "STATE",
-            advance_from=action.advance_from,
-            advance_to=action.advance_to,
-            extra_attrs=extra_attrs,
-        )
+    if not action.target_pk or not action.advance_from:
+        return
+    advance_to = pick_advance_to(action, body)
+    if advance_to is None:
+        return
+    extra_attrs = build_extra_attrs(action, body)
+    advance_state(
+        target_pk=action.target_pk,
+        target_sk=action.target_sk or "STATE",
+        advance_from=action.advance_from,
+        advance_to=advance_to,
+        extra_attrs=extra_attrs,
+    )
+
+
+def pick_advance_to(action: InvokeRepoHelper, body: dict[str, Any]) -> str | None:
+    """Choose the advance target based on the op result.
+
+    When the result carries ``no_change: true`` (currently only
+    ``open_spec_pr`` emits this — same docs already on ``base``), use
+    ``advance_on_no_change_to`` if set; otherwise fall through to the
+    normal ``advance_to``.
+    """
+    result = body.get("result") or {}
+    if isinstance(result, dict) and result.get("no_change") and action.advance_on_no_change_to:
+        return action.advance_on_no_change_to
+    return action.advance_to
 
 
 def build_extra_attrs(action: InvokeRepoHelper, body: dict[str, Any]) -> dict[str, str]:

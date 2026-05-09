@@ -8,10 +8,8 @@ For each rejection we:
    :data:`CATEGORIES`. The model returns one category id; if it returns
    anything else we fall back to ``other`` and log the raw response.
 3. Write the labeled record to S3 at
-   ``evals/rejections/{date}/{run_id}/{gate_ref}.json`` so downstream
-   consumers (eval runner, improvement proposer) can read it.
-4. Increment per-run + per-project rolling counters on the runs table so
-   the dashboard can surface category histograms without re-reading S3.
+   ``evals/rejections/{date}/{run_id}/{gate_ref}.json`` so the
+   improvement proposer can read it.
 
 Categorization runs on a small, cheap model (Haiku) — the categorization
 result is advisory, never gates the pipeline. We deliberately use a closed
@@ -35,7 +33,6 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 from common.events import IncomingEnvelope, SpecRejected, TaskRejected
 
 if TYPE_CHECKING:
-    from mypy_boto3_dynamodb.client import DynamoDBClient
     from mypy_boto3_s3.client import S3Client
 
 RejectionEnvelope = IncomingEnvelope[SpecRejected | TaskRejected]
@@ -80,12 +77,6 @@ def s3() -> S3Client:
 
 
 @cache
-def ddb() -> DynamoDBClient:
-    """Process-cached DynamoDB client."""
-    return boto3.client("dynamodb")
-
-
-@cache
 def bedrock() -> Any:
     """Process-cached Bedrock runtime client."""
     return boto3.client("bedrock-runtime")
@@ -94,11 +85,6 @@ def bedrock() -> Any:
 def artifacts_bucket() -> str:
     """Bucket holding labeled rejection records under ``evals/rejections/``."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
-
-
-def runs_table() -> str:
-    """Runs read-model table; gets categorized counters merged into STATE rows."""
-    return os.environ["AIDLC_RUNS_TABLE"]
 
 
 def model_id() -> str:
@@ -136,7 +122,6 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     category = classify(reason, event_type=envelope.type, payload=payload)
     record = build_record(envelope=envelope, gate_ref=gate_ref, category=category)
     persist_record(run_id=run_id, gate_ref=gate_ref, record=record)
-    update_counters(run_id=run_id, project_slug=payload.project_slug, category=category)
     logger.info(
         "rejection categorized",
         run_id=run_id,
@@ -253,24 +238,3 @@ def persist_record(*, run_id: str, gate_ref: str, record: dict[str, Any]) -> Non
     )
 
 
-def update_counters(*, run_id: str, project_slug: str, category: str) -> None:
-    """Increment per-run + per-project rolling counters on the runs table."""
-    counter_attr = f"category_{category.replace('-', '_')}"
-    ddb().update_item(
-        TableName=runs_table(),
-        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-        UpdateExpression="ADD #c :one, total_rejections :one",
-        ExpressionAttributeNames={"#c": counter_attr},
-        ExpressionAttributeValues={":one": {"N": "1"}},
-    )
-    month = datetime.now(UTC).strftime("%Y-%m")
-    ddb().update_item(
-        TableName=runs_table(),
-        Key={
-            "pk": {"S": f"PROJECT#{project_slug}"},
-            "sk": {"S": f"REJECTIONS#{month}"},
-        },
-        UpdateExpression="ADD #c :one",
-        ExpressionAttributeNames={"#c": counter_attr},
-        ExpressionAttributeValues={":one": {"N": "1"}},
-    )

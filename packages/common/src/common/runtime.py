@@ -71,6 +71,11 @@ class ArchitectInput(_Frozen):
     ``requestor_sub`` and ``target_repo`` are threaded through every agent's
     input so downstream agents (Implementer, Reviewer, Tester) can act on
     behalf of the user against the right repo.
+
+    ``triggering_comment_body`` carries the user's free-text guidance
+    when the run was minted by an issue comment (`/aidlc go <text>` or
+    `@aidlc-bot <text>`), with the control prefix stripped. Distinct
+    from ``prior_feedback`` (reviewer feedback after a rejected spec).
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -79,6 +84,7 @@ class ArchitectInput(_Frozen):
     correlation_id: str
     actor_id: str = "system"
     prior_feedback: str | None = None
+    triggering_comment_body: Annotated[str | None, Field(default=None, max_length=8192)] = None
     requestor_sub: str | None = None
     target_repo: str | None = None
 
@@ -343,6 +349,7 @@ class TriageInput(_Frozen):
         NoneSafeList[Annotated[str, Field(min_length=1, max_length=2048)]],
         Field(max_length=16),
     ] = Field(default_factory=list)
+    triggering_comment_body: Annotated[str | None, Field(default=None, max_length=8192)] = None
     run_id: str
     correlation_id: str
     actor_id: str = "system"

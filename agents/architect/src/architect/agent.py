@@ -72,6 +72,7 @@ def generate_spec(
     *,
     project_slug: str,
     prior_feedback: str | None,
+    triggering_comment_body: str | None = None,
 ) -> SpecBundle:
     """Run the agent and return the validated SpecBundle.
 
@@ -83,15 +84,26 @@ def generate_spec(
         intent: Free-text feature intent from the user.
         project_slug: Project the spec belongs to.
         prior_feedback: Reviewer feedback from a prior rejection, or ``None``.
+        triggering_comment_body: Free-text guidance from the
+            ``@aidlc-bot <text>`` comment that minted this run, with the
+            bot mention already stripped, or ``None`` if the run wasn't
+            triggered by a guidance-bearing comment.
 
     Returns:
         A validated :class:`SpecBundle` ready for Markdown rendering.
     """
-    user_message = _compose_message(intent, project_slug, prior_feedback)
+    user_message = compose_message(
+        intent, project_slug, prior_feedback, triggering_comment_body,
+    )
     return run_for_structured_output(agent, output_model=SpecBundle, prompt=user_message)
 
 
-def _compose_message(intent: str, project_slug: str, prior_feedback: str | None) -> str:
+def compose_message(
+    intent: str,
+    project_slug: str,
+    prior_feedback: str | None,
+    triggering_comment_body: str | None,
+) -> str:
     parts = [
         agent_memory_preamble(project_slug=project_slug, query=intent),
         f"Project: {project_slug}",
@@ -99,6 +111,13 @@ def _compose_message(intent: str, project_slug: str, prior_feedback: str | None)
         "Intent:",
         intent.strip(),
     ]
+    if triggering_comment_body:
+        parts += [
+            "",
+            "Additional user guidance (from the @aidlc-bot comment that retriggered this run "
+            "— treat as feedback to incorporate into the spec):",
+            triggering_comment_body.strip(),
+        ]
     if prior_feedback:
         parts += [
             "",

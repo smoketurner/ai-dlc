@@ -242,17 +242,21 @@ def push_branch(branch: str) -> None:
     A re-run for the same ``(spec_slug, task_id)`` finds the remote branch
     populated from the prior run while the local branch was force-recreated
     off ``main``. The first push fails with ``! [rejected] ... non-fast-
-    forward``. We fetch the remote ref and force-push with a lease — the
-    lease (no explicit value) reads the just-fetched
-    ``refs/remotes/origin/<branch>``, so a concurrent maintainer push
-    between fetch and push fails loud rather than getting overwritten.
+    forward``; we fetch the remote ref and force-push with an explicit
+    lease pinned to ``FETCH_HEAD``. ``clone_repo`` uses ``--branch main``
+    which scopes the remote refspec to ``refs/heads/main`` only — the
+    fetch lands the task branch's tip in ``FETCH_HEAD`` but never updates
+    ``refs/remotes/origin/<branch>``, so the implicit-lease form fails
+    with "stale info". The explicit-lease form still trips on a
+    concurrent maintainer push between fetch and push.
     """
     try:
         run_git("push", "--set-upstream", "origin", branch)
     except RuntimeError as exc:
         logger.info("push rejected; fetching and force-pushing", branch=branch, error=str(exc))
         run_git("fetch", "origin", branch)
-        run_git("push", "--force-with-lease", "origin", branch)
+        remote_sha = run_git("rev-parse", "FETCH_HEAD").strip()
+        run_git("push", f"--force-with-lease={branch}:{remote_sha}", "origin", branch)
         logger.info("force-pushed existing branch", branch=branch)
 
 

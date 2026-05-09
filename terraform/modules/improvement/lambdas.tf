@@ -29,7 +29,6 @@ module "telemetry" {
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_ARTIFACTS_BUCKET       = var.artifacts_bucket
-    AIDLC_RUNS_TABLE             = var.runs_table
     AIDLC_TELEMETRY_MODEL_ID     = var.telemetry_model_id
     POWERTOOLS_SERVICE_NAME      = "telemetry"
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
@@ -45,11 +44,6 @@ module "telemetry" {
       effect    = "Allow"
       actions   = ["s3:PutObject", "s3:GetObject"]
       resources = ["${var.artifacts_bucket_arn}/evals/*"]
-    }
-    runs_table = {
-      effect    = "Allow"
-      actions   = ["dynamodb:UpdateItem"]
-      resources = [var.runs_table_arn]
     }
     bedrock_invoke = {
       effect  = "Allow"
