@@ -9,7 +9,7 @@ Ordered, atomic units. Each task is one PR.
   - **Touches:** `agents/implementer/src/implementer/lint_gate.py`, `agents/implementer/tests/test_lint_gate.py`, `agents/implementer/pyproject.toml`
   - **Done when:** run_lint_gate(path) executes `uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check` via subprocess.run with a 30s timeout per command, returns a LintGateResult with per-command exit codes and truncated output (max 4096 chars), and unit tests cover pass, single-failure, all-failure, and timeout scenarios. `ruff check` and `ruff format` pass, `ty check` passes, `uv run pytest -q agents/implementer/tests/test_lint_gate.py` passes.
 
-- [ ] **T-002** — Integrate lint gate into execute_initial and execute_iteration with one-retry loop
+- [x] **T-002** — Integrate lint gate into execute_initial and execute_iteration with one-retry loop
   - **Implements:** AC-002, AC-003, AC-005, AC-006
   - **Touches:** `agents/implementer/src/implementer/client.py`, `packages/common/src/common/runtime.py`, `agents/implementer/tests/test_client.py`
   - **Depends on:** T-001

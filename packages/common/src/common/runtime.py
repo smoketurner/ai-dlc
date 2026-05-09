@@ -245,6 +245,31 @@ class ImplementerInput(_Frozen):
     ) = None
 
 
+class CommandResult(_Frozen):
+    """Per-command outcome from the lint gate.
+
+    ``output`` is combined stdout+stderr, truncated to 4096 characters so
+    pathological cases do not blow up the agent context window.
+    """
+
+    command: str
+    exit_code: int
+    output: Annotated[str, Field(max_length=4096)]
+
+
+class LintGateResult(_Frozen):
+    """Aggregated result of the three lint/typecheck commands.
+
+    ``retry_count`` is 0 when the gate passed (or failed) on the first
+    attempt, 1 when a retry was made. ``passed`` reflects the state after
+    the final attempt.
+    """
+
+    passed: bool
+    commands: list[CommandResult]
+    retry_count: Annotated[int, Field(ge=0, le=1)]
+
+
 class ImplementerResult(_UsageMixin):
     """Result the Implementer returns.
 
@@ -254,6 +279,10 @@ class ImplementerResult(_UsageMixin):
     set when the agent could not produce a real implementation; the
     runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY`` in that
     case.
+
+    ``lint_gate`` carries the lint/typecheck gate outcome when the agent
+    reported ``status='done'`` and made real changes; ``None`` when the
+    agent was blocked and no gate was run.
     """
 
     task_id: str
@@ -261,6 +290,7 @@ class ImplementerResult(_UsageMixin):
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
     blocked_reason: Annotated[str, Field(max_length=2048)] | None = None
+    lint_gate: LintGateResult | None = None
 
 
 class ReviewerInput(_Frozen):

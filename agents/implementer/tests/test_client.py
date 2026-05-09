@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from common.runtime import ImplementerInput
+from common.runtime import CommandResult, ImplementerInput, LintGateResult
 from implementer import client
 from implementer.finish import FinishReport
 from implementer.repo_ops import RepoSession
@@ -246,3 +246,166 @@ async def test_execute_task_skips_commit_when_tree_clean_after_materialize(
     assert calls["commit_changes"] == []  # skipped
     assert calls["push_branch"] == ["aidlc/add-healthz/t-001"]
     assert len(calls["open_pr"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Lint gate integration tests
+# ---------------------------------------------------------------------------
+
+
+def _passing_gate(retry_count: int = 0) -> LintGateResult:
+    cmds = [
+        CommandResult(command="uv run ruff check .", exit_code=0, output=""),
+        CommandResult(command="uv run ruff format --check .", exit_code=0, output=""),
+        CommandResult(command="uv run ty check", exit_code=0, output=""),
+    ]
+    return LintGateResult(passed=True, commands=cmds, retry_count=retry_count)
+
+
+def _failing_gate(retry_count: int = 0) -> LintGateResult:
+    cmds = [
+        CommandResult(
+            command="uv run ruff check .",
+            exit_code=1,
+            output="E501 line too long",
+        ),
+        CommandResult(command="uv run ruff format --check .", exit_code=0, output=""),
+        CommandResult(command="uv run ty check", exit_code=0, output=""),
+    ]
+    return LintGateResult(passed=False, commands=cmds, retry_count=retry_count)
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_pass_through_attaches_result(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """When the lint gate passes on the first try, lint_gate.passed=True is set."""
+    report = FinishReport(summary="Added /healthz.", status="done")
+    install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+    monkeypatch.setattr(client, "run_lint_gate", lambda _path, **_kw: _passing_gate())
+
+    result = await client.execute_task(payload)
+
+    assert result.lint_gate is not None
+    assert result.lint_gate.passed is True
+    assert result.lint_gate.retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_retry_path_resumes_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Lint gate failure triggers one agent retry; second pass passes."""
+    report = FinishReport(summary="Added /healthz.", status="done")
+    install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+
+    gate_calls: list[int] = []
+    retry_drive_calls: list[str] = []
+    usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
+
+    def fake_run_lint_gate(_path: Any, *, retry_count: int = 0) -> LintGateResult:
+        gate_calls.append(retry_count)
+        if retry_count == 0:
+            return _failing_gate(retry_count=0)
+        return _passing_gate(retry_count=1)
+
+    async def fake_drive_agent_retry(
+        prompt: str,
+        *,
+        run_id: str,
+    ) -> tuple[FinishReport | None, dict[str, Any]]:
+        del run_id
+        retry_drive_calls.append(prompt)
+        return report, usage
+
+    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
+    monkeypatch.setattr(client, "drive_agent", fake_drive_agent_retry)
+
+    result = await client.execute_task(payload)
+
+    assert result.lint_gate is not None
+    assert result.lint_gate.passed is True
+    assert result.lint_gate.retry_count == 1
+    assert len(retry_drive_calls) >= 1
+    assert "lint/type-check gate failed" in retry_drive_calls[-1]
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_double_failure_proceeds_to_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Double gate failure still commits and records passed=False."""
+    report = FinishReport(summary="Added /healthz.", status="done")
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+    def always_fail(_path: Any, *, retry_count: int = 0) -> LintGateResult:
+        return _failing_gate(retry_count=retry_count)
+
+    monkeypatch.setattr(client, "run_lint_gate", always_fail)
+
+    result = await client.execute_task(payload)
+
+    assert result.lint_gate is not None
+    assert result.lint_gate.passed is False
+    assert len(calls["commit_changes"]) == 1
+    assert len(calls["push_branch"]) == 1
+    assert len(calls["open_pr"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_skipped_when_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """When the agent is blocked (no real diff), lint_gate is None."""
+    install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=None,
+        agent_made_real_changes=False,
+        has_uncommitted_changes=True,
+    )
+
+    gate_called: list[bool] = []
+    monkeypatch.setattr(
+        client,
+        "run_lint_gate",
+        lambda *_args, **_kw: gate_called.append(True) or _passing_gate(),
+    )
+
+    result = await client.execute_task(payload)
+
+    assert result.lint_gate is None
+    assert gate_called == []  # gate must not run on blocked path

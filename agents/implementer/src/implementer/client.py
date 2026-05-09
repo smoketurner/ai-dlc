@@ -27,10 +27,12 @@ from common.runtime import (
     ImplementerInput,
     ImplementerResult,
     IssueCommentMentionFeedback,
+    LintGateResult,
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
 )
 from implementer.finish import FinishReport, FinishSink
+from implementer.lint_gate import compose_lint_feedback, run_lint_gate
 from implementer.options import build_options
 from implementer.repo_ops import (
     agent_made_real_changes,
@@ -92,8 +94,12 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
     blocked_reason = compute_blocked_reason(payload, report)
+    gate_result = None
 
     if blocked_reason is None:
+        gate_result, report, usage = await _run_lint_gate_with_retry(
+            report=report, usage=usage, run_id=payload.run_id
+        )
         materialize_spec_in_repo(payload.spec_slug)
         update_tasks_md(payload.task_id, payload.spec_slug)
         commit_message = build_commit_message(payload.task_id, task.title)
@@ -134,6 +140,7 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
         diff_summary=short_diff_summary()[:4096],
         session_id=payload.run_id,
         blocked_reason=blocked_reason,
+        lint_gate=gate_result,
         **usage,
     )
 
@@ -177,8 +184,12 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
     blocked_reason = compute_blocked_reason(payload, report)
+    gate_result = None
 
     if blocked_reason is None:
+        gate_result, report, usage = await _run_lint_gate_with_retry(
+            report=report, usage=usage, run_id=payload.run_id
+        )
         # Iteration produced a real diff — clean up any prior BLOCKED.md
         # so it doesn't ride along into main when the PR is merged.
         delete_blocked_md(payload.spec_slug)
@@ -218,6 +229,7 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
         diff_summary=short_diff_summary()[:4096],
         session_id=payload.run_id,
         blocked_reason=blocked_reason,
+        lint_gate=gate_result,
         **usage,
     )
 
@@ -401,6 +413,51 @@ def build_blocked_commit_message(task_id: str, title: str) -> str:
 def build_blocked_iteration_commit_message(task_id: str, title: str, iteration: int) -> str:
     """Commit subject for an iteration that remained blocked."""
     return f"{task_id} (blocked iter {iteration}): {title}"
+
+
+async def _run_lint_gate_with_retry(
+    *,
+    report: FinishReport | None,
+    usage: dict[str, Any],
+    run_id: str,
+) -> tuple[LintGateResult, FinishReport | None, dict[str, Any]]:
+    """Run the lint gate; on failure feed error output back to the agent once.
+
+    Returns a tuple of (gate_result, report, merged_usage). On a double
+    failure the final gate result has ``passed=False`` and the caller
+    proceeds to commit anyway (CI catches any residual).
+    """
+    gate = run_lint_gate(repo_path(), retry_count=0)
+    logger.info(
+        "lint gate first pass",
+        passed=gate.passed,
+        run_id=run_id,
+    )
+    if gate.passed:
+        return gate, report, usage
+
+    feedback = compose_lint_feedback(gate)
+    retry_report, retry_usage = await drive_agent(feedback, run_id=run_id)
+    merged_usage = _merge_usage(usage, retry_usage)
+    active_report = retry_report if retry_report is not None else report
+
+    gate_final = run_lint_gate(repo_path(), retry_count=1)
+    logger.info(
+        "lint gate retry pass",
+        passed=gate_final.passed,
+        run_id=run_id,
+    )
+    return gate_final, active_report, merged_usage
+
+
+def _merge_usage(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    """Add token/cost/duration totals from ``extra`` into ``base``."""
+    return {
+        "token_in": base["token_in"] + extra["token_in"],
+        "token_out": base["token_out"] + extra["token_out"],
+        "cost_usd": base["cost_usd"] + extra["cost_usd"],
+        "duration_ms": base["duration_ms"] + extra["duration_ms"],
+    }
 
 
 async def drive_agent(
