@@ -10,11 +10,11 @@ from proposer.proposal import FileEdit, Proposal, ProposedIssue
 
 def test_proposal_with_no_edits_validates() -> None:
     p = Proposal(
-        rationale="Pass rate steady at 92%; rejection categories unchanged. Holding off.",
-        supporting_evidence=["evals/results lookback=30d total=24"],
+        rationale="No actionable signal in the issue's references; holding off.",
+        supporting_evidence=["https://example.com/post"],
     )
     assert p.edits == []
-    assert p.pr_title == "ai-dlc proposer: no-op"
+    assert p.pr_title == "proposer: no-op"
 
 
 def test_proposal_with_memory_md_edit() -> None:
@@ -23,30 +23,41 @@ def test_proposal_with_memory_md_edit() -> None:
         proposed_content="# Conventions\n- Use structlog.",
     )
     p = Proposal(
-        rationale="Few-shot bank shows structlog use across 8 successful runs.",
-        supporting_evidence=["few-shots/intent_to_spec total=8"],
+        rationale="Stripe Minions blog recommends structured logs at agent boundaries.",
+        supporting_evidence=[
+            "https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents"
+        ],
         edits=[edit],
         pr_title="proposer: document structlog convention",
-        pr_body="The few-shot bank shows...",
+        pr_body="Source post recommends structlog at every agent boundary.",
     )
     assert len(p.edits) == 1
 
 
-def test_proposal_with_prompts_b_edit() -> None:
+def test_proposal_with_agents_md_edit() -> None:
     edit = FileEdit(
-        target_file="agents/architect/src/architect/prompts_b.py",
-        proposed_content='SYSTEM_PROMPT = """new variant"""',
+        target_file="AGENTS.md",
+        proposed_content="# Project conventions\n- Use structlog.",
     )
     p = Proposal(
-        rationale="A/B-testing a more concise architect prompt.",
+        rationale="Reviewer expressed a structured-logging preference worth recording.",
         edits=[edit],
-        pr_title="proposer: A/B test architect prompts_b",
-        pr_body="...",
+        pr_title="proposer: record structlog convention",
+        pr_body="Adds the convention to AGENTS.md after PR feedback.",
     )
-    assert p.edits[0].target_file.endswith("prompts_b.py")
+    assert p.edits[0].target_file == "AGENTS.md"
 
 
-def test_disallowed_target_rejected() -> None:
+def test_disallowed_prompts_file_rejected() -> None:
+    """Agent prompts files are no longer in the proposer's allowed set."""
+    with pytest.raises(ValidationError):
+        FileEdit(
+            target_file="agents/architect/src/architect/prompts.py",
+            proposed_content="x",
+        )
+
+
+def test_disallowed_terraform_target_rejected() -> None:
     with pytest.raises(ValidationError):
         FileEdit(
             target_file="terraform/modules/agents/variables.tf",
@@ -54,7 +65,7 @@ def test_disallowed_target_rejected() -> None:
         )
 
 
-def test_disallowed_path_outside_agents_rejected() -> None:
+def test_disallowed_source_file_rejected() -> None:
     with pytest.raises(ValidationError):
         FileEdit(
             target_file="services/dashboard/src/dashboard/app.py",
@@ -73,7 +84,7 @@ def test_disallowed_random_md_rejected() -> None:
 def test_max_edits_enforced() -> None:
     edits = [
         FileEdit(
-            target_file="agents/architect/src/architect/prompts.py",
+            target_file="docs/MEMORY.md",
             proposed_content=f"# v{i}",
         )
         for i in range(9)  # one over max

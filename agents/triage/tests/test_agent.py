@@ -73,7 +73,9 @@ def test_compose_message_includes_prior_rounds_when_present() -> None:
 
 def test_compose_message_includes_triggering_comment_when_set() -> None:
     """``@aidlc-bot please reconsider X`` reaches the triage prompt."""
-    payload = make_input(triggering_comment_body="please reconsider — we want a 503 on backend down")
+    payload = make_input(
+        triggering_comment_body="please reconsider — we want a 503 on backend down",
+    )
     msg = compose_message(payload)
     assert "User comment that retriggered this triage round:" in msg
     assert "please reconsider — we want a 503 on backend down" in msg

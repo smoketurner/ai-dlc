@@ -1,21 +1,21 @@
 """AgentCore Runtime entrypoint for the Proposer.
 
-The Proposer runs out of the main SDLC pipeline — invoked by an EventBridge
-schedule (weekly) and on alerts from the eval-regression alarm. The
-entrypoint:
+The Proposer is invoked when triage classifies an issue as
+``research`` — the agent reads the URLs in the issue body, synthesises
+findings into a comment on the issue, optionally opens a PR with
+MEMORY.md / prompt edits, and may spawn follow-up issues when the
+triggering comment asks for it. The entrypoint:
 
   1. Validates the input as :class:`ProposerInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the proposal runs.
-  3. Spawns a daemon thread that asks the Strands agent for a
-     :class:`Proposal`, opens a PR via ``repo_helper`` if there are
-     edits, logs the outcome, and acknowledges the async task.
+     reports ``HealthyBusy`` while the synthesis runs.
+  3. Spawns a daemon thread that runs the research flow, posts the
+     synthesis comment, opens a PR if there are edits, and emits
+     ``RUN.COMPLETED`` so the projector advances the run state.
   4. Returns ``{"status": "dispatched", ...}`` to the caller in
      ~100ms.
 
-The Proposer authenticates as ``ai-dlc[bot]`` (installation token) — its
-PRs are explicitly bot-attributed because they're system-initiated and
-the requestor concept doesn't apply (no human triggered the cycle).
+The Proposer authenticates as ``ai-dlc[bot]`` (installation token).
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from common.event_emit import publish
 from common.events import EventEnvelope, RunCompleted
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ProposerInput
-from proposer.agent import propose, propose_research
+from proposer.agent import propose_research
 from proposer.proposal import FileEdit, Proposal
 
 if TYPE_CHECKING:
@@ -78,38 +78,19 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_proposer(payload: ProposerInput, async_task_id: int) -> None:
-    """Body of the proposer run — opens a PR if there are actionable edits.
+    """Body of the proposer run — research path only.
 
-    Schedule / regression: out-of-pipeline; no SDLC state machine to
-    advance. Research: in-pipeline; we emit ``RUN.COMPLETED`` so the
-    projector advances the run state ``proposer_running`` → ``done``.
-    Exceptions are logged either way and the async task is still
-    acknowledged so the microVM releases its session.
+    Research is in-pipeline; we emit ``RUN.COMPLETED`` so the projector
+    advances the run state ``proposer_running`` → ``done``. Exceptions
+    are logged and the async task is still acknowledged so the microVM
+    releases its session.
     """
     try:
-        if payload.trigger_reason == "research":
-            run_research(payload)
-        else:
-            run_scheduled(payload)
+        run_research(payload)
     except Exception:
         logger.exception("proposer run failed", run_id=payload.run_id)
     finally:
         app.complete_async_task(async_task_id)
-
-
-def run_scheduled(payload: ProposerInput) -> None:
-    """Schedule / regression path — propose from telemetry, open a PR if any edits."""
-    proposal = propose(
-        project_slug=payload.project_slug,
-        trigger_reason=payload.trigger_reason,
-        lookback_days=payload.evals_lookback_days,
-        run_id=payload.run_id,
-    )
-    if not proposal.edits:
-        logger.info("proposer found no actionable signal", run_id=payload.run_id)
-        return
-    pr_url = open_proposal_pr(payload=payload, proposal=proposal)
-    logger.info("proposal opened", run_id=payload.run_id, pr_url=pr_url)
 
 
 def run_research(payload: ProposerInput) -> None:

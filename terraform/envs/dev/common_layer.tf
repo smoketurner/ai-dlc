@@ -2,12 +2,16 @@
 # Shared Lambda layer for `common` + the runtime deps every platform Lambda
 # uses. Carries:
 #   - the `common` workspace package source (under python/common/)
-#   - aws-lambda-powertools[tracer,parser,aws-sdk] (xray + pydantic + boto3)
-#   - pydantic, uuid-utils
+#   - aws-lambda-powertools[tracer,parser,aws-sdk] (pulls aws-xray-sdk +
+#     pydantic + boto3 — but only [tracer]'s xray pin is reproducible from
+#     this; pydantic and boto3 are pinned explicitly below for determinism)
+#   - boto3, pydantic (explicit pins so rebuilds are reproducible
+#     regardless of how powertools' [aws-sdk] / [parser] extras resolve)
+#   - httpx, pyjwt, uuid-utils
 #
-# Per-Lambda requirements.txt files are trimmed to Lambda-specific deps only
-# (httpx, pyyaml, pyjwt, bedrock-agentcore, …). The layer is attached to
-# every Lambda that has tracing_mode = "Active".
+# Per-Lambda requirements.txt files are trimmed to Lambda-specific deps
+# (bedrock-agentcore, pyyaml, …). The layer is attached to every Lambda
+# the platform owns.
 ################################################################################
 
 module "common_layer" {

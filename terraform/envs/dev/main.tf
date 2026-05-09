@@ -50,6 +50,14 @@ locals {
     reviewer    = "latest"
     tester      = "latest"
     triage      = "latest"
+    # retrospector is intentionally omitted until its image is pushed
+    # via images-build. Procedure (per AGENTS.md → "Adding a new agent"):
+    #   1. apply with var.agents.retrospector defined → creates ECR repo,
+    #      IAM, gateway, workload identity (no runtime yet).
+    #   2. trigger the images-build workflow → pushes the retrospector
+    #      image to the new ECR repo.
+    #   3. add `retrospector = "latest"` here → apply again creates the
+    #      AgentCore Runtime + the dispatcher Lambda + EventBridge rule.
   }
 }
 
@@ -265,17 +273,10 @@ module "improvement" {
   bus_name = module.messaging.bus_name
   bus_arn  = module.messaging.bus_arn
 
-  runs_table      = module.state.runs_table
-  runs_table_arn  = module.state.runs_table_arn
-  runs_stream_arn = module.state.runs_stream_arn
-
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
 
-  proposer_runtime_arn  = lookup(module.agents.runtime_arns, "proposer", "")
-  proposer_enabled      = contains(keys(local.agent_image_tags), "proposer")
-  proposer_target_repo  = "${var.github_owner}/${var.github_repo}"
-  proposer_project_slug = var.project
+  retrospector_runtime_arn = lookup(module.agents.runtime_arns, "retrospector", "")
 
   common_layer_arn = module.common_layer.lambda_layer_arn
 }

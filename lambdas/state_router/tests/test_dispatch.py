@@ -126,9 +126,7 @@ class TestRunReceived:
         )
         action = decide(run)
         assert isinstance(action, InvokeAgent)
-        assert action.payload["triggering_comment_body"] == (
-            "please reconsider — needs a 503 path"
-        )
+        assert action.payload["triggering_comment_body"] == ("please reconsider — needs a 503 path")
 
     def test_received_with_issue_url_only_is_noop(self) -> None:
         run = make_run(

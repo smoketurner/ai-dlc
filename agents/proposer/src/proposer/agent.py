@@ -1,10 +1,9 @@
-"""Strands Agent factory for the Proposer.
+"""Strands Agent factory for the Proposer (research workflow).
 
-The Proposer uses Claude Opus 4.7 — the proposal task requires reading
-multiple summary documents and synthesising a coherent recommendation
-under bounded scope. The agent loop runs with the summary-reading tools
-and finishes by emitting a :class:`Proposal` via Strands'
-``structured_output_model`` parameter.
+The Proposer uses Claude Opus 4.7 — research synthesis requires reading
+multiple URLs and producing a coherent comment under bounded scope. The
+agent loop runs with the read/browse tools and finishes by emitting a
+:class:`Proposal` via Strands' ``structured_output_model`` parameter.
 """
 
 from __future__ import annotations
@@ -17,20 +16,11 @@ from strands.models import BedrockModel
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
-from proposer.hooks import (
-    ProposerCallTracker,
-    build_hooks_with_tracker,
-    check_memory_md_prerequisites,
-)
 from proposer.proposal import Proposal
 from proposer.tools import (
     browse_url_tool,
     list_issue_comments_tool,
-    read_drift_report_tool,
-    read_eval_aggregate_tool,
-    read_few_shot_summary_tool,
     read_memory_md_tool,
-    read_rejection_summary_tool,
 )
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
@@ -41,19 +31,14 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
-    """Build a fresh Strands Agent + tracker for one proposer invocation.
-
-    Returns the agent and the :class:`ProposerCallTracker` so the caller
-    can validate the produced :class:`Proposal` against the agent's
-    actual tool-call history.
+def build_agent(run_id: str) -> Agent:
+    """Build a fresh Strands Agent for one proposer invocation.
 
     Prompt variant routed via :func:`common.routing.pick_variant`.
     """
     variant = pick_variant(run_id, "proposer")
-    hooks, tracker = build_hooks_with_tracker()
     bedrock_model_id = model_id()
-    agent = Agent(
+    return Agent(
         model=BedrockModel(
             model_id=bedrock_model_id,
             region_name=os.environ["AWS_REGION"],
@@ -63,108 +48,12 @@ def build_agent(run_id: str) -> tuple[Agent, ProposerCallTracker]:
         ),
         system_prompt=load_system_prompt("proposer", variant),
         tools=[
-            read_eval_aggregate_tool,
-            read_drift_report_tool,
-            read_rejection_summary_tool,
-            read_few_shot_summary_tool,
             read_memory_md_tool,
             browse_url_tool,
             list_issue_comments_tool,
         ],
-        hooks=hooks,
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )
-    return agent, tracker
-
-
-def propose(*, project_slug: str, trigger_reason: str, lookback_days: int, run_id: str) -> Proposal:
-    """Run the agent and return the validated Proposal.
-
-    Args:
-        project_slug: Project the proposal targets (used to read MEMORY.md).
-        trigger_reason: Why the proposer is running (``"scheduled"`` or
-            ``"regression"``). Surfaced to the agent so it can adjust
-            sensitivity.
-        lookback_days: Window the agent should consider for signals.
-        run_id: Run UUID7 — drives prompt-variant selection.
-
-    Returns:
-        A validated :class:`Proposal`. May contain zero edits if the
-        agent decides no action is warranted.
-
-    Raises:
-        ValueError: When, after one corrective retry, the proposal still
-            targets ``docs/MEMORY.md`` without first calling
-            ``read_memory_md`` and ``read_drift_report``.
-    """
-    user_message = compose_message(
-        project_slug=project_slug,
-        trigger_reason=trigger_reason,
-        lookback_days=lookback_days,
-    )
-    agent, tracker = build_agent(run_id)
-    proposal = run_for_structured_output(agent, output_model=Proposal, prompt=user_message)
-    violation = check_memory_md_prerequisites(proposal, tracker)
-    if violation is None:
-        return proposal
-    retry_message = compose_retry_message(user_message, violation)
-    proposal = run_for_structured_output(agent, output_model=Proposal, prompt=retry_message)
-    violation = check_memory_md_prerequisites(proposal, tracker)
-    if violation is not None:
-        raise ValueError(violation)
-    return proposal
-
-
-def compose_retry_message(original_message: str, violation: str) -> str:
-    """Build a corrective prompt that surfaces the prerequisite violation.
-
-    Strands' agent loop resets per-invocation hook state on the next
-    ``Agent.__call__``, so the second pass starts with an empty tracker
-    and the agent must re-call the read tools before proposing edits.
-
-    Args:
-        original_message: The first-attempt prompt — replayed so the
-            agent has full task context on the retry.
-        violation: Reason returned by
-            :func:`proposer.hooks.check_memory_md_prerequisites`.
-
-    Returns:
-        A new prompt that asks the agent to address the violation and
-        retry.
-    """
-    return "\n".join(
-        [
-            original_message,
-            "",
-            "Your previous attempt was rejected:",
-            f"  {violation}",
-            "",
-            "Call read_memory_md and read_drift_report this time before "
-            "returning a Proposal that edits docs/MEMORY.md.",
-        ]
-    )
-
-
-def compose_message(*, project_slug: str, trigger_reason: str, lookback_days: int) -> str:
-    """Compose the user-message prompt for the proposer."""
-    parts = [
-        agent_memory_preamble(
-            project_slug=project_slug,
-            query=f"prompt and convention proposals triggered by {trigger_reason}",
-        ),
-        f"Project: {project_slug}",
-        f"Trigger: {trigger_reason}",
-        f"Lookback window: {lookback_days} days",
-        "",
-        "Steps:",
-        "  1. read_memory_md to see the current project conventions.",
-        "  2. read_eval_aggregate, read_drift_report to see pass-rate trends.",
-        "  3. read_rejection_summary for category distribution from telemetry.",
-        "  4. read_few_shot_summary for the size of the curated example bank.",
-        "  5. Decide whether the signals warrant a proposal. Return Proposal "
-        "JSON — empty `edits` if not.",
-    ]
-    return "\n".join(parts)
 
 
 def propose_research(
@@ -186,10 +75,9 @@ def propose_research(
     primary deliverable.
 
     When ``triggering_comment_body`` is set, the run was minted from a
-    follow-up comment on the issue (a ``/aidlc go`` reply or
-    ``@aidlc-bot`` mention). The agent reads the human's free-form ask
-    and may emit ``proposed_issues`` to spawn scoped follow-up issues
-    when explicitly requested.
+    follow-up ``@aidlc-bot`` comment on the issue. The agent reads the
+    human's free-form ask and may emit ``proposed_issues`` to spawn
+    scoped follow-up issues when explicitly requested.
 
     Args:
         project_slug: Project the research targets (drives MEMORY.md lookup).
@@ -215,7 +103,7 @@ def propose_research(
         triggering_comment_body=triggering_comment_body,
         triggering_commenter=triggering_commenter,
     )
-    agent, _tracker = build_agent(run_id)
+    agent = build_agent(run_id)
     return run_for_structured_output(agent, output_model=Proposal, prompt=user_message)
 
 

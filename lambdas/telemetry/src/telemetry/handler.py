@@ -236,5 +236,3 @@ def persist_record(*, run_id: str, gate_ref: str, record: dict[str, Any]) -> Non
         Body=json.dumps(record).encode("utf-8"),
         ContentType="application/json; charset=utf-8",
     )
-
-

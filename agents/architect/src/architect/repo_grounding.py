@@ -7,7 +7,7 @@ target repo into ``/workspace/repo``; ``read_repo_file`` and
 ``list_repo_paths`` expose bounded views of that tree as Strands tools.
 
 After the clone, :func:`sync_memory_md_from_clone` syncs
-``docs/MEMORY.md`` + ``CLAUDE.md`` from the clone into the per-project
+``docs/MEMORY.md`` + ``AGENTS.md`` from the clone into the per-project
 S3 bucket so downstream agents (Critic, Proposer) — which never clone —
 can ground themselves via ``read_memory_md``.
 
@@ -43,7 +43,7 @@ GIT_BIN = "/usr/bin/git"
 MAX_FILE_BYTES = 16384  # 16 KiB cap so tool output stays in context.
 MAX_LIST_ENTRIES = 200  # ``list_repo_paths`` upper bound on returned paths.
 
-MEMORY_MD_SOURCES = ("docs/MEMORY.md", "CLAUDE.md")
+MEMORY_MD_SOURCES = ("docs/MEMORY.md", "AGENTS.md")
 MEMORY_MD_KEY_TEMPLATE = "projects/{project_slug}/MEMORY.md"
 
 
@@ -164,7 +164,7 @@ def s3_client() -> S3Client:
 
 
 def sync_memory_md_from_clone(*, project_slug: str, target_repo: str | None = None) -> None:
-    """Sync ``docs/MEMORY.md`` + ``CLAUDE.md`` from the clone into S3.
+    """Sync ``docs/MEMORY.md`` + ``AGENTS.md`` from the clone into S3.
 
     Builds a single combined Markdown body with one section per source
     file present in the clone, then uploads to

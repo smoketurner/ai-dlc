@@ -98,7 +98,8 @@ def invoke_triage(run: Run, arn: str) -> Action:
             "issue_body": run.issue_body or "",
             "issue_labels": list(run.issue_labels),
             "triggering_comment_body": strip_bot_mention(
-                run.triggering_comment_body, github_bot_login(),
+                run.triggering_comment_body,
+                github_bot_login(),
             ),
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
@@ -121,7 +122,8 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
             "project_slug": run.project_slug,
             "intent": run.intent,
             "triggering_comment_body": strip_bot_mention(
-                run.triggering_comment_body, github_bot_login(),
+                run.triggering_comment_body,
+                github_bot_login(),
             ),
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,

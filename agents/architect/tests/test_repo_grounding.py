@@ -163,7 +163,7 @@ def test_sync_writes_combined_object_with_both_sources(
     del memory_bucket
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "MEMORY.md").write_text("memory body\n", encoding="utf-8")
-    (tmp_path / "CLAUDE.md").write_text("claude body\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("agents body\n", encoding="utf-8")
 
     repo_grounding.sync_memory_md_from_clone(
         project_slug=PROJECT_SLUG,
@@ -178,10 +178,10 @@ def test_sync_writes_combined_object_with_both_sources(
     )
     assert "## docs/MEMORY.md" in body
     assert "memory body" in body
-    assert "## CLAUDE.md" in body
-    assert "claude body" in body
-    # docs/MEMORY.md section appears before CLAUDE.md (declared source order).
-    assert body.index("## docs/MEMORY.md") < body.index("## CLAUDE.md")
+    assert "## AGENTS.md" in body
+    assert "agents body" in body
+    # docs/MEMORY.md section appears before AGENTS.md (declared source order).
+    assert body.index("## docs/MEMORY.md") < body.index("## AGENTS.md")
     assert "Source repo: owner/repo" in body
     # No body-level timestamp — keeps idempotency stable across runs.
     assert "Synced at" not in body
@@ -191,9 +191,9 @@ def test_sync_writes_partial_object_when_only_one_source_exists(
     memory_bucket: None,
     tmp_path: Path,
 ) -> None:
-    """Only CLAUDE.md present — body has one section, no MEMORY.md placeholder."""
+    """Only AGENTS.md present — body has one section, no MEMORY.md placeholder."""
     del memory_bucket
-    (tmp_path / "CLAUDE.md").write_text("claude only\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("agents only\n", encoding="utf-8")
 
     repo_grounding.sync_memory_md_from_clone(project_slug=PROJECT_SLUG)
 
@@ -203,8 +203,8 @@ def test_sync_writes_partial_object_when_only_one_source_exists(
         .read()
         .decode("utf-8")
     )
-    assert "## CLAUDE.md" in body
-    assert "claude only" in body
+    assert "## AGENTS.md" in body
+    assert "agents only" in body
     assert "## docs/MEMORY.md" not in body
 
 
@@ -238,7 +238,7 @@ def test_sync_is_idempotent_on_unchanged_content(
     short-circuits on ETag match.
     """
     del memory_bucket
-    (tmp_path / "CLAUDE.md").write_text("stable content\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("stable content\n", encoding="utf-8")
 
     put_calls: list[str] = []
     real_put = repo_grounding.s3_client().put_object
@@ -263,7 +263,7 @@ def test_sync_no_op_when_bucket_env_unset(
     """Without ``AIDLC_MEMORY_MD_BUCKET`` the sync logs a warning and returns."""
     monkeypatch.delenv("AIDLC_MEMORY_MD_BUCKET", raising=False)
     monkeypatch.setattr(repo_grounding, "REPO_PATH", tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("anything\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("anything\n", encoding="utf-8")
 
     # Should not raise even though no bucket is configured.
     repo_grounding.sync_memory_md_from_clone(project_slug=PROJECT_SLUG)

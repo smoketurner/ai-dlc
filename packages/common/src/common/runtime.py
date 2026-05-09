@@ -378,24 +378,23 @@ class TriageResult(_Frozen):
 class ProposerInput(_Frozen):
     """Input passed to the Proposer's ``/invocations`` endpoint.
 
-    The Proposer runs out of the main SDLC pipeline — invoked by an
-    EventBridge schedule (weekly), eval-regression alarms, or by the
-    Triage agent classifying an issue as ``research``. The research path
-    populates :attr:`intent` (issue body) and :attr:`issue_number` so
-    the agent knows what to read and where to post the synthesis comment.
+    The Proposer is invoked when triage classifies an issue as
+    ``research``. :attr:`intent` carries the issue body and
+    :attr:`issue_number` identifies the issue so the agent can read
+    URLs from the body and post the synthesis as a comment back on
+    that issue.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
     base_branch: Annotated[str, Field(min_length=1, max_length=128)] = "main"
-    trigger_reason: Literal["scheduled", "regression", "research"] = "scheduled"
-    evals_lookback_days: Annotated[int, Field(ge=1, le=365)] = 30
+    trigger_reason: Literal["research"] = "research"
     intent: Annotated[str, Field(max_length=8192)] | None = None
     issue_number: Annotated[int, Field(ge=1)] | None = None
-    # Set when the run was triggered by a follow-up issue comment (a
-    # `/aidlc go` reply or an `@aidlc-bot` mention) — the agent reads
-    # the body to interpret the human's free-form ask alongside the
-    # original issue. Empty on runs minted from the initial issue.
+    # Set when the run was triggered by a follow-up ``@aidlc-bot``
+    # comment on the issue. The agent reads the body to interpret the
+    # human's free-form ask alongside the original issue. Empty on
+    # runs minted from the initial issue assignment.
     triggering_comment_body: Annotated[str, Field(max_length=8192)] = ""
     triggering_commenter: Annotated[str, Field(max_length=64)] = ""
     run_id: str
@@ -415,6 +414,41 @@ class ProposerResult(_Frozen):
     target_files: list[str] = []
     summary: Annotated[str, Field(max_length=2048)]
     session_id: str
+
+
+class RetrospectorInput(_Frozen):
+    """Input passed to the Retrospector's ``/invocations`` endpoint.
+
+    The dispatcher Lambda fires this once per terminal event. The
+    agent reads the closed PR / issue + comments, looks at the
+    project's ``MEMORY.md``, and decides whether the trace contains
+    a reusable lesson worth persisting.
+
+    ``pr_url`` and ``issue_url`` are mutually exclusive in practice:
+    PR-close events fill ``pr_url`` (and ``spec_slug`` / ``task_id``
+    when known); issue-close events fill ``issue_url``. Both empty
+    means the dispatcher sent a malformed event and the agent should
+    bail.
+    """
+
+    event_type: Literal[
+        "SPEC.APPROVED",
+        "SPEC.REJECTED",
+        "TASK.APPROVED",
+        "TASK.REJECTED",
+        "RUN.CANCEL_REQUESTED",
+    ]
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
+    pr_url: Annotated[str, Field(max_length=512)] = ""
+    issue_url: Annotated[str, Field(max_length=512)] = ""
+    spec_slug: Annotated[str, Field(max_length=128)] = ""
+    task_id: Annotated[str, Field(max_length=64)] = ""
+    reviewer: Annotated[str, Field(max_length=128)] = ""
+    reason: Annotated[str, Field(max_length=2048)] = ""
+    run_id: str
+    correlation_id: str
+    actor_id: str = "system"
 
 
 def default_retry_strategy(model_id: str) -> Any:

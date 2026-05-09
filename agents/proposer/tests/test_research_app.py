@@ -134,32 +134,16 @@ def test_research_requires_intent_and_issue_number() -> None:
     p_research.assert_not_called()
 
 
-def test_run_proposer_routes_research_path() -> None:
+def test_run_proposer_invokes_research_and_completes_task() -> None:
     payload = make_input()
     with (
         patch("proposer.app.run_research") as p_research,
-        patch("proposer.app.run_scheduled") as p_sched,
         patch.object(app.app, "complete_async_task") as p_done,
     ):
         app.run_proposer(payload, async_task_id=42)
 
     p_research.assert_called_once_with(payload)
-    p_sched.assert_not_called()
     p_done.assert_called_once_with(42)
-
-
-def test_run_proposer_routes_scheduled_path() -> None:
-    payload = make_input(trigger_reason="scheduled", intent=None, issue_number=None)
-    with (
-        patch("proposer.app.run_research") as p_research,
-        patch("proposer.app.run_scheduled") as p_sched,
-        patch.object(app.app, "complete_async_task") as p_done,
-    ):
-        app.run_proposer(payload, async_task_id=7)
-
-    p_research.assert_not_called()
-    p_sched.assert_called_once_with(payload)
-    p_done.assert_called_once_with(7)
 
 
 def test_research_forwards_triggering_comment_to_agent() -> None:

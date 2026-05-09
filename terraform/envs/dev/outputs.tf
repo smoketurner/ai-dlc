@@ -173,11 +173,6 @@ output "telemetry_function_arn" {
   value       = module.improvement.telemetry_function_arn
 }
 
-output "few_shot_miner_function_arn" {
-  description = "Few-shot miner Lambda ARN — captures (intent→spec) and (task→diff) examples."
-  value       = module.improvement.few_shot_miner_function_arn
-}
-
 # ci_cd ------------------------------------------------------------------------
 
 output "github_actions_terraform_role_arn" {

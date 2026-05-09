@@ -93,7 +93,10 @@ def generate_spec(
         A validated :class:`SpecBundle` ready for Markdown rendering.
     """
     user_message = compose_message(
-        intent, project_slug, prior_feedback, triggering_comment_body,
+        intent,
+        project_slug,
+        prior_feedback,
+        triggering_comment_body,
     )
     return run_for_structured_output(agent, output_model=SpecBundle, prompt=user_message)
 
@@ -104,6 +107,7 @@ def compose_message(
     prior_feedback: str | None,
     triggering_comment_body: str | None,
 ) -> str:
+    """Compose the user-message prompt handed to the architect."""
     parts = [
         agent_memory_preamble(project_slug=project_slug, query=intent),
         f"Project: {project_slug}",

@@ -6,7 +6,7 @@ Seven AgentCore-hosted specialist agents drive a spec-driven SDLC pipeline (Tria
 
 ## Status
 
-Initial scaffold. The project manifest lives in [`CLAUDE.md`](CLAUDE.md).
+Initial scaffold. The project manifest lives in [`AGENTS.md`](AGENTS.md).
 
 ## Quick start
 

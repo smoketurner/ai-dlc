@@ -3,8 +3,8 @@
 The Implementer runs in an AgentCore Runtime container with the project repo
 checked out at ``/workspace/repo``. Claude Code's ``Bash`` tool can run any
 shell command by default; these hooks block the dangerous ones called out in
-``CLAUDE.md`` and add per-tool guards for ``Write``/``Edit`` against secret
-files.
+the project's ``AGENTS.md`` and add per-tool guards for ``Write`` / ``Edit``
+against secret files.
 
 Patterns are compiled regex with word boundaries so a doc edit that mentions
 "terraform apply" in prose doesn't trip the Bash deny-list, and writes to

@@ -1,10 +1,15 @@
 """Pydantic models + helpers for the Proposer's structured output.
 
-The Proposer emits a :class:`Proposal` describing zero or more :class:`FileEdit`
-edits to safe target paths (``docs/MEMORY.md`` or
-``agents/{name}/src/{name}/prompts.py`` / ``prompts_b.py``). The blast
-radius is bounded at the model level — any other target file is rejected
-by Pydantic validation, not just by code review.
+The Proposer emits a :class:`Proposal` describing zero or more
+:class:`FileEdit` edits to safe target paths. Edit targets are limited
+to the project's memory files — ``MEMORY.md`` or ``AGENTS.md``, at the
+repo root or under ``docs/``. Anything else is rejected by Pydantic
+validation.
+
+The agents themselves should be portable across projects; their
+behaviour is steered by the target repo's ``MEMORY.md`` / ``AGENTS.md``
+and not by editing agent prompt files. Agent prompt evolution lives in
+the agent platform's own repo, separate from any target project.
 
 The :class:`Proposal` also enforces that ``pr_body`` does not quote spec
 documents verbatim (the ``validate_no_spec_dump`` heuristic from
@@ -22,7 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from common.hooks import validate_no_spec_dump
 from common.validators import NoneSafeList
 
-ALLOWED_TARGETS = re.compile(r"^(docs/MEMORY\.md|agents/[\w-]+/src/[\w-]+/prompts(_b)?\.py)$")
+# Allowed: MEMORY.md or AGENTS.md, at the repo root or under docs/.
+ALLOWED_TARGETS = re.compile(r"^(docs/)?(MEMORY|AGENTS)\.md$")
 
 
 class _Frozen(BaseModel):
@@ -40,11 +46,11 @@ class FileEdit(_Frozen):
     @field_validator("target_file")
     @classmethod
     def target_must_be_allowed(cls, v: str) -> str:
-        """Restrict targets to MEMORY.md and prompts files only."""
+        """Restrict targets to the project's MEMORY.md / AGENTS.md only."""
         if not ALLOWED_TARGETS.match(v):
             msg = (
                 f"target_file {v!r} is not in the Proposer's allowed set "
-                "(docs/MEMORY.md or agents/*/src/*/prompts(_b).py)"
+                "(MEMORY.md or AGENTS.md, at the repo root or under docs/)"
             )
             raise ValueError(msg)
         return v
@@ -80,7 +86,7 @@ class Proposal(_Frozen):
         default_factory=list,
     )
     edits: Annotated[NoneSafeList[FileEdit], Field(max_length=8)] = Field(default_factory=list)
-    pr_title: Annotated[str, Field(min_length=1, max_length=72)] = "ai-dlc proposer: no-op"
+    pr_title: Annotated[str, Field(min_length=1, max_length=72)] = "proposer: no-op"
     pr_body: Annotated[str, Field(min_length=1, max_length=65_536)] = "no edits"
     summary_comment: Annotated[str, Field(max_length=8192)] = ""
     proposed_issues: Annotated[NoneSafeList[ProposedIssue], Field(max_length=16)] = Field(

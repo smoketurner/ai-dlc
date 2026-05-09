@@ -183,7 +183,7 @@ def memory_md_bucket() -> str:
 def read_memory_md(project_slug: str) -> str:
     """Read the canonical MEMORY.md for a project, prefixed with sync time.
 
-    The architect syncs ``docs/MEMORY.md`` + ``CLAUDE.md`` from the
+    The architect syncs ``docs/MEMORY.md`` + ``AGENTS.md`` from the
     cloned repo into ``s3://{bucket}/projects/{project_slug}/MEMORY.md``
     on every architect run (see
     ``architect.repo_grounding.sync_memory_md_from_clone``). The four

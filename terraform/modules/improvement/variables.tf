@@ -25,23 +25,8 @@ variable "bus_arn" {
   type        = string
 }
 
-variable "runs_table" {
-  description = "DynamoDB runs table name."
-  type        = string
-}
-
-variable "runs_table_arn" {
-  description = "DynamoDB runs table ARN."
-  type        = string
-}
-
-variable "runs_stream_arn" {
-  description = "DynamoDB runs-table stream ARN — drives the few-shot miner."
-  type        = string
-}
-
 variable "artifacts_bucket" {
-  description = "S3 bucket for the labeled rejection records + few-shot examples."
+  description = "S3 bucket for labeled rejection records under evals/rejections/."
   type        = string
 }
 
@@ -54,6 +39,18 @@ variable "telemetry_model_id" {
   description = "Bedrock model id used by the telemetry agent for categorization."
   type        = string
   default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
+
+variable "retrospector_runtime_arn" {
+  description = <<-EOT
+    AgentCore Runtime ARN of the Retrospector agent. When empty, the
+    retrospector_dispatcher Lambda + EventBridge rule are skipped — that
+    lets the improvement module apply cleanly before the retrospector
+    runtime exists (the runtime is created by the agents module only
+    after the first image is pushed).
+  EOT
+  type        = string
+  default     = ""
 }
 
 variable "common_layer_arn" {

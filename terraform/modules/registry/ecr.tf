@@ -74,3 +74,110 @@ resource "aws_ecr_repository_policy" "agentcore_pull" {
   repository = each.value.name
   policy     = data.aws_iam_policy_document.agentcore_pull.json
 }
+
+################################################################################
+# Repository creation template — auto-creates ${project}/<name> repos on
+# first push with the same config the explicit ``aws_ecr_repository.this``
+# resources above use. Lets a new agent be added via ``var.agents`` alone:
+# push the image, ECR creates the repo with the right mutability + lifecycle
+# + AgentCore pull policy, and the next terraform apply wires up the runtime
+# without a separate ``var.repositories`` edit.
+################################################################################
+
+data "aws_iam_policy_document" "ecr_create_on_push_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecr.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ecr_create_on_push" {
+  name               = "${var.project}-ecr-create-on-push"
+  assume_role_policy = data.aws_iam_policy_document.ecr_create_on_push_assume.json
+
+  tags = merge(var.tags, {
+    Name      = "${var.project}-ecr-create-on-push"
+    Component = "registry"
+  })
+}
+
+resource "aws_iam_role_policy" "ecr_create_on_push" {
+  name = "${var.project}-ecr-create-on-push"
+  role = aws_iam_role.ecr_create_on_push.id
+
+  # Canonical permissions per
+  # https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-creation-templates-custom.html
+  # KMS permissions (kms:CreateGrant / RetireGrant / DescribeKey) are
+  # omitted because the template uses ``encryption_type = "AES256"``.
+  # Add them back if the encryption type ever switches to KMS.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:CreateRepository",
+          "ecr:ReplicateImage",
+          "ecr:TagResource",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_ecr_repository_creation_template" "agents" {
+  prefix      = var.project
+  description = "Auto-create ${var.project}/<name> repos on first push with the standard agent config."
+
+  applied_for = ["CREATE_ON_PUSH"]
+
+  custom_role_arn      = aws_iam_role.ecr_create_on_push.arn
+  image_tag_mutability = "IMMUTABLE_WITH_EXCLUSION"
+
+  image_tag_mutability_exclusion_filter {
+    filter      = "latest"
+    filter_type = "WILDCARD"
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  lifecycle_policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Expire untagged images"
+        selection = {
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countUnit   = "days"
+          countNumber = var.untagged_image_retention_days
+        }
+        action = { type = "expire" }
+      },
+      {
+        rulePriority = 2
+        description  = "Keep last N tagged"
+        selection = {
+          tagStatus      = "tagged"
+          tagPatternList = ["*"]
+          countType      = "imageCountMoreThan"
+          countNumber    = var.tagged_image_retention_count
+        }
+        action = { type = "expire" }
+      },
+    ]
+  })
+
+  repository_policy = data.aws_iam_policy_document.agentcore_pull.json
+
+  resource_tags = merge(var.tags, {
+    Component = "registry"
+    CreatedBy = "ecr-creation-template"
+  })
+}
