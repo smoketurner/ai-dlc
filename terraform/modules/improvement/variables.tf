@@ -43,14 +43,26 @@ variable "telemetry_model_id" {
 
 variable "retrospector_runtime_arn" {
   description = <<-EOT
-    AgentCore Runtime ARN of the Retrospector agent. When empty, the
-    retrospector_dispatcher Lambda + EventBridge rule are skipped — that
-    lets the improvement module apply cleanly before the retrospector
-    runtime exists (the runtime is created by the agents module only
-    after the first image is pushed).
+    AgentCore Runtime ARN of the Retrospector agent. May be unknown at
+    plan time when the runtime is being created in the same apply — use
+    ``var.retrospector_enabled`` (known at plan time) to gate
+    count/for_each, and pass the ARN here for the inline Lambda env.
   EOT
   type        = string
   default     = ""
+}
+
+variable "retrospector_enabled" {
+  description = <<-EOT
+    Whether the retrospector_dispatcher Lambda + EventBridge rule are
+    provisioned. Driven by
+    ``contains(keys(var.agent_image_tags), "retrospector")`` at the env
+    level so the value is known at plan time (the retrospector runtime
+    ARN itself may be unknown when the runtime is first being created,
+    which would otherwise break ``count`` evaluation).
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "common_layer_arn" {

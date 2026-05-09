@@ -102,7 +102,7 @@ resource "aws_lambda_permission" "events_invoke_telemetry" {
 ################################################################################
 
 module "retrospector_dispatcher" {
-  count = var.retrospector_runtime_arn == "" ? 0 : 1
+  count = var.retrospector_enabled ? 1 : 0
 
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
@@ -151,7 +151,7 @@ module "retrospector_dispatcher" {
 }
 
 resource "aws_cloudwatch_event_rule" "terminal_events" {
-  count = var.retrospector_runtime_arn == "" ? 0 : 1
+  count = var.retrospector_enabled ? 1 : 0
 
   name           = "${local.prefix}-improvement-terminal-events"
   description    = "Route every terminal SDLC event to the retrospector dispatcher."
@@ -174,7 +174,7 @@ resource "aws_cloudwatch_event_rule" "terminal_events" {
 }
 
 resource "aws_cloudwatch_event_target" "retrospector_dispatcher" {
-  count = var.retrospector_runtime_arn == "" ? 0 : 1
+  count = var.retrospector_enabled ? 1 : 0
 
   rule           = aws_cloudwatch_event_rule.terminal_events[0].name
   event_bus_name = var.bus_name
@@ -182,7 +182,7 @@ resource "aws_cloudwatch_event_target" "retrospector_dispatcher" {
 }
 
 resource "aws_lambda_permission" "events_invoke_retrospector_dispatcher" {
-  count = var.retrospector_runtime_arn == "" ? 0 : 1
+  count = var.retrospector_enabled ? 1 : 0
 
   statement_id  = "AllowEventBridgeInvokeRetrospectorDispatcher"
   action        = "lambda:InvokeFunction"

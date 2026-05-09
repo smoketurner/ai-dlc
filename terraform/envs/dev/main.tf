@@ -43,16 +43,14 @@ locals {
   # apply (creates ECR repo + IAM + gateway), trigger images-build, then
   # add the agent here and re-apply (creates the runtime).
   agent_image_tags = {
-    architect   = "latest"
-    critic      = "latest"
-    implementer = "latest"
-    proposer    = "latest"
-    reviewer    = "latest"
-    tester      = "latest"
-    triage      = "latest"
-    # retrospector intentionally omitted until its image lands in ECR.
-    # Re-add `retrospector = "latest"` after the images-build workflow
-    # has run successfully on the matrix-update commit.
+    architect    = "latest"
+    critic       = "latest"
+    implementer  = "latest"
+    proposer     = "latest"
+    retrospector = "latest"
+    reviewer     = "latest"
+    tester       = "latest"
+    triage       = "latest"
   }
 }
 
@@ -150,10 +148,15 @@ module "agents" {
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     proposer = {
-      description      = "Proposer agent — schedules-driven; opens PRs proposing prompt/MEMORY edits."
+      description      = "Proposer agent — research-driven; opens PRs proposing prompt/MEMORY edits."
       targets          = ["repo_helper"]
       features         = ["browser"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+    }
+    retrospector = {
+      description      = "Retrospector agent — fires on every terminal event; appends lessons to docs/MEMORY.md via PR."
+      targets          = ["artifact_tool", "repo_helper"]
+      bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     triage = {
       description      = "Triage agent — classifies tagged GitHub issues and routes them into a workflow phase."
@@ -272,6 +275,7 @@ module "improvement" {
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
 
   retrospector_runtime_arn = lookup(module.agents.runtime_arns, "retrospector", "")
+  retrospector_enabled     = contains(keys(local.agent_image_tags), "retrospector")
 
   common_layer_arn = module.common_layer.lambda_layer_arn
 }

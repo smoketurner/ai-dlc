@@ -39,6 +39,17 @@ data "aws_ecr_image" "agent" {
   image_tag       = each.value
 }
 
+# Look up the repo URL via a data source instead of relying on
+# ``var.ecr_repository_urls`` so agents whose ECR repo was auto-created
+# by the registry module's repository_creation_template (and therefore
+# not in the registry module's explicit ``var.repositories`` set) still
+# resolve cleanly.
+data "aws_ecr_repository" "agent" {
+  for_each = var.agent_image_tags
+
+  name = "${var.project}/${each.key}"
+}
+
 data "aws_iam_policy_document" "runtime_inline" {
   for_each = var.agents
 
@@ -335,7 +346,7 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
 
   agent_runtime_artifact {
     container_configuration {
-      container_uri = "${var.ecr_repository_urls[each.key]}@${data.aws_ecr_image.agent[each.key].image_digest}"
+      container_uri = "${data.aws_ecr_repository.agent[each.key].repository_url}@${data.aws_ecr_image.agent[each.key].image_digest}"
     }
   }
 
