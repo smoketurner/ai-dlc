@@ -4,7 +4,7 @@
 
 ## Summary
 
-Add deterministic lint and type-check gates inside the Implementer agent's execution flow so that ruff check, ruff format --check, and ty check run automatically after the agent finishes editing — before the PR is committed and pushed. If the gate fails, the agent receives the error output as structured feedback and gets one in-process retry to fix the issues, eliminating the slow CI→webhook→iteration round-trip for trivially fixable lint/type errors.
+Add deterministic lint and type-check gates inside the Implementer agent's execution flow so that `ruff check`, `ruff format --check`, and `ty check` run automatically after the agent finishes editing — before the PR is committed and pushed. If the gate fails, the agent receives the error output as structured feedback and gets one in-process retry to fix the issues, eliminating the slow CI→webhook→iteration round-trip for trivially fixable lint/type errors.
 
 ## User stories
 
@@ -26,4 +26,4 @@ Add deterministic lint and type-check gates inside the Implementer agent's execu
 - Running pytest as part of the gate (tests are non-deterministic and already covered by CI + Tester agent)
 - Modifying the CI workflow itself
 - Adding lint gates to non-Implementer agents (Architect, Critic, etc.)
-- Auto-fixing lint errors via ruff check --fix (the agent should learn to write clean code; auto-fix masks training signal)
+- Auto-fixing lint errors via `ruff check --fix` (the agent should learn to write clean code; auto-fix masks training signal)

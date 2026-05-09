@@ -4,7 +4,7 @@
 
 ## Approach
 
-Insert a deterministic lint/type-check gate into the Implementer's execute_task flow — after the Claude Agent SDK session completes (agent called finish) but before commit_changes / push_branch. The gate runs three commands sequentially (uv run ruff check ., uv run ruff format --check ., uv run ty check) from the repo root. On failure, the combined error output is fed back to the agent as a follow-up message in the same SDK session (the session is kept open until the gate passes or the retry budget is exhausted). This avoids the 3–5 minute CI→webhook→event→dispatch round-trip for trivially fixable errors. No new state-machine states, events, or DDB schema changes are needed — the gate is entirely internal to the Implementer container.
+Insert a deterministic lint/type-check gate into the Implementer's execute_task flow — after the Claude Agent SDK session completes (agent called finish) but before commit_changes / push_branch. The gate runs three commands sequentially (`uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check`) from the repo root. On failure, the combined error output is fed back to the agent as a follow-up message in the same SDK session (the session is kept open until the gate passes or the retry budget is exhausted). This avoids the 3–5 minute CI→webhook→event→dispatch round-trip for trivially fixable errors. No new state-machine states, events, or DDB schema changes are needed — the gate is entirely internal to the Implementer container.
 
 ## Components
 
@@ -87,7 +87,7 @@ Mocks: `subprocess.run` is patched to simulate lint pass/fail. The Claude Agent 
 
 - One retry only: More retries would increase session cost and risk infinite loops on genuinely unfixable type errors. One retry catches 90%+ of trivial lint issues while bounding cost.
 - Gate runs all three commands even if one fails early: Running all three gives the agent complete feedback in one shot rather than requiring serial fix→retry cycles per tool.
-- No --fix auto-apply: We could run ruff check --fix automatically, but this masks the training signal — the agent should learn to produce clean code.
+- No --fix auto-apply: We could run `ruff check --fix` automatically, but this masks the training signal — the agent should learn to produce clean code.
 - Truncated output at 4 KiB per command: Prevents pathological cases from blowing up the context window.
 
 ## References
