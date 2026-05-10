@@ -1,29 +1,38 @@
 """Projector Lambda — fans out platform events into the read model + memory.
 
-Triggered by every event on the platform EventBridge bus. We update the
-run state row in DynamoDB (so the dashboard's SSE poller has fresh data)
-and forward the event to AgentCore Memory via ``CreateEvent`` so cross-
-session memory strategies can index it.
+Triggered by every event on the platform EventBridge bus. Every event
+produces exactly one ``TransactWriteItems`` containing:
 
-The projector is the **only writer** of the run + task state-machine
-cursors: it applies :func:`common.state_transitions.apply_run_transition`
-/ ``apply_task_transition`` and writes the new state via a conditional
-:func:`transact_write_items` that bundles the state update with an
-``OUTBOX#{event_id}`` row. EventBridge Pipes consume the runs-table
-stream, filter for outbox rows, and forward them as SQS beacons to the
-state router — so beacon delivery is atomic with the state advance and
-re-delivery is handled by DDB Streams' built-in retry semantics rather
-than a synchronous SQS publish that could fail mid-projection.
+* The EVENT timeline row (``sk=EVENT#{event_id}``) with
+  ``attribute_not_exists(sk)`` — this row is the master idempotency
+  key. A re-delivered envelope fails the condition and the entire
+  transaction rolls back.
+* The STATE row Update — always carries the metadata clauses (status,
+  ``updated_at``, ``if_not_exists(project_slug)``, GSI keys for
+  issue-driven runs, usage ``ADD`` clauses) and, when the event
+  advances run-level state or accumulates spec-iteration feedback,
+  the corresponding clauses in the same Update.
+* The TASK row Update — only when the event is task-level. Carries
+  the task state advance or the in-place iteration accumulator.
+* The OUTBOX row Put — only when state advanced. The EventBridge Pipe
+  forwards it to the state-router beacon queue.
 
-The projector is idempotent: every write uses the event_id as a sort-key
-suffix or a ``ConditionExpression`` that keeps repeats from clobbering
-already-applied state.
+Because the transaction is atomic, re-delivery is a complete no-op —
+no double-counted usage totals, no duplicate memory writes, no
+duplicate outbox rows. Race losses (two events targeting the same row
+concurrently) drop cleanly via the conditional-check on the STATE/TASK
+update.
+
+After a successful commit, the projector forwards the envelope to
+AgentCore Memory via ``CreateEvent``. Memory writes are gated on the
+transaction succeeding, so they're also idempotent on event_id.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
@@ -56,10 +65,48 @@ metrics = Metrics(namespace="ai-dlc", service="event_projector")
 OUTBOX_TTL_SECONDS = 3600
 """How long an outbox row lives before DDB TTL sweeps it.
 
-The EventBridge Pipe consumes the runs stream within seconds of insert,
-so the row itself is needed only briefly. The stream record persists for
-24h regardless of TTL, so a pipe outage of up to 24h still recovers; TTL
-is purely table-hygiene to keep outbox rows from accumulating.
+The pipe forwards within seconds; the stream record persists for 24h
+regardless of TTL, so a pipe outage of up to 24h still recovers. TTL
+is purely table hygiene.
+"""
+
+TASK_LEVEL_EVENTS = frozenset(
+    {
+        "TASK.READY",
+        "TASK.BLOCKED",
+        "TASK.APPROVED",
+        "TASK.REJECTED",
+        "TASK.ITERATION_REQUESTED",
+    },
+)
+"""Events whose state cursor lives on a TASK row, not the STATE row."""
+
+ITERATION_ACCUMULATOR_STATES = frozenset(
+    {TaskState.iterating, TaskState.implementer_running},
+)
+"""Task states where ``TASK.ITERATION_REQUESTED`` queues feedback in place.
+
+A second ``/aidlc fix X`` arriving while the implementer is still mid-
+flight on the first has no state transition (no ``iterating →
+iterating``), so the projector accumulates the new feedback onto the
+task row in place; the in-flight iteration consumes it on flush.
+"""
+
+DISPATCH_RESET_EVENTS = frozenset(
+    {
+        "SPEC.READY",
+        "CRITIQUE.READY",
+        "TASK.READY",
+        "TASK.BLOCKED",
+    },
+)
+"""Events that prove the prior dispatch reached the agent and ran.
+
+Each one resets ``dispatch_failure_count`` to 0 on the row whose state
+the projector advances. Advisor events (``REVIEW.READY``,
+``TEST_REPORT.READY``) are not listed because the dispatches that
+produce them are gated by an outer ``GuardedAdvance`` and don't
+increment the counter in the first place.
 """
 
 
@@ -99,8 +146,6 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
 def handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
     """Single EventBridge invocation; ``event['detail']`` is the envelope."""
     try:
-        # parse() is typed to allow batch shapes; EventBridgeEnvelope always
-        # returns the single inner model, hence the cast.
         envelope = cast(
             "UntypedEnvelope",
             parse(
@@ -115,12 +160,11 @@ def handle_eventbridge(event: dict[str, Any]) -> dict[str, Any]:
     detail = envelope.model_dump(mode="json")
     run_id = str(envelope.run_id)
     event_type = envelope.type
-    upsert_run_event(run_id=run_id, event_type=event_type, envelope=detail)
-    update_run_state(run_id=run_id, event_type=event_type, envelope=detail)
-    apply_state_transition(run_id=run_id, event_type=event_type, envelope=detail)
-    forward_to_memory(detail)
+    committed = project_event(envelope=envelope, detail=detail)
+    if committed:
+        forward_to_memory(detail)
     metrics.add_metric(name="EventsProjected", unit=MetricUnit.Count, value=1)
-    return {"ok": True, "run_id": run_id, "type": event_type}
+    return {"ok": True, "run_id": run_id, "type": event_type, "committed": committed}
 
 
 def normalise(event: dict[str, Any]) -> dict[str, Any]:
@@ -131,179 +175,271 @@ def normalise(event: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
-@tracer.capture_method
-def upsert_run_event(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
-    """Append the event to the run's timeline row, idempotent on event_id.
+# ---------------------------------------------------------------------------
+# Projection: one TransactWriteItems per event
+# ---------------------------------------------------------------------------
 
-    EventBridge can redeliver the same envelope (transient downstream
-    failure, retry-on-error, at-least-once semantics). The
-    ``attribute_not_exists(sk)`` guard makes the PutItem a no-op on
-    repeat, but DDB surfaces that as ``ConditionalCheckFailedException``
-    — we swallow it so the rest of the projection (state update +
-    transition + memory) can run on retries that need to make forward
-    progress past a previously-failing later step.
+
+@dataclass(frozen=True)
+class RunMode:
+    """How a run-level event affects the STATE row.
+
+    ``from_state`` is what we read off the row before building the
+    transaction; ``next_state`` is the target if the event advances
+    state. ``accumulates_feedback`` is True when the event appends to
+    ``pending_spec_feedback`` (SPEC.ITERATION_REQUESTED in the right
+    states), independent of whether it also advances.
     """
-    event_id = envelope.get("event_id", "unknown")
+
+    from_state: RunState | None
+    next_state: RunState | None = None
+    accumulates_feedback: bool = False
+
+
+@dataclass(frozen=True)
+class TaskMode:
+    """How a task-level event affects the TASK row."""
+
+    task_id: str
+    from_state: TaskState
+    next_state: TaskState | None = None
+    accumulates_feedback: bool = False
+
+
+@tracer.capture_method
+def project_event(*, envelope: UntypedEnvelope, detail: dict[str, Any]) -> bool:
+    """Build and commit one ``TransactWriteItems`` for this event.
+
+    Returns ``True`` when the transaction committed, ``False`` on a
+    conditional-check loss (re-delivery via the EVENT row, or a race
+    loss on the STATE/TASK condition). On ``False`` the caller skips
+    the AgentCore Memory write so memory is also idempotent on
+    event_id.
+    """
+    run_id = str(envelope.run_id)
+    event_type = envelope.type or "UNKNOWN"
+    items: list[TransactWriteItemTypeDef] = [event_row_item(run_id, event_type, detail)]
+    if event_type in TASK_LEVEL_EVENTS:
+        items.extend(task_event_items(run_id, event_type, detail))
+    else:
+        items.extend(run_event_items(run_id, event_type, detail))
     try:
-        ddb().put_item(
-            TableName=runs_table(),
-            Item={
-                "pk": {"S": f"RUN#{run_id}"},
-                "sk": {"S": f"EVENT#{event_id}"},
-                "type": {"S": event_type or "UNKNOWN"},
-                "envelope": {"S": json.dumps(envelope)},
-            },
-            ConditionExpression="attribute_not_exists(sk)",
-        )
+        ddb().transact_write_items(TransactItems=items)
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        if is_conditional_check_failed(exc):
             logger.info(
-                "event row already exists; continuing projection",
-                extra={"run_id": run_id, "event_id": event_id, "event_type": event_type},
+                "event already projected (idempotent no-op)",
+                extra={"run_id": run_id, "event_type": event_type},
             )
-            return
+            return False
         raise
+    return True
 
 
-@tracer.capture_method
-def update_run_state(*, run_id: str, event_type: str | None, envelope: dict[str, Any]) -> None:
-    """Upsert the run's STATE row with current status + cumulative metrics.
+def run_event_items(
+    run_id: str,
+    event_type: str,
+    detail: dict[str, Any],
+) -> list[TransactWriteItemTypeDef]:
+    """Build the STATE Update + optional OUTBOX Put for a run-level event."""
+    current = read_run_state(run_id)
+    next_state = apply_run_transition(
+        event_type=cast("PlatformEventType", event_type),
+        current_state=current,
+    )
+    if event_type == "SPEC.ITERATION_REQUESTED":
+        mode = spec_iteration_mode(current=current, next_state=next_state, detail=detail)
+    else:
+        mode = RunMode(from_state=current, next_state=next_state)
+    items: list[TransactWriteItemTypeDef] = [run_state_item(run_id, event_type, detail, mode)]
+    if mode.next_state is not None:
+        items.append(outbox_item(run_id, detail))
+    return items
 
-    The STATE row at sk=`STATE` is what the dashboard reads. We update it
-    on every event so the runs list stays current; usage counters
-    (``total_token_in``/``out``, ``total_cost_usd``, ``total_duration_ms``)
-    are accumulated via DynamoDB ``ADD`` whenever an agent ``*.READY``
-    event carries them. ``RUN.COMPLETED`` only sets ``tasks_completed``;
-    the totals are already canonical from accumulation.
+
+def spec_iteration_mode(
+    *,
+    current: RunState | None,
+    next_state: RunState | None,
+    detail: dict[str, Any],
+) -> RunMode:
+    """Decide whether SPEC.ITERATION_REQUESTED advances, accumulates, or drops.
+
+    Late comments after merge / cancel land in a terminal state — drop
+    them on the floor (no metadata update either, since the EVENT row
+    Put unconditionally appends to the timeline regardless).
     """
-    payload = envelope.get("payload") or {}
-    set_parts = ["#s = :status", "updated_at = :ts"]
-    add_parts: list[str] = []
-    names = {"#s": "status"}
-    values: dict[str, dict[str, Any]] = {
-        ":status": {"S": event_type or "UNKNOWN"},
-        ":ts": {"S": envelope.get("timestamp", "")},
-    }
-    if isinstance(payload.get("project_slug"), str) and payload["project_slug"]:
-        set_parts.append("project_slug = if_not_exists(project_slug, :proj)")
-        values[":proj"] = {"S": payload["project_slug"]}
-    accumulate_spec_fields(payload, set_parts=set_parts, values=values)
-    # REQUEST.RECEIVED for an issue-driven run carries source_issue_url.
-    # Project the URL onto the gsi1 keys so the dashboard can look up
-    # in-flight runs by issue (used by the issues.unassigned cancel path).
-    if (
-        event_type == "REQUEST.RECEIVED"
-        and isinstance(payload.get("source_issue_url"), str)
-        and payload["source_issue_url"]
-    ):
-        set_parts.append("gsi1pk = if_not_exists(gsi1pk, :issue)")
-        set_parts.append("gsi1sk = if_not_exists(gsi1sk, :runref)")
-        set_parts.append("source_issue_url = if_not_exists(source_issue_url, :issue_url)")
-        values[":issue"] = {"S": f"ISSUE#{payload['source_issue_url']}"}
-        values[":runref"] = {"S": f"RUN#{run_id}"}
-        values[":issue_url"] = {"S": payload["source_issue_url"]}
-    accumulate_usage(payload, add_parts=add_parts, values=values)
-    if event_type == "SPEC.READY":
-        accumulate_spec_ready(payload, set_parts=set_parts, values=values)
-    if event_type == "ISSUE.TRIAGED":
-        accumulate_issue_triaged(payload, set_parts=set_parts, values=values)
-    if event_type == "RUN.COMPLETED":
-        set_parts.append("tasks_completed = :tc")
-        values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
-    expression = "SET " + ", ".join(set_parts)
-    if add_parts:
-        expression += " ADD " + ", ".join(add_parts)
-    ddb().update_item(
-        TableName=runs_table(),
-        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-        UpdateExpression=expression,
-        ExpressionAttributeNames=names,
-        ExpressionAttributeValues=values,
+    if current in TERMINAL_RUN_STATES:
+        return RunMode(from_state=current)
+    payload = detail.get("payload") or {}
+    body = payload.get("feedback_body")
+    if not isinstance(body, str) or not body.strip():
+        return RunMode(from_state=current)
+    advances = next_state == RunState.spec_pending and current is not None
+    if not advances and current not in SPEC_ITERATION_ACCUMULATOR_STATES:
+        return RunMode(from_state=current)
+    return RunMode(
+        from_state=current,
+        next_state=next_state if advances else None,
+        accumulates_feedback=True,
     )
 
 
-def accumulate_spec_fields(
-    payload: dict[str, Any],
-    *,
-    set_parts: list[str],
-    values: dict[str, dict[str, Any]],
-) -> None:
-    """Persist ``spec_slug`` + ``spec_s3_prefix`` if the payload carries them.
+def task_event_items(
+    run_id: str,
+    event_type: str,
+    detail: dict[str, Any],
+) -> list[TransactWriteItemTypeDef]:
+    """STATE metadata Update + TASK row Update + optional OUTBOX Put."""
+    payload = detail.get("payload") or {}
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        logger.warning("task event missing task_id", extra={"event_type": event_type})
+        return [run_state_item(run_id, event_type, detail, RunMode(from_state=None))]
+    current = read_task_state(run_id, task_id)
+    if current is None:
+        logger.info(
+            "task row missing — skipping task transition",
+            extra={"run_id": run_id, "task_id": task_id, "event_type": event_type},
+        )
+        return [run_state_item(run_id, event_type, detail, RunMode(from_state=None))]
+    next_state = apply_task_transition(
+        event_type=cast("PlatformEventType", event_type),
+        current_state=current,
+    )
+    accumulates = (
+        next_state is None
+        and event_type == "TASK.ITERATION_REQUESTED"
+        and current in ITERATION_ACCUMULATOR_STATES
+    )
+    mode = TaskMode(
+        task_id=task_id,
+        from_state=current,
+        next_state=next_state,
+        accumulates_feedback=accumulates,
+    )
+    items: list[TransactWriteItemTypeDef] = [
+        run_state_item(run_id, event_type, detail, RunMode(from_state=None)),
+    ]
+    if next_state is not None or accumulates:
+        items.append(task_row_item(run_id, event_type, detail, mode))
+    if next_state is not None:
+        items.append(outbox_item(run_id, detail))
+    return items
 
-    Both come on the architect's ``SPEC.READY`` event. The state-router
-    needs them on the STATE row for downstream dispatches: the Critic
-    payload, the spec-PR open call, and every Implementer / Reviewer /
-    Tester invocation that resolves spec docs out of S3.
+
+# ---------------------------------------------------------------------------
+# Item builders
+# ---------------------------------------------------------------------------
+
+
+def event_row_item(
+    run_id: str,
+    event_type: str,
+    detail: dict[str, Any],
+) -> TransactWriteItemTypeDef:
+    """The EVENT timeline row — master idempotency key for the event.
+
+    A re-delivered envelope fails ``attribute_not_exists(sk)`` and the
+    entire transaction rolls back, which is what makes downstream
+    metadata + state writes safe under at-least-once delivery.
     """
+    event_id = detail.get("event_id", "unknown")
+    return {
+        "Put": {
+            "TableName": runs_table(),
+            "Item": {
+                "pk": {"S": f"RUN#{run_id}"},
+                "sk": {"S": f"EVENT#{event_id}"},
+                "type": {"S": event_type},
+                "envelope": {"S": json.dumps(detail)},
+            },
+            "ConditionExpression": "attribute_not_exists(sk)",
+        },
+    }
+
+
+def run_state_item(  # noqa: C901, PLR0912, PLR0915
+    run_id: str,
+    event_type: str,
+    detail: dict[str, Any],
+    mode: RunMode,
+) -> TransactWriteItemTypeDef:
+    """The STATE row Update — every clause this row needs in one Update.
+
+    The branching is intrinsic to a STATE row that mixes always-on
+    metadata (status, updated_at, if-not-exists project_slug, GSI keys
+    for issue-driven REQUEST.RECEIVED, per-event-type projections,
+    usage totals via ``ADD``) with optional state-advance and spec-
+    iteration-feedback clauses. Splitting into single-call helpers
+    only added indirection (every helper had exactly one caller),
+    so the linter suppressions accept that this is one cohesive
+    item-builder rather than separable concerns.
+
+    Condition policy: pure metadata-only updates carry no
+    ``ConditionExpression`` — the EVENT row's
+    ``attribute_not_exists(sk)`` already gates re-delivery. Advancing
+    or accumulator events condition on the cursor's exact value (or
+    ``attribute_not_exists(current_state)`` for the first event) so a
+    concurrent event that just moved past drops cleanly via CCFE.
+    """
+    payload = detail.get("payload") or {}
+    timestamp = detail.get("timestamp", "")
+    event_id = detail.get("event_id", "")
+    set_parts = [
+        "#s = :status",
+        "updated_at = :ts",
+        "last_event_id = :eid",
+        "last_event_at = :ts",
+    ]
+    add_parts: list[str] = []
+    remove_parts: list[str] = []
+    names: dict[str, str] = {"#s": "status"}
+    values: dict[str, dict[str, Any]] = {
+        ":status": {"S": event_type},
+        ":ts": {"S": timestamp},
+        ":eid": {"S": event_id},
+    }
+    project_slug = payload.get("project_slug")
+    if isinstance(project_slug, str) and project_slug:
+        set_parts.append("project_slug = if_not_exists(project_slug, :proj)")
+        values[":proj"] = {"S": project_slug}
+    source_issue_url = payload.get("source_issue_url")
+    if event_type == "REQUEST.RECEIVED" and isinstance(source_issue_url, str) and source_issue_url:
+        set_parts.append("gsi1pk = if_not_exists(gsi1pk, :issue)")
+        set_parts.append("gsi1sk = if_not_exists(gsi1sk, :runref)")
+        set_parts.append("source_issue_url = if_not_exists(source_issue_url, :issue_url)")
+        values[":issue"] = {"S": f"ISSUE#{source_issue_url}"}
+        values[":runref"] = {"S": f"RUN#{run_id}"}
+        values[":issue_url"] = {"S": source_issue_url}
     spec_slug = payload.get("spec_slug")
     if isinstance(spec_slug, str) and spec_slug:
-        set_parts.append("spec_slug = :spec")
-        values[":spec"] = {"S": spec_slug}
+        set_parts.append("spec_slug = :spec_slug")
+        values[":spec_slug"] = {"S": spec_slug}
     spec_s3_prefix = payload.get("spec_s3_prefix")
     if isinstance(spec_s3_prefix, str) and spec_s3_prefix:
         set_parts.append("spec_s3_prefix = :spec_prefix")
         values[":spec_prefix"] = {"S": spec_s3_prefix}
-
-
-def accumulate_issue_triaged(
-    payload: dict[str, Any],
-    *,
-    set_parts: list[str],
-    values: dict[str, dict[str, Any]],
-) -> None:
-    """Persist ``workflow_kind`` + ``triage_action`` from ISSUE.TRIAGED.
-
-    The router's ``handle_triage_decided`` branches first on the action
-    (``proceed`` / ``ask`` / ``defer`` / ``decline``), then on
-    ``workflow_kind`` for the proceed case. Without these projections
-    every issue-driven run falls into the ``spec_driven`` proceed path.
-    """
-    workflow_kind = payload.get("workflow_kind")
-    if isinstance(workflow_kind, str) and workflow_kind:
-        set_parts.append("workflow_kind = :wk")
-        values[":wk"] = {"S": workflow_kind}
-    action = payload.get("action")
-    if isinstance(action, str) and action:
-        set_parts.append("triage_action = :ta")
-        values[":ta"] = {"S": action}
-
-
-def accumulate_spec_ready(
-    payload: dict[str, Any],
-    *,
-    set_parts: list[str],
-    values: dict[str, dict[str, Any]],
-) -> None:
-    """Persist ``tasks_total`` and ``task_ids`` from a SPEC.READY payload.
-
-    The state-router's ``handle_spec_approved`` reads ``task_ids`` off the
-    STATE row to seed pending TASK rows; without this projection the
-    seeder has no list to walk and the run hangs in ``tasks_in_progress``
-    with zero tasks.
-    """
-    if isinstance(payload.get("task_count"), int):
-        set_parts.append("tasks_total = :tt")
-        values[":tt"] = {"N": str(payload["task_count"])}
-    task_ids = payload.get("task_ids")
-    if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
-        set_parts.append("task_ids = :tids")
-        values[":tids"] = {"SS": list(task_ids)}
-
-
-def accumulate_usage(
-    payload: dict[str, Any],
-    *,
-    add_parts: list[str],
-    values: dict[str, dict[str, Any]],
-) -> None:
-    """Append ADD clauses for any per-event usage fields the payload carries.
-
-    Agent ``*.READY`` payloads (SpecReady, CritiqueReady, TaskReady,
-    ReviewReady, TestReportReady) inherit from
-    :class:`common.events.UsagePayload`; values default to zero when an
-    agent hasn't been wired yet, and we skip the ADD for zero values to
-    avoid a no-op DDB write that still costs WCUs.
-    """
+    if event_type == "ISSUE.TRIAGED":
+        workflow_kind = payload.get("workflow_kind")
+        if isinstance(workflow_kind, str) and workflow_kind:
+            set_parts.append("workflow_kind = :wk")
+            values[":wk"] = {"S": workflow_kind}
+        action = payload.get("action")
+        if isinstance(action, str) and action:
+            set_parts.append("triage_action = :ta")
+            values[":ta"] = {"S": action}
+    if event_type == "SPEC.READY":
+        if isinstance(payload.get("task_count"), int):
+            set_parts.append("tasks_total = :tt")
+            values[":tt"] = {"N": str(payload["task_count"])}
+        task_ids = payload.get("task_ids")
+        if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
+            set_parts.append("task_ids = :tids")
+            values[":tids"] = {"SS": list(task_ids)}
+    if event_type == "RUN.COMPLETED":
+        set_parts.append("tasks_completed = :tc")
+        values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
     in_tokens = int(payload.get("token_in", 0) or 0)
     out_tokens = int(payload.get("token_out", 0) or 0)
     cost = float(payload.get("cost_usd", 0.0) or 0.0)
@@ -320,322 +456,211 @@ def accumulate_usage(
     if duration:
         add_parts.append("total_duration_ms :dur")
         values[":dur"] = {"N": str(duration)}
-
-
-# ---------------------------------------------------------------------------
-# State-transition application
-# ---------------------------------------------------------------------------
-
-# Events that advance task-level state. Anything else is treated as
-# run-level for transition purposes.
-TASK_LEVEL_EVENTS = frozenset(
-    {
-        "TASK.READY",
-        "TASK.BLOCKED",
-        "TASK.APPROVED",
-        "TASK.REJECTED",
-        "TASK.ITERATION_REQUESTED",
-    },
-)
-
-
-@tracer.capture_method
-def apply_state_transition(
-    *,
-    run_id: str,
-    event_type: str,
-    envelope: dict[str, Any],
-) -> None:
-    """Compute the next state for ``event_type`` and apply it conditionally.
-
-    Run-level events update the STATE row's ``current_state``; task-level
-    events update the corresponding TASK row's ``status``. Idempotent
-    via DDB ``ConditionExpression`` on the previous state value.
-    """
-    if event_type in TASK_LEVEL_EVENTS:
-        apply_task_state_transition(run_id=run_id, event_type=event_type, envelope=envelope)
-    else:
-        apply_run_state_transition(run_id=run_id, event_type=event_type, envelope=envelope)
-
-
-def apply_run_state_transition(
-    *,
-    run_id: str,
-    event_type: str,
-    envelope: dict[str, Any],
-) -> None:
-    """Read run STATE, compute next state, transactionally advance + outbox.
-
-    For ``SPEC.ITERATION_REQUESTED`` the projector also writes the
-    feedback body onto the run's ``pending_spec_feedback`` list:
-
-    * In ``spec_pr_open``: append AND advance to ``spec_pending`` (one
-      transaction with the outbox row).
-    * In :data:`SPEC_ITERATION_ACCUMULATOR_STATES` (architect mid-cycle):
-      append in place; no state change, no outbox — the architect picks
-      up the queued feedback on its next iteration.
-    * Otherwise: drop on the floor — late comments after merge / cancel
-      shouldn't disturb a terminal run.
-
-    Successful advances bundle a beacon-intent row into the same
-    transaction; the EventBridge Pipe forwards it to the state router.
-    Accumulator-only writes and idempotent re-deliveries write no
-    outbox row.
-    """
-    current = read_run_state(run_id)
-    next_state = apply_run_transition(
-        event_type=cast("PlatformEventType", event_type),
-        current_state=current,
-    )
-    if event_type == "SPEC.ITERATION_REQUESTED":
-        apply_spec_iteration(
-            run_id=run_id,
-            current=current,
-            next_state=next_state,
-            envelope=envelope,
-        )
-        return
-    if next_state is None:
-        return
-    advance_run_state(
-        run_id=run_id,
-        from_state=current,
-        to_state=next_state,
-        event_type=event_type,
-        envelope=envelope,
-    )
-
-
-def apply_spec_iteration(
-    *,
-    run_id: str,
-    current: RunState | None,
-    next_state: RunState | None,
-    envelope: dict[str, Any],
-) -> bool:
-    """Append spec-iteration feedback + (optionally) advance state + outbox.
-
-    Returns ``True`` only when state advanced to ``spec_pending`` (the
-    transactional path that also writes an outbox row). ``False`` for
-    accumulator-only writes (no outbox — agent picks up queued feedback
-    on its next iteration), dropped late comments, or conditional-check
-    losses.
-
-    The ``ConditionExpression`` guards on the run's current state so a
-    feedback append doesn't clobber a row that just transitioned out
-    of ``spec_pr_open`` (e.g., a concurrent merge → ``SPEC.APPROVED``).
-    """
-    if current in TERMINAL_RUN_STATES:
-        return False
-    payload = envelope.get("payload") or {}
-    body = payload.get("feedback_body")
-    if not isinstance(body, str) or not body.strip():
-        return False
-    advance = next_state == RunState.spec_pending and current is not None
-    if not advance and current not in SPEC_ITERATION_ACCUMULATOR_STATES:
-        return False
-    expression, values, condition = build_spec_iteration_update(
-        current=current,
-        body=body,
-        delivery_id=payload.get("delivery_id"),
-        event_id=envelope.get("event_id", ""),
-        timestamp=envelope.get("timestamp", ""),
-        advance_to_spec_pending=advance,
-    )
-    if advance:
-        return commit_spec_iteration_advance(
-            run_id=run_id,
-            current=current,
-            expression=expression,
-            condition=condition,
-            values=values,
-            envelope=envelope,
-        )
-    return commit_spec_iteration_accumulate(
-        run_id=run_id,
-        current=current,
-        expression=expression,
-        condition=condition,
-        values=values,
-    )
-
-
-def commit_spec_iteration_advance(
-    *,
-    run_id: str,
-    current: RunState | None,
-    expression: str,
-    condition: str,
-    values: dict[str, Any],
-    envelope: dict[str, Any],
-) -> bool:
-    """Atomically advance to ``spec_pending`` and write the outbox row."""
-    try:
-        ddb().transact_write_items(
-            TransactItems=[
-                {
-                    "Update": {
-                        "TableName": runs_table(),
-                        "Key": {"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-                        "UpdateExpression": expression,
-                        "ConditionExpression": condition,
-                        "ExpressionAttributeValues": values,
-                    },
-                },
-                outbox_put_item(run_id=run_id, envelope=envelope),
-            ],
-        )
-    except ClientError as exc:
-        if is_idempotent_transaction_failure(exc):
-            logger.info(
-                "run moved while advancing spec-iteration feedback",
-                extra={"run_id": run_id, "current": current.value if current else None},
-            )
-            return False
-        raise
-    return True
-
-
-def commit_spec_iteration_accumulate(
-    *,
-    run_id: str,
-    current: RunState | None,
-    expression: str,
-    condition: str,
-    values: dict[str, Any],
-) -> bool:
-    """Append feedback in place; no outbox row, no state advance."""
-    try:
-        ddb().update_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            UpdateExpression=expression,
-            ConditionExpression=condition,
-            ExpressionAttributeValues=values,
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            logger.info(
-                "run moved while accumulating spec-iteration feedback",
-                extra={"run_id": run_id, "current": current.value if current else None},
-            )
-            return False
-        raise
-    return False
-
-
-def build_spec_iteration_update(
-    *,
-    current: RunState | None,
-    body: str,
-    delivery_id: Any,
-    event_id: str,
-    timestamp: str,
-    advance_to_spec_pending: bool,
-) -> tuple[str, dict[str, Any], str]:
-    """Compose the UpdateItem expression / values / condition.
-
-    Split out of :func:`apply_spec_iteration` so the caller stays
-    under the cyclomatic-complexity ceiling.
-    """
-    set_parts = [
-        "last_event_id = :eid",
-        "last_event_at = :ts",
-        (
-            "pending_spec_feedback = list_append("
-            "if_not_exists(pending_spec_feedback, :empty_list), :feedback_one)"
-        ),
-    ]
-    add_parts: list[str] = []
-    values: dict[str, Any] = {
-        ":eid": {"S": event_id},
-        ":ts": {"S": timestamp},
-        ":empty_list": {"L": []},
-        ":feedback_one": {"L": [{"S": body}]},
-        ":from": {"S": current.value if current else ""},
-    }
-    if isinstance(delivery_id, str) and delivery_id:
-        add_parts.append("spec_delivery_ids :did")
-        values[":did"] = {"SS": [delivery_id]}
-    if advance_to_spec_pending:
+    if mode.next_state is not None:
         set_parts.append("current_state = :to")
+        values[":to"] = {"S": mode.next_state.value}
         add_parts.append("state_transitions :one")
-        values[":to"] = {"S": RunState.spec_pending.value}
         values[":one"] = {"N": "1"}
+        if event_type in DISPATCH_RESET_EVENTS:
+            set_parts.append("dispatch_failure_count = :zero")
+            values[":zero"] = {"N": "0"}
+        if event_type == "SPEC.READY" and mode.from_state == RunState.architect_running:
+            set_parts.append("pending_spec_feedback = :feedback_empty_advance")
+            values[":feedback_empty_advance"] = {"L": []}
+            remove_parts.append("spec_delivery_ids")
+    if mode.accumulates_feedback:
+        body = payload.get("feedback_body")
+        if isinstance(body, str) and body.strip():
+            set_parts.append(
+                "pending_spec_feedback = list_append("
+                "if_not_exists(pending_spec_feedback, :feedback_empty), :feedback_one)",
+            )
+            values[":feedback_empty"] = {"L": []}
+            values[":feedback_one"] = {"L": [{"S": body}]}
+            delivery_id = payload.get("delivery_id")
+            if isinstance(delivery_id, str) and delivery_id:
+                add_parts.append("spec_delivery_ids :spec_did")
+                values[":spec_did"] = {"SS": [delivery_id]}
+    if mode.next_state is None and not mode.accumulates_feedback:
+        condition = None
+    elif mode.from_state is None:
+        condition = "attribute_not_exists(current_state)"
+    else:
+        condition = "current_state = :from"
+        values[":from"] = {"S": mode.from_state.value}
+    expression = compose_expression(set_parts, add_parts, remove_parts)
+    update: dict[str, Any] = {
+        "TableName": runs_table(),
+        "Key": {"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+        "UpdateExpression": expression,
+        "ExpressionAttributeNames": names,
+        "ExpressionAttributeValues": values,
+    }
+    if condition is not None:
+        update["ConditionExpression"] = condition
+    return cast("TransactWriteItemTypeDef", {"Update": update})
+
+
+def task_row_item(
+    run_id: str,
+    event_type: str,
+    detail: dict[str, Any],
+    mode: TaskMode,
+) -> TransactWriteItemTypeDef:
+    """The TASK row Update — advance or in-place iteration accumulator.
+
+    On ``TASK.READY`` arriving from ``iterating``, also flushes the
+    feedback queue (the just-merged commit consumed it). On
+    ``TASK.ITERATION_REQUESTED``, appends to ``pending_feedback`` +
+    ADDs the delivery_id (whether or not the event also advances
+    state).
+    """
+    payload = detail.get("payload") or {}
+    timestamp = detail.get("timestamp", "")
+    set_parts = ["last_event_id = :eid", "last_event_at = :ts"]
+    add_parts: list[str] = []
+    remove_parts: list[str] = []
+    values: dict[str, Any] = {
+        ":from": {"S": mode.from_state.value},
+        ":eid": {"S": detail.get("event_id", "")},
+        ":ts": {"S": timestamp},
+    }
+    names: dict[str, str] = {"#s": "status"}
+    if mode.next_state is not None:
+        set_parts.insert(0, "#s = :to")
+        values[":to"] = {"S": mode.next_state.value}
+        if event_type in DISPATCH_RESET_EVENTS:
+            set_parts.append("dispatch_failure_count = :zero")
+            values[":zero"] = {"N": "0"}
+        if event_type == "TASK.READY" and mode.from_state == TaskState.iterating:
+            set_parts.append("pending_feedback = :empty_list")
+            values[":empty_list"] = {"L": []}
+            remove_parts.append("delivery_ids")
+    if event_type == "TASK.ITERATION_REQUESTED":
+        feedback = payload.get("feedback")
+        if isinstance(feedback, dict):
+            set_parts.append(
+                "pending_feedback = list_append("
+                "if_not_exists(pending_feedback, :feedback_empty), :feedback_one"
+                ")",
+            )
+            values[":feedback_empty"] = {"L": []}
+            values[":feedback_one"] = {"L": [{"M": map_feedback(feedback)}]}
+        delivery_id = payload.get("delivery_id")
+        if isinstance(delivery_id, str) and delivery_id:
+            add_parts.append("delivery_ids :did")
+            values[":did"] = {"SS": [delivery_id]}
+    pr_url = payload.get("pr_url")
+    if isinstance(pr_url, str) and pr_url:
+        set_parts.append("pr_url = :pr_url")
+        values[":pr_url"] = {"S": pr_url}
+    expression = compose_expression(set_parts, add_parts, remove_parts)
+    return {
+        "Update": {
+            "TableName": runs_table(),
+            "Key": {
+                "pk": {"S": f"RUN#{run_id}"},
+                "sk": {"S": f"TASK#{mode.task_id}"},
+            },
+            "UpdateExpression": expression,
+            "ConditionExpression": "#s = :from",
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+        },
+    }
+
+
+def outbox_item(run_id: str, detail: dict[str, Any]) -> TransactWriteItemTypeDef:
+    """The OUTBOX row the EventBridge Pipe forwards to the beacon queue."""
+    event_id = detail.get("event_id", "")
+    project_slug = project_slug_from_envelope(detail=detail, run_id=run_id)
+    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
+    return {
+        "Put": {
+            "TableName": runs_table(),
+            "Item": {
+                "pk": {"S": f"RUN#{run_id}"},
+                "sk": {"S": f"OUTBOX#{event_id}"},
+                "run_id": {"S": run_id},
+                "project_slug": {"S": project_slug},
+                "expire_at": {"N": str(expire_at)},
+            },
+            "ConditionExpression": "attribute_not_exists(sk)",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Expression builders
+# ---------------------------------------------------------------------------
+
+
+def compose_expression(
+    set_parts: list[str],
+    add_parts: list[str],
+    remove_parts: list[str],
+) -> str:
+    """Stitch SET / ADD / REMOVE clauses into one UpdateExpression."""
     expression = "SET " + ", ".join(set_parts)
     if add_parts:
         expression += " ADD " + ", ".join(add_parts)
-    return expression, values, "current_state = :from"
+    if remove_parts:
+        expression += " REMOVE " + ", ".join(remove_parts)
+    return expression
 
 
-ITERATION_ACCUMULATOR_STATES = frozenset(
-    {TaskState.iterating, TaskState.implementer_running},
-)
-"""States in which a fresh ``TASK.ITERATION_REQUESTED`` is queued, not advanced.
+def map_feedback(feedback: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Convert a flat feedback dict into a one-level DDB map.
 
-A user can post a second ``/aidlc fix X`` while the implementer is still
-mid-flight on the first. There's no state transition for those moments
-(no ``iterating → iterating``), so the projector accumulates the new
-feedback onto the task row in place and lets the in-flight iteration
-finish; whichever iteration flushes ``pending_feedback`` consumes it.
-"""
-
-
-def apply_task_state_transition(
-    *,
-    run_id: str,
-    event_type: str,
-    envelope: dict[str, Any],
-) -> None:
-    """Read TASK row, compute next state, transactionally advance + outbox.
-
-    For ``TASK.ITERATION_REQUESTED``, also append the delivery_id to the
-    task's ``delivery_ids`` set and the feedback item to
-    ``pending_feedback``; the accumulator update happens in the same
-    transaction as the state advance so they're atomic.
-
-    When the event arrives mid-iteration (current state is
-    :data:`ITERATION_ACCUMULATOR_STATES`), there is no state transition
-    but the new feedback still has to land —
-    :func:`accumulate_iteration_in_place` writes the accumulators with a
-    state-guard but no advance, and no outbox row is written (the
-    router has nothing new to dispatch).
+    All FeedbackItem fields are scalars (str / int / bool); nested
+    structures don't exist today. If a future FeedbackItem grows
+    nested state, extend this function.
     """
-    payload = envelope.get("payload") or {}
-    task_id = payload.get("task_id")
-    if not isinstance(task_id, str) or not task_id:
-        logger.warning("task event missing task_id", extra={"event_type": event_type})
-        return
-    current = read_task_state(run_id, task_id)
-    if current is None:
-        logger.info(
-            "task row missing — projector skipping transition",
-            extra={"run_id": run_id, "task_id": task_id, "event_type": event_type},
-        )
-        return
-    next_state = apply_task_transition(
-        event_type=cast("PlatformEventType", event_type),
-        current_state=current,
-    )
-    if next_state is None:
-        if event_type == "TASK.ITERATION_REQUESTED" and current in ITERATION_ACCUMULATOR_STATES:
-            accumulate_iteration_in_place(
-                run_id=run_id,
-                task_id=task_id,
-                current_state=current,
-                event_id=envelope.get("event_id", ""),
-                timestamp=envelope.get("timestamp", ""),
-                payload=payload,
-            )
-        return
-    advance_task_state(
-        run_id=run_id,
-        task_id=task_id,
-        from_state=current,
-        to_state=next_state,
-        event_type=event_type,
-        envelope=envelope,
-    )
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in feedback.items():
+        if isinstance(v, str):
+            out[k] = {"S": v}
+        elif isinstance(v, bool):
+            out[k] = {"BOOL": v}
+        elif isinstance(v, int):
+            out[k] = {"N": str(v)}
+        elif v is None:
+            out[k] = {"NULL": True}
+    return out
+
+
+def project_slug_from_envelope(*, detail: dict[str, Any], run_id: str) -> str:
+    """Read ``project_slug`` from the event payload; fall back to ``run_id``.
+
+    The beacon queue is a Standard queue with SQS fair-queue grouping;
+    the pipe sets ``MessageGroupId`` to the row's ``project_slug`` so
+    noisy-neighbor metrics are reported per project. The fallback to
+    ``run_id`` keeps the outbox write defensible if a future event
+    omits ``project_slug``.
+    """
+    payload = detail.get("payload") or {}
+    slug = payload.get("project_slug")
+    if isinstance(slug, str) and slug:
+        return slug
+    return run_id
+
+
+def is_conditional_check_failed(exc: ClientError) -> bool:
+    """``True`` when a TransactWriteItems was cancelled by a condition mismatch.
+
+    Surfaces as ``TransactionCanceledException`` with a per-item
+    ``CancellationReasons`` list. Any ``ConditionalCheckFailed`` reason
+    means we lost a race or this is a re-delivery — both silent no-ops.
+    """
+    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = exc.response.get("CancellationReasons", []) or []
+    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# State reads
+# ---------------------------------------------------------------------------
 
 
 def read_run_state(run_id: str) -> RunState | None:
@@ -685,402 +710,8 @@ def read_task_state(run_id: str, task_id: str) -> TaskState | None:
         return None
 
 
-DISPATCH_RESET_EVENTS = frozenset(
-    {
-        "SPEC.READY",
-        "CRITIQUE.READY",
-        "TASK.READY",
-        "TASK.BLOCKED",
-    },
-)
-"""Events that prove the prior dispatch reached the agent and ran.
-
-Each one resets ``dispatch_failure_count`` to 0 on the row whose state
-the projector advances. Advisor events (``REVIEW.READY``,
-``TEST_REPORT.READY``) are not listed because the dispatches that
-produce them are advisor invokes — gated by an outer ``GuardedAdvance``
-with ``target_pk``/``target_sk`` ``None`` — and so don't increment the
-counter in the first place.
-"""
-
-
-def outbox_put_item(*, run_id: str, envelope: dict[str, Any]) -> TransactWriteItemTypeDef:
-    """Build the OUTBOX row written alongside every state advance.
-
-    The EventBridge Pipe filtering on ``begins_with(sk, 'OUTBOX#')`` picks
-    these rows off the runs-table stream and forwards them to the
-    state-router SQS beacon queue. The pipe's input transformer reads
-    ``run_id`` for the message body and ``project_slug`` for the SQS
-    fair-queue ``MessageGroupId``.
-
-    ``ConditionExpression: attribute_not_exists(sk)`` keeps a re-delivered
-    event from writing a duplicate outbox row; combined with the state-
-    update's own conditional-check, the entire transaction rolls back on
-    any re-delivery.
-
-    The ``expire_at`` attribute lets DDB sweep the row after
-    :data:`OUTBOX_TTL_SECONDS` so the outbox doesn't accumulate.
-    """
-    event_id = envelope.get("event_id", "")
-    project_slug = project_slug_from_envelope(envelope=envelope, run_id=run_id)
-    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
-    item: TransactWriteItemTypeDef = {
-        "Put": {
-            "TableName": runs_table(),
-            "Item": {
-                "pk": {"S": f"RUN#{run_id}"},
-                "sk": {"S": f"OUTBOX#{event_id}"},
-                "run_id": {"S": run_id},
-                "project_slug": {"S": project_slug},
-                "expire_at": {"N": str(expire_at)},
-            },
-            "ConditionExpression": "attribute_not_exists(sk)",
-        },
-    }
-    return item
-
-
-def project_slug_from_envelope(*, envelope: dict[str, Any], run_id: str) -> str:
-    """Read ``project_slug`` from the event payload; fall back to ``run_id``.
-
-    The beacon queue is a Standard queue with SQS fair-queue grouping; the
-    pipe sets ``MessageGroupId`` to the row's ``project_slug`` so noisy-
-    neighbor metrics are reported per project. Every state-advancing event
-    payload carries ``project_slug`` (a required field on
-    :class:`common.events.Payload`), but the fallback to ``run_id`` keeps
-    the outbox write defensible if a future event ever omits it.
-    """
-    payload = envelope.get("payload") or {}
-    slug = payload.get("project_slug")
-    if isinstance(slug, str) and slug:
-        return slug
-    return run_id
-
-
-def is_idempotent_transaction_failure(exc: ClientError) -> bool:
-    """``True`` when a TransactWriteItems was cancelled due to a condition mismatch.
-
-    The DDB error surfaces as ``TransactionCanceledException`` with a
-    per-item ``CancellationReasons`` list. ``ConditionalCheckFailed`` in
-    any reason means we've seen this event before — either the state
-    cursor has moved past the expected ``:from`` value, or the outbox row
-    for this event_id already exists. Both are silent no-ops; other
-    cancellation codes (capacity, validation, etc.) propagate.
-    """
-    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
-        return False
-    reasons = exc.response.get("CancellationReasons", []) or []
-    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
-
-
-def advance_run_state(
-    *,
-    run_id: str,
-    from_state: RunState | None,
-    to_state: RunState,
-    event_type: str,
-    envelope: dict[str, Any],
-) -> bool:
-    """Atomically advance ``current_state`` and write the outbox row.
-
-    Returns ``True`` when the transaction committed (state advanced +
-    outbox row written), ``False`` on a conditional-check loss
-    (idempotent re-delivery — either the state cursor has moved past
-    ``from_state`` or the outbox row for the envelope's ``event_id``
-    already exists).
-
-    On a state-advancing :data:`DISPATCH_RESET_EVENTS` event, the same
-    update zeroes ``dispatch_failure_count`` so a successful dispatch
-    closes the breaker.
-    """
-    set_parts = [
-        "current_state = :to",
-        "last_event_id = :eid",
-        "last_event_at = :ts",
-    ]
-    remove_parts: list[str] = []
-    values: dict[str, dict[str, str | int | list[Any]]] = {
-        ":to": {"S": to_state.value},
-        ":eid": {"S": envelope.get("event_id", "")},
-        ":ts": {"S": envelope.get("timestamp", "")},
-        ":one": {"N": "1"},
-    }
-    if event_type in DISPATCH_RESET_EVENTS:
-        set_parts.append("dispatch_failure_count = :zero")
-        values[":zero"] = {"N": "0"}
-    # SPEC.READY arriving at architect_running → spec_drafted means the
-    # architect just consumed any pending_spec_feedback. Clear the
-    # accumulator so the next iteration starts clean instead of
-    # re-processing items the architect already addressed.
-    if event_type == "SPEC.READY" and from_state == RunState.architect_running:
-        set_parts.append("pending_spec_feedback = :empty_list")
-        values[":empty_list"] = {"L": []}
-        remove_parts.append("spec_delivery_ids")
-    if from_state is None:
-        condition = "attribute_not_exists(current_state)"
-    else:
-        condition = "current_state = :from"
-        values[":from"] = {"S": from_state.value}
-    expression = "SET " + ", ".join(set_parts) + " ADD state_transitions :one"
-    if remove_parts:
-        expression += " REMOVE " + ", ".join(remove_parts)
-    try:
-        ddb().transact_write_items(
-            TransactItems=[
-                {
-                    "Update": {
-                        "TableName": runs_table(),
-                        "Key": {"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-                        "UpdateExpression": expression,
-                        "ConditionExpression": condition,
-                        "ExpressionAttributeValues": values,
-                    },
-                },
-                outbox_put_item(run_id=run_id, envelope=envelope),
-            ],
-        )
-    except ClientError as exc:
-        if is_idempotent_transaction_failure(exc):
-            logger.info(
-                "run state already advanced (idempotent no-op)",
-                extra={"run_id": run_id, "to": to_state.value},
-            )
-            return False
-        raise
-    return True
-
-
-def advance_task_state(
-    *,
-    run_id: str,
-    task_id: str,
-    from_state: TaskState,
-    to_state: TaskState,
-    event_type: str,
-    envelope: dict[str, Any],
-) -> bool:
-    """Atomically advance ``status`` on a TASK row and write the outbox row.
-
-    Returns ``True`` when the transaction committed, ``False`` on a
-    conditional-check loss (idempotent re-delivery). For
-    ``TASK.ITERATION_REQUESTED``, also accumulates the delivery_id set
-    + pending_feedback list in the same transaction.
-    """
-    payload = envelope.get("payload") or {}
-    set_parts = [
-        "#s = :to",
-        "last_event_id = :eid",
-        "last_event_at = :ts",
-    ]
-    add_parts: list[str] = []
-    remove_parts: list[str] = []
-    values: dict[str, Any] = {
-        ":from": {"S": from_state.value},
-        ":to": {"S": to_state.value},
-        ":eid": {"S": envelope.get("event_id", "")},
-        ":ts": {"S": envelope.get("timestamp", "")},
-    }
-    names = {"#s": "status"}
-    apply_iteration_request_clauses(
-        event_type=event_type,
-        payload=payload,
-        set_parts=set_parts,
-        add_parts=add_parts,
-        values=values,
-    )
-    apply_task_ready_clauses(
-        event_type=event_type,
-        from_state=from_state,
-        set_parts=set_parts,
-        remove_parts=remove_parts,
-        values=values,
-    )
-    if event_type in DISPATCH_RESET_EVENTS:
-        set_parts.append("dispatch_failure_count = :zero")
-        values[":zero"] = {"N": "0"}
-    pr_url = payload.get("pr_url")
-    if isinstance(pr_url, str) and pr_url:
-        set_parts.append("pr_url = :pr_url")
-        values[":pr_url"] = {"S": pr_url}
-    expression = "SET " + ", ".join(set_parts)
-    if add_parts:
-        expression += " ADD " + ", ".join(add_parts)
-    if remove_parts:
-        expression += " REMOVE " + ", ".join(remove_parts)
-    try:
-        ddb().transact_write_items(
-            TransactItems=[
-                {
-                    "Update": {
-                        "TableName": runs_table(),
-                        "Key": {
-                            "pk": {"S": f"RUN#{run_id}"},
-                            "sk": {"S": f"TASK#{task_id}"},
-                        },
-                        "UpdateExpression": expression,
-                        "ConditionExpression": "#s = :from",
-                        "ExpressionAttributeNames": names,
-                        "ExpressionAttributeValues": values,
-                    },
-                },
-                outbox_put_item(run_id=run_id, envelope=envelope),
-            ],
-        )
-    except ClientError as exc:
-        if is_idempotent_transaction_failure(exc):
-            logger.info(
-                "task state already advanced (idempotent no-op)",
-                extra={"run_id": run_id, "task_id": task_id, "to": to_state.value},
-            )
-            return False
-        raise
-    return True
-
-
-def apply_iteration_request_clauses(
-    *,
-    event_type: str,
-    payload: dict[str, Any],
-    set_parts: list[str],
-    add_parts: list[str],
-    values: dict[str, Any],
-) -> None:
-    """Append feedback + delivery_id clauses for ``TASK.ITERATION_REQUESTED``.
-
-    No-op for any other event type. Mutates the caller's expression
-    builders in place.
-    """
-    if event_type != "TASK.ITERATION_REQUESTED":
-        return
-    accumulate_iteration_data(payload=payload, set_parts=set_parts, values=values)
-    delivery_id = payload.get("delivery_id")
-    if isinstance(delivery_id, str) and delivery_id:
-        add_parts.append("delivery_ids :did")
-        values[":did"] = {"SS": [delivery_id]}
-
-
-def apply_task_ready_clauses(
-    *,
-    event_type: str,
-    from_state: TaskState,
-    set_parts: list[str],
-    remove_parts: list[str],
-    values: dict[str, Any],
-) -> None:
-    """Flush the iteration queue when ``TASK.READY`` arrives from ``iterating``.
-
-    Iteration N's fix commit just landed; clear ``pending_feedback`` and
-    ``delivery_ids`` so iteration N+1 starts clean instead of
-    re-processing items the implementer already addressed.
-    ``delivery_ids`` is ``REMOVE``'d because DDB doesn't allow empty
-    string sets.
-    """
-    if event_type != "TASK.READY" or from_state != TaskState.iterating:
-        return
-    set_parts.append("pending_feedback = :empty_list")
-    values[":empty_list"] = {"L": []}
-    remove_parts.append("delivery_ids")
-
-
-def accumulate_iteration_in_place(
-    *,
-    run_id: str,
-    task_id: str,
-    current_state: TaskState,
-    event_id: str,
-    timestamp: str,
-    payload: dict[str, Any],
-) -> None:
-    """Append iteration feedback + delivery_id without advancing task state.
-
-    Called when ``TASK.ITERATION_REQUESTED`` arrives while the task is
-    in ``iterating`` / ``implementer_running``. The conditional update
-    still guards on the current state so we don't clobber a task that
-    just transitioned (e.g., to ``pr_open`` from a concurrent
-    ``TASK.READY``). On a lost race, the feedback is dropped — the next
-    iteration request will queue properly once state stabilises.
-    """
-    set_parts = ["last_event_id = :eid", "last_event_at = :ts"]
-    add_parts: list[str] = []
-    values: dict[str, Any] = {
-        ":from": {"S": current_state.value},
-        ":eid": {"S": event_id},
-        ":ts": {"S": timestamp},
-    }
-    names = {"#s": "status"}
-    accumulate_iteration_data(payload=payload, set_parts=set_parts, values=values)
-    delivery_id = payload.get("delivery_id")
-    if isinstance(delivery_id, str) and delivery_id:
-        add_parts.append("delivery_ids :did")
-        values[":did"] = {"SS": [delivery_id]}
-    expression = "SET " + ", ".join(set_parts)
-    if add_parts:
-        expression += " ADD " + ", ".join(add_parts)
-    try:
-        ddb().update_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
-            UpdateExpression=expression,
-            ConditionExpression="#s = :from",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
-        )
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            logger.info(
-                "task moved while accumulating iteration feedback",
-                extra={"run_id": run_id, "task_id": task_id, "current": current_state.value},
-            )
-            return
-        raise
-
-
-def accumulate_iteration_data(
-    *,
-    payload: dict[str, Any],
-    set_parts: list[str],
-    values: dict[str, Any],
-) -> None:
-    """Append the iteration's feedback to ``pending_feedback`` on the task row.
-
-    DDB doesn't support set-of-maps, so feedback is a List of Maps. The
-    update uses ``list_append(if_not_exists(pending_feedback, :empty), :item)``
-    so first delivery seeds the list and subsequent ones extend it.
-    """
-    feedback = payload.get("feedback")
-    if not isinstance(feedback, dict):
-        return
-    set_parts.append(
-        "pending_feedback = list_append("
-        "if_not_exists(pending_feedback, :empty_list), :feedback_one"
-        ")",
-    )
-    values[":empty_list"] = {"L": []}
-    values[":feedback_one"] = {"L": [{"M": map_feedback(feedback)}]}
-
-
-def map_feedback(feedback: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Convert a flat feedback dict into a one-level DDB map.
-
-    All FeedbackItem fields are scalars (str / int / bool); nested
-    structures don't exist today. If a future FeedbackItem grows nested
-    state, extend this function.
-    """
-    out: dict[str, dict[str, Any]] = {}
-    for k, v in feedback.items():
-        if isinstance(v, str):
-            out[k] = {"S": v}
-        elif isinstance(v, bool):
-            out[k] = {"BOOL": v}
-        elif isinstance(v, int):
-            out[k] = {"N": str(v)}
-        elif v is None:
-            out[k] = {"NULL": True}
-    return out
-
-
 # ---------------------------------------------------------------------------
-# AgentCore Memory pass-through (unchanged)
+# AgentCore Memory pass-through
 # ---------------------------------------------------------------------------
 
 
@@ -1088,10 +719,14 @@ def map_feedback(feedback: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def forward_to_memory(envelope: dict[str, Any]) -> None:
     """Emit the envelope to AgentCore Memory as a CreateEvent.
 
-    AgentCore Memory's ``CreateEvent`` requires ``eventTimestamp`` and a
-    ``payload`` whose entries are a tagged union of ``conversational`` or
-    ``blob``. ``blob`` is a JSON-compatible Document, not raw bytes — we
-    pass the envelope dict directly.
+    Only invoked after the projector's transaction commits, so memory
+    writes are idempotent on event_id (a re-delivery rolls back the
+    transaction and the projector returns early before reaching here).
+
+    AgentCore Memory's ``CreateEvent`` requires ``eventTimestamp`` and
+    a ``payload`` whose entries are a tagged union of ``conversational``
+    or ``blob``. ``blob`` is a JSON-compatible Document, not raw bytes
+    — we pass the envelope dict directly.
     """
     actor_id = envelope.get("payload", {}).get("project_slug") or envelope.get("actor_id", "system")
     session_id = envelope.get("run_id", "system")

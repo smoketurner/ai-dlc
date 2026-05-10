@@ -214,7 +214,7 @@ class TestExecuteInvokeAgentWithBreaker:
         run = make_run(tasks=(task,))
         with (
             patch("state_router.circuit_breaker.publish"),
-            patch("state_router.execute.advance_state") as advance,
+            patch("state_router.execute.transactional_advance") as advance,
             patch("state_router.execute.dispatch_to_runtime") as dispatch,
         ):
             execute_invoke_agent(run, implementer_invoke())
@@ -226,7 +226,7 @@ class TestExecuteInvokeAgentWithBreaker:
         task = make_task(dispatch_failure_count=0)
         run = make_run(tasks=(task,))
         with (
-            patch("state_router.execute.advance_state", return_value=True) as advance,
+            patch("state_router.execute.transactional_advance", return_value=True) as advance,
             patch("state_router.execute.dispatch_to_runtime", return_value=True) as dispatch,
         ):
             execute_invoke_agent(run, implementer_invoke())
@@ -240,37 +240,42 @@ class TestExecuteInvokeAgentWithBreaker:
 
 
 class TestRollbackIncrement:
-    def test_rollback_passes_extra_increments(self) -> None:
-        """The same UpdateItem that reverses state also bumps the counter.
-
-        Atomicity matters: a successful rollback is the only path that
-        counts toward tripping the breaker. If the counter were a separate
-        write, a partial failure could double-count or under-count.
-        """
+    def test_successful_rollback_emits_metric(self) -> None:
+        """A successful transactional advance (rollback shape) bumps the failure metric."""
+        run = make_run()
         invoke = implementer_invoke()
-        with patch("state_router.execute.advance_state", return_value=True) as advance:
-            rollback_after_failure(invoke)
-        advance.assert_called_once()
-        kwargs = advance.call_args.kwargs
+        with patch(
+            "state_router.execute.transactional_advance",
+            return_value=True,
+        ) as txn:
+            rollback_after_failure(run, invoke)
+        txn.assert_called_once()
+        kwargs = txn.call_args.kwargs
+        # Reverse direction (advance_to → advance_from) is the rollback shape.
+        assert kwargs["advance_from"] == invoke.advance_to
+        assert kwargs["advance_to"] == invoke.advance_from
         assert kwargs["extra_increments"] == {"dispatch_failure_count": 1}
         assert "last_dispatch_failure_at" in kwargs["extra_attrs"]
 
     def test_rollback_skipped_when_state_already_moved(self) -> None:
-        """If the rollback condition fails, the counter is NOT bumped.
+        """If the transaction's condition fails, no metric, no error.
 
         The condition fails when the projector has already advanced the
         state past advance_to (e.g., a stale completion event landed).
         Counting that as a dispatch failure would falsely trip the breaker.
         """
+        run = make_run()
         invoke = implementer_invoke()
-        with patch("state_router.execute.advance_state", return_value=False):
-            # No exception, no metric — the metric assertion lives in the
-            # successful path.
-            rollback_after_failure(invoke)
+        with patch(
+            "state_router.execute.transactional_advance",
+            return_value=False,
+        ):
+            rollback_after_failure(run, invoke)
 
     def test_rollback_noop_when_no_advance_fields(self) -> None:
-        """Advisor invokes have no state to roll back and no counter to bump."""
+        """Advisor invokes have no state to roll back."""
+        run = make_run()
         invoke = advisor_invoke()
-        with patch("state_router.execute.advance_state") as advance:
-            rollback_after_failure(invoke)
-        advance.assert_not_called()
+        with patch("state_router.execute.transactional_advance") as txn:
+            rollback_after_failure(run, invoke)
+        txn.assert_not_called()

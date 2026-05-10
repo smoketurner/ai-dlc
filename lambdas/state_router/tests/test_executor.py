@@ -66,7 +66,7 @@ def test_winning_advance_runs_on_success() -> None:
     """When the conditional advance succeeds, on_success actions execute."""
     action = guarded_advance((make_reviewer_invoke(), make_tester_invoke()))
     with (
-        patch("state_router.execute.advance_state", return_value=True),
+        patch("state_router.execute.transactional_advance", return_value=True),
         patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute_guarded_advance(make_run(), action)
@@ -85,7 +85,7 @@ def test_losing_advance_skips_on_success() -> None:
     """
     action = guarded_advance((make_reviewer_invoke(), make_tester_invoke()))
     with (
-        patch("state_router.execute.advance_state", return_value=False),
+        patch("state_router.execute.transactional_advance", return_value=False),
         patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute_guarded_advance(make_run(), action)
@@ -101,7 +101,10 @@ def test_concurrent_routers_fire_advisors_exactly_once() -> None:
     action = guarded_advance((make_reviewer_invoke(), make_tester_invoke()))
     advance_results = iter([True, False])  # router 1 wins, router 2 loses
     with (
-        patch("state_router.execute.advance_state", side_effect=lambda **_: next(advance_results)),
+        patch(
+            "state_router.execute.transactional_advance",
+            side_effect=lambda **_: next(advance_results),
+        ),
         patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute_guarded_advance(make_run(), action)
@@ -114,7 +117,7 @@ def test_invoke_agent_without_advance_fires_unconditionally() -> None:
     invoke = make_reviewer_invoke()
     assert invoke.advance_from is None
     with (
-        patch("state_router.execute.advance_state") as advance,
+        patch("state_router.execute.transactional_advance") as advance,
         patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute(make_run(), invoke)
@@ -134,7 +137,7 @@ def test_invoke_agent_with_advance_uses_race_guard() -> None:
         advance_to=TaskState.implementer_running.value,
     )
     with (
-        patch("state_router.execute.advance_state", return_value=False) as advance,
+        patch("state_router.execute.transactional_advance", return_value=False) as advance,
         patch("state_router.execute.dispatch_to_runtime") as dispatch,
     ):
         execute(make_run(), invoke)
@@ -159,9 +162,12 @@ def test_invoke_agent_rolls_back_on_dispatch_failure() -> None:
         advance_from=RunState.triage_decided.value,
         advance_to=RunState.architect_running.value,
     )
+    advance_results = iter([True, True])  # forward, then rollback
     with (
-        # First call (forward advance) wins; second call (rollback) wins too.
-        patch("state_router.execute.advance_state", return_value=True) as advance,
+        patch(
+            "state_router.execute.transactional_advance",
+            side_effect=lambda **_: next(advance_results),
+        ) as advance,
         patch("state_router.execute.dispatch_to_runtime", return_value=False),
     ):
         execute(make_run(), invoke)
@@ -169,8 +175,10 @@ def test_invoke_agent_rolls_back_on_dispatch_failure() -> None:
     forward, rollback = advance.call_args_list
     assert forward.kwargs["advance_from"] == RunState.triage_decided.value
     assert forward.kwargs["advance_to"] == RunState.architect_running.value
+    # Rollback shape: reversed direction + counter bump.
     assert rollback.kwargs["advance_from"] == RunState.architect_running.value
     assert rollback.kwargs["advance_to"] == RunState.triage_decided.value
+    assert rollback.kwargs["extra_increments"] == {"dispatch_failure_count": 1}
 
 
 def test_invoke_agent_no_rollback_on_dispatch_success() -> None:
@@ -185,7 +193,7 @@ def test_invoke_agent_no_rollback_on_dispatch_success() -> None:
         advance_to=RunState.architect_running.value,
     )
     with (
-        patch("state_router.execute.advance_state", return_value=True) as advance,
+        patch("state_router.execute.transactional_advance", return_value=True) as advance,
         patch("state_router.execute.dispatch_to_runtime", return_value=True),
     ):
         execute(make_run(), invoke)
@@ -201,7 +209,7 @@ def test_invoke_agent_no_rollback_when_no_advance_specified() -> None:
     invoke = make_reviewer_invoke()
     assert invoke.advance_from is None
     with (
-        patch("state_router.execute.advance_state") as advance,
+        patch("state_router.execute.transactional_advance") as advance,
         patch("state_router.execute.dispatch_to_runtime", return_value=False),
     ):
         execute(make_run(), invoke)
@@ -286,9 +294,9 @@ def test_execute_invoke_repo_helper_advances_to_no_change_target() -> None:
     with (
         patch("state_router.execute.lambda_client", return_value=fake_lambda),
         patch("state_router.execute.repo_helper_function_name", return_value="repo-helper-fn"),
-        patch("state_router.execute.advance_state", return_value=True) as advance,
+        patch("state_router.execute.transactional_advance", return_value=True) as advance,
     ):
-        execute_invoke_repo_helper(action)
+        execute_invoke_repo_helper(make_run(), action)
     advance.assert_called_once()
     assert advance.call_args.kwargs["advance_to"] == RunState.spec_approved.value
     # No PR was opened, so no pr_url is recorded.
@@ -314,9 +322,9 @@ def test_execute_invoke_repo_helper_records_pr_url_on_normal_path() -> None:
     with (
         patch("state_router.execute.lambda_client", return_value=fake_lambda),
         patch("state_router.execute.repo_helper_function_name", return_value="repo-helper-fn"),
-        patch("state_router.execute.advance_state", return_value=True) as advance,
+        patch("state_router.execute.transactional_advance", return_value=True) as advance,
     ):
-        execute_invoke_repo_helper(action)
+        execute_invoke_repo_helper(make_run(), action)
     advance.assert_called_once()
     assert advance.call_args.kwargs["advance_to"] == RunState.spec_pr_open.value
     assert advance.call_args.kwargs["extra_attrs"] == {"pr_url": "https://github.com/o/r/pull/9"}

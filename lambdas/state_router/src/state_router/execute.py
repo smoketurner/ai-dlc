@@ -39,12 +39,12 @@ from state_router.actions import (
     WriteSyntheticSpec,
 )
 from state_router.aws import (
-    advance_state,
     ddb,
     dispatch_to_runtime,
     lambda_client,
     now_iso,
     s3,
+    transactional_advance,
 )
 from state_router.config import (
     artifacts_bucket,
@@ -115,7 +115,7 @@ def execute_invoke_agent(run: Run, action: InvokeAgent) -> None:
     """
     if circuit_breaker.is_open(run, action):
         return
-    if not try_advance(action):
+    if not try_advance(run, action):
         return
     if dispatch_to_runtime(
         runtime_arn=action.runtime_arn,
@@ -123,10 +123,10 @@ def execute_invoke_agent(run: Run, action: InvokeAgent) -> None:
         payload=action.payload,
     ):
         return
-    rollback_after_failure(action)
+    rollback_after_failure(run, action)
 
 
-def try_advance(action: InvokeAgent) -> bool:
+def try_advance(run: Run, action: InvokeAgent) -> bool:
     """Run the optional per-invoke conditional advance.
 
     Returns ``True`` when the agent should fire — either because the
@@ -140,7 +140,9 @@ def try_advance(action: InvokeAgent) -> bool:
         or action.advance_to is None
     ):
         return True
-    won = advance_state(
+    won = transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
         target_pk=action.target_pk,
         target_sk=action.target_sk,
         advance_from=action.advance_from,
@@ -154,7 +156,7 @@ def try_advance(action: InvokeAgent) -> bool:
     return won
 
 
-def rollback_after_failure(action: InvokeAgent) -> None:
+def rollback_after_failure(run: Run, action: InvokeAgent) -> None:
     """Reverse a state advance that we made before a failed dispatch.
 
     Conditional on the state still being at ``advance_to`` — if the
@@ -165,6 +167,16 @@ def rollback_after_failure(action: InvokeAgent) -> None:
     ``dispatch_failure_count`` and stamps ``last_dispatch_failure_at``
     — both happen atomically with the state reversal so a successful
     rollback is the only path that bumps the breaker counter.
+
+    The rollback and the retry-outbox row are written in a single
+    ``TransactWriteItems`` so the state revert and the beacon-intent
+    row commit together. The pipe forwards the outbox row to the
+    beacon queue just like the projector's happy-path rows; without it
+    the run would wedge — the rollback fires no event, so nothing
+    else wakes the router. The per-row ``dispatch_failure_count``
+    eventually trips the circuit breaker, which suppresses dispatch
+    in :func:`circuit_breaker.is_open` and emits the breaker event
+    instead.
     """
     if (
         action.target_pk is None
@@ -173,7 +185,14 @@ def rollback_after_failure(action: InvokeAgent) -> None:
         or action.advance_to is None
     ):
         return
-    rolled_back = advance_state(
+    # Reverse advance + counter bump in one atomic transaction with
+    # the retry OUTBOX row, so the pipe always sees the rollback
+    # through. ``advance_from`` and ``advance_to`` are swapped: the
+    # condition guards that the state is still where the failed
+    # dispatch left it.
+    rolled_back = transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
         target_pk=action.target_pk,
         target_sk=action.target_sk,
         advance_from=action.advance_to,
@@ -212,7 +231,9 @@ def execute_guarded_advance(run: Run, action: Action) -> None:
     """
     if not isinstance(action, GuardedAdvance):
         return
-    won = advance_state(
+    won = transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
         target_pk=action.target_pk,
         target_sk=action.target_sk,
         advance_from=action.advance_from,
@@ -232,7 +253,7 @@ def execute_guarded_advance(run: Run, action: Action) -> None:
         execute(run, sub)
 
 
-def execute_invoke_repo_helper(action: InvokeRepoHelper) -> None:
+def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
     """Synchronous Lambda invoke; advance state on success."""
     fn = repo_helper_function_name()
     if not fn:
@@ -253,7 +274,9 @@ def execute_invoke_repo_helper(action: InvokeRepoHelper) -> None:
     if advance_to is None:
         return
     extra_attrs = build_extra_attrs(action, body)
-    advance_state(
+    transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
         target_pk=action.target_pk,
         target_sk=action.target_sk or "STATE",
         advance_from=action.advance_from,
@@ -292,7 +315,7 @@ def build_extra_attrs(action: InvokeRepoHelper, body: dict[str, Any]) -> dict[st
     return {action.record_pr_url_attr: pr_url}
 
 
-def execute_write_synthetic_spec(action: WriteSyntheticSpec) -> None:
+def execute_write_synthetic_spec(run: Run, action: WriteSyntheticSpec) -> None:
     """Upload the three synthetic-spec docs to S3, then advance state."""
     bucket = artifacts_bucket()
     s3().put_object(
@@ -313,7 +336,9 @@ def execute_write_synthetic_spec(action: WriteSyntheticSpec) -> None:
         Body=action.tasks_md.encode("utf-8"),
         ContentType="text/markdown",
     )
-    advance_state(
+    transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
         target_pk=action.target_pk,
         target_sk=action.target_sk,
         advance_from=action.advance_from,
@@ -321,9 +346,11 @@ def execute_write_synthetic_spec(action: WriteSyntheticSpec) -> None:
     )
 
 
-def execute_advance_state(action: AdvanceState) -> None:
+def execute_advance_state(run: Run, action: AdvanceState) -> None:
     """Pure conditional state advance (no other side effect)."""
-    advance_state(
+    transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
         target_pk=action.target_pk,
         target_sk=action.target_sk,
         advance_from=action.advance_from,
@@ -361,17 +388,16 @@ def execute_seed_tasks(action: SeedTasks) -> None:
 
 
 # Lambda values defer the function lookup so executors defined below
-# this dict can be referenced (forward ref). The lambdas that drop
-# ``_run`` adapt single-arg executors to the (run, action) signature
-# the dispatcher expects; the ``GuardedAdvance`` lambda passes both
-# args through and is wrapped only for the same forward-ref reason.
+# this dict can be referenced (forward ref). Every state-mutating
+# executor takes ``run`` so it can write the OUTBOX row alongside
+# the state advance via :func:`transactional_advance`.
 EXECUTORS: dict[type[Action], Any] = {
     Noop: execute_noop,
     InvokeAgent: lambda run, a: execute_invoke_agent(run, a),  # noqa: PLW0108
     EmitEvent: execute_emit_event,
-    InvokeRepoHelper: lambda _run, a: execute_invoke_repo_helper(a),
-    WriteSyntheticSpec: lambda _run, a: execute_write_synthetic_spec(a),
+    InvokeRepoHelper: lambda run, a: execute_invoke_repo_helper(run, a),  # noqa: PLW0108
+    WriteSyntheticSpec: lambda run, a: execute_write_synthetic_spec(run, a),  # noqa: PLW0108
     SeedTasks: lambda _run, a: execute_seed_tasks(a),
-    AdvanceState: lambda _run, a: execute_advance_state(a),
+    AdvanceState: lambda run, a: execute_advance_state(run, a),  # noqa: PLW0108
     GuardedAdvance: lambda run, a: execute_guarded_advance(run, a),  # noqa: PLW0108
 }

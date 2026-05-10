@@ -125,23 +125,25 @@ module "state_router" {
       runs_table = {
         # Query reads STATE + TASK rows; UpdateItem advances state
         # conditionally; PutItem (rare) for seeding task rows after
-        # spec_approved.
+        # spec_approved; TransactWriteItems atomically reverts a
+        # failed dispatch and writes the retry OUTBOX row in one
+        # commit, so the pipe always sees the rollback through.
         effect = "Allow"
         actions = [
           "dynamodb:Query",
           "dynamodb:GetItem",
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
+          "dynamodb:TransactWriteItems",
         ]
         resources = [var.runs_table_arn]
       }
       beacon_queue = {
-        # The Lambda event source mapping handles ReceiveMessage and
-        # message deletion (via the function execution role). The
-        # state_router itself doesn't call SQS APIs — beacons that
-        # should keep cycling are reported via ``batchItemFailures`` in
-        # the handler return value, which Lambda translates to
-        # ChangeMessageVisibility / leave-visible.
+        # The Lambda event source mapping handles ReceiveMessage +
+        # DeleteMessage via the function execution role. The router
+        # never publishes to the queue directly — beacons originate
+        # from the DDB outbox row written by the projector (happy
+        # path) or by the dispatch-failure rollback (retry path).
         effect = "Allow"
         actions = [
           "sqs:ReceiveMessage",

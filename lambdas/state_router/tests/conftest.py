@@ -32,3 +32,4 @@ def runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
         )
     monkeypatch.setenv("AIDLC_REPO_HELPER_FUNCTION_NAME", "ai-dlc-repo-helper")
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "ai-dlc-artifacts")
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "ai-dlc-runs")

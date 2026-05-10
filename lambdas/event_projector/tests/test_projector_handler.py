@@ -646,12 +646,81 @@ def test_duplicate_event_id_silently_skipped() -> None:
     handler(eb_event(env), ctx())
     out = handler(eb_event(env), ctx())
     assert out["ok"] is True
+    assert out["committed"] is False
     items = ddb().query(
         TableName=TABLE,
         KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
         ExpressionAttributeValues={":p": {"S": "RUN#run-1"}, ":prefix": {"S": "EVENT#"}},
     )["Items"]
     assert len(items) == 1
+
+
+def test_redelivered_state_advance_does_not_double_count_usage() -> None:
+    """Re-delivering a SPEC.READY rolls the whole transaction back — totals stay put."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+        },
+    )
+    spec_ready = envelope(
+        type="SPEC.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "token_in": 4_000,
+            "token_out": 1_500,
+            "cost_usd": 0.25,
+            "duration_ms": 30_000,
+            "task_count": 2,
+            "session_id": "run-1",
+        },
+    )
+    handler(eb_event(spec_ready), ctx())
+    handler(eb_event(spec_ready), ctx())  # redelivery
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    # Single application of usage totals, despite two deliveries.
+    assert state["total_token_in"]["N"] == "4000"
+    assert state["total_token_out"]["N"] == "1500"
+    assert float(state["total_cost_usd"]["N"]) == pytest.approx(0.25)
+
+
+def test_redelivered_event_does_not_double_emit_memory(aws_env: MagicMock) -> None:
+    """Memory CreateEvent is gated on the transaction committing — only first delivery."""
+    env = envelope()
+    handler(eb_event(env), ctx())
+    handler(eb_event(env), ctx())  # redelivery
+    aws_env.create_event.assert_called_once()
+
+
+def test_advisory_event_writes_event_and_metadata_no_outbox() -> None:
+    """REVIEW.READY updates side data but writes no OUTBOX (no router work)."""
+    review = envelope(
+        type="REVIEW.READY",
+        payload={
+            "project_slug": "demo",
+            "task_id": "T-001",
+            "verdict": "approve",
+            "session_id": "run-1-T-001-reviewer",
+        },
+    )
+    handler(eb_event(review), ctx())
+    outbox = ddb().query(
+        TableName=TABLE,
+        KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":p": {"S": "RUN#run-1"}, ":prefix": {"S": "OUTBOX#"}},
+    )["Items"]
+    assert outbox == []
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["status"]["S"] == "REVIEW.READY"
 
 
 def test_unknown_trigger_returns_error() -> None:

@@ -4,9 +4,9 @@ Two kinds of code live here:
 
 * Process-cached boto3 client factories.
 * The two side-effecting primitives the router invokes — the
-  conditional ``advance_state`` UpdateItem and the AgentCore Runtime
-  ``dispatch_to_runtime`` call — plus the ``now_iso`` timestamp helper
-  used by both.
+  atomic ``transactional_advance`` (state Update + outbox Put) and
+  the AgentCore Runtime ``dispatch_to_runtime`` call — plus the
+  ``now_iso`` timestamp helper used by both.
 
 Everything above this layer (executors, circuit breaker) calls
 through these primitives instead of touching boto3 directly, which
@@ -26,6 +26,7 @@ from aws_lambda_powertools import Logger, Tracer
 from botocore.config import Config
 from botocore.exceptions import ClientError, ReadTimeoutError
 
+from common.ids import new_event_id
 from state_router.config import (
     DISPATCH_CONNECT_TIMEOUT_SECONDS,
     DISPATCH_READ_TIMEOUT_SECONDS,
@@ -91,9 +92,21 @@ def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+OUTBOX_TTL_SECONDS = 3600
+"""How long an OUTBOX row lives before DDB TTL sweeps it.
+
+Mirrors :data:`event_projector.handler.OUTBOX_TTL_SECONDS`. The pipe
+forwards within seconds; the row is needed only briefly. Stream
+records persist for 24h independent of TTL, so a pipe outage of up
+to 24h still recovers.
+"""
+
+
 @tracer.capture_method
-def advance_state(
+def transactional_advance(
     *,
+    run_id: str,
+    project_slug: str,
     target_pk: str,
     target_sk: str,
     advance_from: str,
@@ -101,11 +114,18 @@ def advance_state(
     extra_attrs: dict[str, str] | None = None,
     extra_increments: dict[str, int] | None = None,
 ) -> bool:
-    """Conditionally update ``current_state`` (or task ``status``) → next.
+    """Atomically advance state and write an OUTBOX row in one transaction.
 
-    The condition checks the previous value to defend against
-    concurrent routers. Returns ``True`` on success, ``False`` if the
-    condition failed (another router advanced state first; we no-op).
+    The state Update is conditional on the previous value (race
+    guard); the OUTBOX Put is unconditional but uses a fresh ULID
+    sk so re-deliveries can't collide. Both items commit together —
+    if the conditional check fails, neither lands. Returns ``True``
+    on success, ``False`` on a conditional-check loss.
+
+    The OUTBOX row is what the EventBridge Pipe forwards to the
+    state-router beacon queue, so every state advance produces
+    exactly one beacon for the next dispatch (or a Noop ack when
+    advancing into a wait state).
 
     Run rows use the ``current_state`` attribute; task rows use
     ``status``. Picked by ``target_sk``.
@@ -135,20 +155,53 @@ def advance_state(
     expression = "SET " + ", ".join(set_parts)
     if add_parts:
         expression += " ADD " + ", ".join(add_parts)
+    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
     try:
-        ddb().update_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": target_pk}, "sk": {"S": target_sk}},
-            UpdateExpression=expression,
-            ConditionExpression="#a = :from",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
+        ddb().transact_write_items(
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": runs_table(),
+                        "Key": {"pk": {"S": target_pk}, "sk": {"S": target_sk}},
+                        "UpdateExpression": expression,
+                        "ConditionExpression": "#a = :from",
+                        "ExpressionAttributeNames": names,
+                        "ExpressionAttributeValues": values,
+                    },
+                },
+                {
+                    "Put": {
+                        "TableName": runs_table(),
+                        "Item": {
+                            "pk": {"S": f"RUN#{run_id}"},
+                            "sk": {"S": f"OUTBOX#{new_event_id()}"},
+                            "run_id": {"S": run_id},
+                            "project_slug": {"S": project_slug},
+                            "expire_at": {"N": str(expire_at)},
+                        },
+                    },
+                },
+            ],
         )
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        if is_conditional_check_failed(exc):
             return False
         raise
     return True
+
+
+def is_conditional_check_failed(exc: ClientError) -> bool:
+    """``True`` when a TransactWriteItems was cancelled by a condition mismatch.
+
+    The DDB error surfaces as ``TransactionCanceledException`` with a
+    per-item ``CancellationReasons`` list. ``ConditionalCheckFailed`` in
+    any reason means the transaction lost a race (the state cursor
+    moved past ``advance_from``); we no-op silently.
+    """
+    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = exc.response.get("CancellationReasons", []) or []
+    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
 
 
 def dispatch_to_runtime(
