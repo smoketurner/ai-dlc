@@ -50,8 +50,12 @@ from botocore.exceptions import ClientError
 
 from common.events import EventType as PlatformEventType
 from common.events import UntypedEnvelope
-from common.state import RunState, TaskState
-from common.state_transitions import apply_run_transition, apply_task_transition
+from common.state import TERMINAL_RUN_STATES, RunState, TaskState
+from common.state_transitions import (
+    SPEC_ITERATION_ACCUMULATOR_STATES,
+    apply_run_transition,
+    apply_task_transition,
+)
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
@@ -388,12 +392,30 @@ def apply_run_state_transition(
     event_type: str,
     envelope: dict[str, Any],
 ) -> None:
-    """Read run STATE, compute next state, write conditionally."""
+    """Read run STATE, compute next state, write conditionally.
+
+    For ``SPEC.ITERATION_REQUESTED`` the projector also writes the
+    feedback body onto the run's ``pending_spec_feedback`` list:
+
+    * In ``spec_pr_open``: append AND advance to ``spec_pending``.
+    * In :data:`SPEC_ITERATION_ACCUMULATOR_STATES` (architect mid-cycle):
+      append in place; let the in-flight cycle finish.
+    * Otherwise: drop on the floor — late comments after merge / cancel
+      shouldn't disturb a terminal run.
+    """
     current = read_run_state(run_id)
     next_state = apply_run_transition(
         event_type=cast("PlatformEventType", event_type),
         current_state=current,
     )
+    if event_type == "SPEC.ITERATION_REQUESTED":
+        apply_spec_iteration(
+            run_id=run_id,
+            current=current,
+            next_state=next_state,
+            envelope=envelope,
+        )
+        return
     if next_state is None:
         return
     event_id = envelope.get("event_id", "")
@@ -406,6 +428,98 @@ def apply_run_state_transition(
         timestamp=timestamp,
         event_type=event_type,
     )
+
+
+def apply_spec_iteration(
+    *,
+    run_id: str,
+    current: RunState | None,
+    next_state: RunState | None,
+    envelope: dict[str, Any],
+) -> None:
+    """Append spec-iteration feedback + (optionally) advance state.
+
+    The ``ConditionExpression`` guards on the run's current state so a
+    feedback append doesn't clobber a row that just transitioned out
+    of ``spec_pr_open`` (e.g., a concurrent merge → ``SPEC.APPROVED``).
+    """
+    if current in TERMINAL_RUN_STATES:
+        return
+    payload = envelope.get("payload") or {}
+    body = payload.get("feedback_body")
+    if not isinstance(body, str) or not body.strip():
+        return
+    advance = next_state == RunState.spec_pending and current is not None
+    if not advance and current not in SPEC_ITERATION_ACCUMULATOR_STATES:
+        return
+    expression, values, condition = build_spec_iteration_update(
+        current=current,
+        body=body,
+        delivery_id=payload.get("delivery_id"),
+        event_id=envelope.get("event_id", ""),
+        timestamp=envelope.get("timestamp", ""),
+        advance_to_spec_pending=advance,
+    )
+    try:
+        ddb().update_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            UpdateExpression=expression,
+            ConditionExpression=condition,
+            ExpressionAttributeValues=values,
+        )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            logger.info(
+                "run moved while accumulating spec-iteration feedback",
+                extra={"run_id": run_id, "current": current.value if current else None},
+            )
+            return
+        raise
+
+
+def build_spec_iteration_update(
+    *,
+    current: RunState | None,
+    body: str,
+    delivery_id: Any,
+    event_id: str,
+    timestamp: str,
+    advance_to_spec_pending: bool,
+) -> tuple[str, dict[str, Any], str]:
+    """Compose the UpdateItem expression / values / condition.
+
+    Split out of :func:`apply_spec_iteration` so the caller stays
+    under the cyclomatic-complexity ceiling.
+    """
+    set_parts = [
+        "last_event_id = :eid",
+        "last_event_at = :ts",
+        (
+            "pending_spec_feedback = list_append("
+            "if_not_exists(pending_spec_feedback, :empty_list), :feedback_one)"
+        ),
+    ]
+    add_parts: list[str] = []
+    values: dict[str, Any] = {
+        ":eid": {"S": event_id},
+        ":ts": {"S": timestamp},
+        ":empty_list": {"L": []},
+        ":feedback_one": {"L": [{"S": body}]},
+        ":from": {"S": current.value if current else ""},
+    }
+    if isinstance(delivery_id, str) and delivery_id:
+        add_parts.append("spec_delivery_ids :did")
+        values[":did"] = {"SS": [delivery_id]}
+    if advance_to_spec_pending:
+        set_parts.append("current_state = :to")
+        add_parts.append("state_transitions :one")
+        values[":to"] = {"S": RunState.spec_pending.value}
+        values[":one"] = {"N": "1"}
+    expression = "SET " + ", ".join(set_parts)
+    if add_parts:
+        expression += " ADD " + ", ".join(add_parts)
+    return expression, values, "current_state = :from"
 
 
 ITERATION_ACCUMULATOR_STATES = frozenset(
@@ -564,7 +678,8 @@ def advance_run_state(
         "last_event_id = :eid",
         "last_event_at = :ts",
     ]
-    values: dict[str, dict[str, str | int]] = {
+    remove_parts: list[str] = []
+    values: dict[str, dict[str, str | int | list[Any]]] = {
         ":to": {"S": to_state.value},
         ":eid": {"S": event_id},
         ":ts": {"S": timestamp},
@@ -573,16 +688,27 @@ def advance_run_state(
     if event_type in DISPATCH_RESET_EVENTS:
         set_parts.append("dispatch_failure_count = :zero")
         values[":zero"] = {"N": "0"}
+    # SPEC.READY arriving at architect_running → spec_drafted means the
+    # architect just consumed any pending_spec_feedback. Clear the
+    # accumulator so the next iteration starts clean instead of
+    # re-processing items the architect already addressed.
+    if event_type == "SPEC.READY" and from_state == RunState.architect_running:
+        set_parts.append("pending_spec_feedback = :empty_list")
+        values[":empty_list"] = {"L": []}
+        remove_parts.append("spec_delivery_ids")
     if from_state is None:
         condition = "attribute_not_exists(current_state)"
     else:
         condition = "current_state = :from"
         values[":from"] = {"S": from_state.value}
+    expression = "SET " + ", ".join(set_parts) + " ADD state_transitions :one"
+    if remove_parts:
+        expression += " REMOVE " + ", ".join(remove_parts)
     try:
         ddb().update_item(
             TableName=runs_table(),
             Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            UpdateExpression=("SET " + ", ".join(set_parts) + " ADD state_transitions :one"),
+            UpdateExpression=expression,
             ConditionExpression=condition,
             ExpressionAttributeValues=values,
         )

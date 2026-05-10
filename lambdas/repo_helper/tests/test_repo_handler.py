@@ -496,6 +496,68 @@ def test_label_issue_adds_labels_additively(
     assert out["result"]["labels"] == ["bug", "aidlc:deferred"]
 
 
+def test_get_file_returns_decoded_content(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Contents API base64-decoded into UTF-8 text."""
+    body_text = "# Project memory\n\n- Always quote sources.\n"
+    encoded = base64.b64encode(body_text.encode("utf-8")).decode("ascii")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/repos/o/r/contents/AGENTS.md"
+        assert dict(request.url.params) == {"ref": "main"}
+        return httpx.Response(
+            200,
+            json={
+                "name": "AGENTS.md",
+                "path": "AGENTS.md",
+                "sha": "abc123",
+                "size": len(body_text),
+                "encoding": "base64",
+                "content": encoded,
+            },
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_file", "repo": "o/r", "path": "AGENTS.md"}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"] == {
+        "exists": True,
+        "content": body_text,
+        "sha": "abc123",
+        "ref": "main",
+    }
+
+
+def test_get_file_returns_exists_false_on_404(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Missing file is not an error — the caller wants to distinguish missing vs failed."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {
+            "input": {
+                "op": "get_file",
+                "repo": "o/r",
+                "path": "missing.md",
+                "ref": "feature-branch",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"] == {"exists": False, "content": "", "sha": "", "ref": "feature-branch"}
+
+
 def test_get_issue_returns_title_body_and_labels(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
@@ -1284,6 +1346,9 @@ def _spec_pr_routes(
         ("POST", "/repos/o/r/git/trees"): tree_check,
         ("POST", "/repos/o/r/git/commits"): commit_check,
         ("PATCH", new_branch_ref): _ok_patched_ref,
+        # Default: no existing open PR for this head:branch — happy path
+        # falls through to POST /pulls. Iteration tests override this.
+        ("GET", "/repos/o/r/pulls"): lambda _: httpx.Response(200, json=[]),
         ("POST", "/repos/o/r/pulls"): open_pr_check,
     }
 
@@ -1313,7 +1378,7 @@ def test_open_spec_pr_reads_s3_branches_commits_and_opens(
     monkeypatch.setattr(h, "s3_client", lambda: fake_s3)
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
+        branch="aidlc/spec/add-healthz/run-xyz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1335,7 +1400,7 @@ def test_open_spec_pr_reads_s3_branches_commits_and_opens(
     assert out["op"] == "open_spec_pr"
     assert out["result"]["pr_url"] == "https://github.com/o/r/pull/5"
     assert out["result"]["pr_number"] == 5
-    assert out["result"]["branch"] == "aidlc/spec/add-healthz"
+    assert out["result"]["branch"] == "aidlc/spec/add-healthz/run-xyz"
     assert {key for _, key in fake_s3.requested} == set(SPEC_DOCS_S3)
 
 
@@ -1361,7 +1426,7 @@ def test_open_spec_pr_includes_source_issue_url_in_body(
         )
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
+        branch="aidlc/spec/add-healthz/run-xyz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1393,7 +1458,7 @@ def _existing_branch_routes() -> dict[
     Callable[[httpx.Request], httpx.Response],
 ]:
     """Routes for the ``branch already exists`` happy path."""
-    branch_ref = "/repos/o/r/git/refs/heads/aidlc/spec/x"
+    branch_ref = "/repos/o/r/git/refs/heads/aidlc/spec/x/rid"
     return {
         ("GET", branch_ref): lambda _: httpx.Response(
             200,
@@ -1413,6 +1478,8 @@ def _existing_branch_routes() -> dict[
             200,
             json={"object": {"sha": "newcommit"}},
         ),
+        # Default: no existing open PR for the branch.
+        ("GET", "/repos/o/r/pulls"): lambda _: httpx.Response(200, json=[]),
         ("POST", "/repos/o/r/pulls"): lambda _: httpx.Response(
             201,
             json={
@@ -1443,7 +1510,7 @@ def test_open_spec_pr_short_circuits_when_tree_unchanged(
         return httpx.Response(201, json={"sha": "basetree"})
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
+        branch="aidlc/spec/add-healthz/run-xyz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1455,7 +1522,7 @@ def test_open_spec_pr_short_circuits_when_tree_unchanged(
         raise AssertionError(msg)
 
     routes[("POST", "/repos/o/r/git/commits")] = fail_if_called
-    routes[("PATCH", "/repos/o/r/git/refs/heads/aidlc/spec/add-healthz")] = fail_if_called
+    routes[("PATCH", "/repos/o/r/git/refs/heads/aidlc/spec/add-healthz/run-xyz")] = fail_if_called
     routes[("POST", "/repos/o/r/pulls")] = fail_if_called
 
     patch_client(httpx.MockTransport(_route_with(routes)))
@@ -1475,9 +1542,64 @@ def test_open_spec_pr_short_circuits_when_tree_unchanged(
     assert out["result"] == {
         "no_change": True,
         "spec_slug": "add-healthz",
-        "branch": "aidlc/spec/add-healthz",
+        "branch": "aidlc/spec/add-healthz/run-xyz",
         "base_commit_sha": "mainsha",
     }
+
+
+def test_open_spec_pr_reuses_existing_open_pr(
+    patch_client: Callable[[httpx.MockTransport], None],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Iteration: an open PR for ``head:branch`` already exists.
+
+    The architect re-ran on the same branch + force-pushed; the
+    existing PR auto-updates. ``open_spec_pr`` must NOT POST /pulls
+    again — that would 422 with ``A pull request already exists for ...``.
+    """
+    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
+    monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
+
+    routes = _spec_pr_routes(
+        branch="aidlc/spec/add-healthz/run-xyz",
+        base="main",
+        slug="add-healthz",
+        run_id="run-xyz",
+    )
+    routes[("GET", "/repos/o/r/pulls")] = lambda _: httpx.Response(
+        200,
+        json=[
+            {
+                "number": 53,
+                "html_url": "https://github.com/o/r/pull/53",
+                "state": "open",
+                "head": {"ref": "aidlc/spec/add-healthz/run-xyz"},
+            },
+        ],
+    )
+
+    def fail_if_called(req: httpx.Request) -> httpx.Response:
+        msg = "POST /pulls must NOT be called when an open PR for the branch exists"
+        raise AssertionError(msg)
+
+    routes[("POST", "/repos/o/r/pulls")] = fail_if_called
+    patch_client(httpx.MockTransport(_route_with(routes)))
+    out = h.handler(
+        {
+            "input": {
+                "op": "open_spec_pr",
+                "repo": "o/r",
+                "spec_slug": "add-healthz",
+                "spec_s3_prefix": "specs/add-healthz/",
+                "run_id": "run-xyz",
+            },
+        },
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["pr_number"] == 53
+    assert out["result"]["pr_url"] == "https://github.com/o/r/pull/53"
+    assert out["result"]["iteration"] is True
 
 
 def test_open_spec_pr_reuses_existing_branch(

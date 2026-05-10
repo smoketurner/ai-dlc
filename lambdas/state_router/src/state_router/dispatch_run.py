@@ -114,7 +114,14 @@ def invoke_triage(run: Run, arn: str) -> Action:
 
 
 def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAgent:
-    """Dispatch the architect agent and advance to ``architect_running``."""
+    """Dispatch the architect agent and advance to ``architect_running``.
+
+    ``prior_feedback`` carries any accumulated spec-PR-iteration comments
+    so the architect rewrites the docs to address them. Multiple
+    accumulated comments are joined with blank-line separators —
+    ``compose_message`` treats the whole blob as one feedback section.
+    """
+    prior_feedback = "\n\n".join(b.strip() for b in run.pending_spec_feedback if b.strip()) or None
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-architect",
@@ -125,6 +132,7 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
                 run.triggering_comment_body,
                 github_bot_login(),
             ),
+            "prior_feedback": prior_feedback,
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,

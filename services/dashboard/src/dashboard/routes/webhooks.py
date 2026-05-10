@@ -69,6 +69,7 @@ from common.events import (
     EventEnvelope,
     RunCancelRequested,
     SpecApproved,
+    SpecIterationRequested,
     SpecRejected,
     TaskApproved,
     TaskIterationRequested,
@@ -487,18 +488,71 @@ def classify_pr_comment(
     closing the PR handles approval / rejection natively. Posts a 👀
     reaction on the comment when the mention matches so users see
     immediate confirmation before the async pipeline runs.
+
+    Two destinations:
+
+    * Spec PR (STATE row) → ``SPEC.ITERATION_REQUESTED`` so the
+      architect re-drafts with the comment as feedback.
+    * Task PR (TASK# row) → ``TASK.ITERATION_REQUESTED`` so the
+      implementer iterates on the PR.
     """
     if not has_bot_mention(body, settings().github_bot_login):
         return {"ok": True, "ignored": "no match"}
-    if not attr(row, "sk").startswith("TASK#"):
-        return {"ok": True, "ignored": "not a task PR"}
-    react_to_issue_comment(repository, comment)
-    feedback = IssueCommentMentionFeedback(
-        comment_id=int(comment.get("id", 0)),
-        body=body,
+    sk = attr(row, "sk")
+    if sk == "STATE":
+        react_to_issue_comment(repository, comment)
+        return emit_spec_iteration(
+            row,
+            pr_url=pr_url,
+            body=body,
+            commenter=commenter,
+            comment_id=int(comment.get("id", 0)),
+            delivery_id=delivery_id,
+        )
+    if sk.startswith("TASK#"):
+        react_to_issue_comment(repository, comment)
+        feedback = IssueCommentMentionFeedback(
+            comment_id=int(comment.get("id", 0)),
+            body=body,
+            commenter=commenter,
+        )
+        return emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
+    return {"ok": True, "ignored": "unrecognised row"}
+
+
+def emit_spec_iteration(
+    row: dict[str, Any],
+    *,
+    pr_url: str,
+    body: str,
+    commenter: str,
+    comment_id: int,
+    delivery_id: str,
+) -> dict[str, Any]:
+    """Publish ``SPEC.ITERATION_REQUESTED`` for an @-mention on the spec PR."""
+    if not delivery_id:
+        return {"ok": True, "ignored": "missing delivery_id"}
+    run_id = run_id_of(row)
+    correlation_id = attr(row, "correlation_id")
+    payload = SpecIterationRequested(
+        project_slug=attr(row, "project_slug"),
+        spec_slug=attr(row, "spec_slug"),
+        pr_url=pr_url,
+        delivery_id=delivery_id,
         commenter=commenter,
+        comment_id=comment_id,
+        feedback_body=body,
     )
-    return emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
+    emit(
+        envelope_for(
+            event_type="SPEC.ITERATION_REQUESTED",
+            run_id=run_id,
+            correlation_id=correlation_id,
+            actor="webhook",
+            payload=payload,
+        ),
+    )
+    return {"ok": True, "iteration": "spec", "pr_url": pr_url}
 
 
 def handle_issue_only_comment(

@@ -42,6 +42,7 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
     summary = first_known_run(run_id, events)
     critique = read_critique(run_id)
+    failure = run_failure_details(events) if summary.get("current_state") == "failed" else None
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -50,10 +51,35 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "events": events,
             "summary": summary,
             "critique": critique,
+            "failure": failure,
             "user": user,
             "terminal_states": TERMINAL_STATES,
         },
     )
+
+
+def run_failure_details(events: list) -> dict[str, str] | None:  # type: ignore[type-arg]
+    """Pull the most recent ``RUN.FAILED`` payload off the event timeline.
+
+    Surfaces ``failed_state`` / ``error_class`` / ``error_message`` /
+    ``retryable`` to the run-detail page so an operator can see why the
+    run terminated without dropping into DynamoDB by hand. Returns
+    ``None`` when no ``RUN.FAILED`` event is present (run failed via a
+    different terminal path).
+    """
+    for ev in reversed(events):
+        if ev.type != "RUN.FAILED":
+            continue
+        payload = ev.payload or {}
+        return {
+            "failed_state": str(payload.get("failed_state") or "unknown"),
+            "error_class": str(payload.get("error_class") or "unknown"),
+            "error_message": str(payload.get("error_message") or ""),
+            "retryable": "yes" if payload.get("retryable") else "no",
+            "actor_id": str(getattr(ev, "actor_id", "") or ""),
+            "timestamp": str(getattr(ev, "timestamp", "") or ""),
+        }
+    return None
 
 
 @router.get("/submit", response_class=HTMLResponse)

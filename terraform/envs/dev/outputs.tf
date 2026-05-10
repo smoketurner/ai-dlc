@@ -168,9 +168,9 @@ output "github_webhook_secret_id" {
 
 # improvement -----------------------------------------------------------------
 
-output "telemetry_function_arn" {
-  description = "Telemetry Lambda ARN — categorizes rejection events."
-  value       = module.improvement.telemetry_function_arn
+output "retrospector_dispatcher_function_arn" {
+  description = "Retrospector dispatcher Lambda ARN — fans terminal events to the agent."
+  value       = module.improvement.retrospector_dispatcher_function_arn
 }
 
 # ci_cd ------------------------------------------------------------------------

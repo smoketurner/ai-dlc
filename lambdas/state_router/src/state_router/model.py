@@ -61,6 +61,7 @@ class Run:
     synthetic_spec_slug: str | None = None
     task_ids: tuple[str, ...] = ()
     tasks: tuple[Task, ...] = ()
+    pending_spec_feedback: tuple[str, ...] = ()
     dispatch_failure_count: int = 0
 
 
@@ -134,8 +135,20 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         synthetic_spec_slug=data.get("synthetic_spec_slug"),
         task_ids=as_str_tuple(data.get("task_ids")),
         tasks=tuple(parse_task(t) for t in task_items),
+        pending_spec_feedback=as_str_list_tuple(data.get("pending_spec_feedback")),
         dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
     )
+
+
+def as_str_list_tuple(value: Any) -> tuple[str, ...]:
+    """Coerce a deserialized DDB ``L`` of strings into an ordered tuple.
+
+    Used for ``pending_spec_feedback``: the projector appends each
+    ``SPEC.ITERATION_REQUESTED`` body in arrival order, so we preserve
+    that order rather than sorting (cf. ``as_str_tuple`` for set-typed
+    fields).
+    """
+    return tuple(str(v) for v in value) if isinstance(value, list) else ()
 
 
 def parse_task(item: dict[str, Any]) -> Task:

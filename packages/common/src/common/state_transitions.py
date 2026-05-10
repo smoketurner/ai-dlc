@@ -42,10 +42,31 @@ RUN_TRANSITIONS: Mapping[tuple[EventType, RunState | None], RunState] = {
     ("CRITIQUE.READY", RunState.critic_running): RunState.spec_critiqued,
     ("SPEC.APPROVED", RunState.spec_pr_open): RunState.spec_approved,
     ("SPEC.REJECTED", RunState.spec_pr_open): RunState.failed,
+    ("SPEC.ITERATION_REQUESTED", RunState.spec_pr_open): RunState.spec_pending,
     ("RUN.COMPLETED", RunState.tasks_complete): RunState.done,
     ("RUN.COMPLETED", RunState.proposer_running): RunState.done,
 }
 """Run-level state transitions keyed by (event_type, current_state)."""
+
+
+SPEC_ITERATION_ACCUMULATOR_STATES = frozenset(
+    {
+        RunState.architect_running,
+        RunState.spec_drafted,
+        RunState.critic_running,
+        RunState.spec_critiqued,
+    },
+)
+"""States in which a fresh ``SPEC.ITERATION_REQUESTED`` is queued, not advanced.
+
+Mirrors the task-level ``ITERATION_ACCUMULATOR_STATES``: a reviewer can
+post a second ``@<bot>`` mention while the architect is still mid-cycle
+on the first. There's no state transition for those moments (no
+``architect_running → architect_running``), so the projector
+accumulates the new feedback onto the run row in place and lets the
+in-flight iteration finish; whichever iteration flushes
+``pending_spec_feedback`` consumes it.
+"""
 
 
 TASK_TRANSITIONS: Mapping[tuple[EventType, TaskState], TaskState] = {

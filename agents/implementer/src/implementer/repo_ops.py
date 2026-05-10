@@ -215,9 +215,16 @@ def fetch_spec(spec_s3_prefix: str) -> None:
         (target / f"{doc}.md").write_bytes(body)
 
 
-def task_branch_name(task_id: str, spec_slug: str) -> str:
-    """Conventional branch name for a single-task PR."""
-    return f"aidlc/{spec_slug}/{task_id.lower()}"
+def task_branch_name(task_id: str, spec_slug: str, run_id: str) -> str:
+    """Conventional branch name for a single-task PR.
+
+    Run-scoped: each run gets isolated task branches so reviewers see
+    a stable branch tip per run instead of force-pushed history from
+    later runs on the same ``(spec_slug, task_id)``.
+    """
+    from common.ids import short_run_id  # noqa: PLC0415 - cheap import-time pin
+
+    return f"aidlc/{spec_slug}/{short_run_id(run_id)}/{task_id.lower()}"
 
 
 def create_branch(branch: str) -> None:

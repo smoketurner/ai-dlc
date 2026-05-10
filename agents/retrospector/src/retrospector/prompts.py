@@ -32,6 +32,19 @@ platform validates against the ``RetrospectiveDecision`` schema.
   * The comments are about things the human is doing manually that
     don't translate to agent behaviour.
 
+**Pick a target file.** Two project memory files are eligible:
+
+  * ``MEMORY.md`` — strict six-section schema (see below). Pick this
+    when the lesson maps cleanly to one of those buckets — most
+    convention-class lessons go here.
+  * ``AGENTS.md`` — free-form Markdown. Pick this when the lesson is
+    project-context that doesn't fit MEMORY.md's taxonomy: stack
+    overview, deployment posture, "this repo is for X", roadmap
+    framing, organisational context, anything narrative.
+
+Default to ``MEMORY.md`` when the lesson is a rule. Use ``AGENTS.md``
+when the lesson is context.
+
 **MEMORY.md structure.** Every project's ``MEMORY.md`` has six
 fixed sections, in this order:
 
@@ -47,9 +60,15 @@ fixed sections, in this order:
   * ``notes`` — anything that doesn't fit the above and is still
     worth keeping.
 
-Pick the most specific section that fits. ``conventions`` is the most
-common landing spot for retrospective lessons. ``constraints`` fits
-when the lesson is about a hard limit revealed by the trace.
+When ``target_file`` is ``MEMORY.md``: pick the most specific section
+that fits. ``conventions`` is the most common landing spot for
+retrospective lessons. ``constraints`` fits when the lesson is about a
+hard limit revealed by the trace. Set ``section``.
+
+When ``target_file`` is ``AGENTS.md``: do **not** set ``section``.
+Compose ``memory_md_addition`` as a self-contained Markdown block
+(usually a heading + a short paragraph or bullet list) — the platform
+appends it verbatim at the end of the file.
 
 **MEMORY.md style.** When you DO propose an addition:
 

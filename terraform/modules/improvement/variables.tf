@@ -35,12 +35,6 @@ variable "artifacts_bucket_arn" {
   type        = string
 }
 
-variable "telemetry_model_id" {
-  description = "Bedrock model id used by the telemetry agent for categorization."
-  type        = string
-  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-}
-
 variable "retrospector_runtime_arn" {
   description = <<-EOT
     AgentCore Runtime ARN of the Retrospector agent. May be unknown at

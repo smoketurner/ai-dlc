@@ -85,7 +85,7 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
         msg = f"task_id={payload.task_id!r} not found in {payload.spec_s3_prefix}tasks.md"
         raise KeyError(msg)
 
-    branch = task_branch_name(payload.task_id, payload.spec_slug)
+    branch = task_branch_name(payload.task_id, payload.spec_slug, payload.run_id)
     create_branch(branch)
 
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
@@ -142,7 +142,7 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     """Iteration flow: check out existing PR branch, push fix commit, post replies."""
     target_repo = resolve_target_repo(payload)
     session = make_session(target_repo=target_repo, requestor_sub=payload.requestor_sub)
-    branch = task_branch_name(payload.task_id, payload.spec_slug)
+    branch = task_branch_name(payload.task_id, payload.spec_slug, payload.run_id)
     logger.info(
         "implementer iteration session opened",
         run_id=payload.run_id,

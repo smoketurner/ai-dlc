@@ -59,3 +59,17 @@ def new_correlation_id() -> CorrelationId:
 def new_approval_id() -> ApprovalId:
     """Generate a new HITL approval id."""
     return ApprovalId(_uuid7())
+
+
+def short_run_id(run_id: str) -> str:
+    """Return the leading time-prefix of a UUID7 — branch-name-safe.
+
+    Used to scope repo branches per run (e.g.
+    ``aidlc/spec/{slug}/{short}`` and
+    ``aidlc/{slug}/{short}/{task_id}``) so concurrent or successive
+    runs on the same issue don't share branches. UUID7's first 13
+    characters (``019e0e69-198d``) carry the millisecond timestamp,
+    which is unique-enough across runs minted seconds apart and stays
+    stable for the lifetime of one run.
+    """
+    return run_id.lower()[:13]

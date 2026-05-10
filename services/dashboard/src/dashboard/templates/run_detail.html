@@ -35,6 +35,24 @@
     </div>
   </dl>
   {% endif %}
+  {% if failure %}
+  <section class="bg-rose-50 border border-rose-200 shadow-sm rounded p-4 space-y-2">
+    <header class="flex items-baseline gap-3">
+      <h2 class="text-base font-semibold text-rose-900">Run failed</h2>
+      <span class="text-xs px-2 py-0.5 rounded bg-rose-200 text-rose-900 font-mono">{{ failure.error_class }}</span>
+      <span class="text-xs px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">in {{ failure.failed_state }}</span>
+      {% if failure.retryable == "yes" %}
+      <span class="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">retryable</span>
+      {% endif %}
+    </header>
+    {% if failure.error_message %}
+    <pre class="text-xs bg-white border border-rose-200 rounded p-3 overflow-x-auto whitespace-pre-wrap font-mono text-rose-900">{{ failure.error_message }}</pre>
+    {% endif %}
+    <p class="text-xs text-rose-700">
+      Reported by <span class="font-mono">{{ failure.actor_id or "unknown" }}</span>{% if failure.timestamp %} at <span class="font-mono">{{ failure.timestamp }}</span>{% endif %}.
+    </p>
+  </section>
+  {% endif %}
   {% if critique %}
   <section class="bg-white shadow-sm rounded p-4 space-y-3">
     <header class="flex items-baseline gap-3">

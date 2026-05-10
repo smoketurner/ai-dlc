@@ -39,6 +39,7 @@ from common.github_app import (
     USER_AGENT,
     token_for_call,
 )
+from common.ids import short_run_id
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -148,6 +149,21 @@ class GetIssueInput(BaseOp):
     op: Literal["get_issue"]
     repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
     issue_number: int = Field(ge=1)
+
+
+class GetFileInput(BaseOp):
+    """Read a file from a repo at a specific ref via the Contents API.
+
+    Used by the Retrospector to read ``MEMORY.md`` / ``AGENTS.md`` straight
+    from ``main`` (the source of truth) instead of from the architect's S3
+    mirror — which lags by one architect-sync cycle and would lead to
+    duplicate-bullet PRs in rapid retrospective fires.
+    """
+
+    op: Literal["get_file"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    path: str = Field(min_length=1, max_length=1024)
+    ref: str = Field(default="main", min_length=1, max_length=256)
 
 
 class CreateIssueInput(BaseOp):
@@ -309,6 +325,7 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "create_branch": CreateBranchInput,
     "commit_files": CommitFilesInput,
     "get_pr": GetPrInput,
+    "get_file": GetFileInput,
     "comment_issue": CommentIssueInput,
     "label_issue": LabelIssueInput,
     "get_issue": GetIssueInput,
@@ -413,7 +430,7 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
     so the state-router can advance straight to ``spec_approved``.
     """
     docs = read_spec_docs(req.spec_s3_prefix)
-    branch = f"aidlc/spec/{req.spec_slug}"
+    branch = f"aidlc/spec/{req.spec_slug}/{short_run_id(req.run_id)}"
     files = [
         CommitFile(
             path=f"docs/specs/{req.spec_slug}/{name}.md",
@@ -442,6 +459,20 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
     update_ref(req.repo, branch, new_commit_sha, client)
     title = f"spec: {req.spec_slug}"
     body = render_spec_pr_body(req.spec_slug, req.run_id, req.source_issue_url)
+    existing_pr = find_open_pr(req.repo, branch=branch, base=req.base, client=client)
+    if existing_pr is not None:
+        # Spec-PR iteration: the architect re-ran on the same branch.
+        # The force-update above already pushed the new commit; the PR
+        # is now showing the new content automatically. Skip POST /pulls
+        # (would 422 with "A pull request already exists for ...").
+        return {
+            "pr_number": existing_pr["number"],
+            "pr_url": existing_pr["html_url"],
+            "state": existing_pr["state"],
+            "branch": branch,
+            "commit_sha": new_commit_sha,
+            "iteration": True,
+        }
     response = client.post(
         f"/repos/{req.repo}/pulls",
         json={"title": title, "body": body, "head": branch, "base": req.base},
@@ -455,6 +486,26 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
         "branch": branch,
         "commit_sha": new_commit_sha,
     }
+
+
+def find_open_pr(
+    repo: str,
+    *,
+    branch: str,
+    base: str,
+    client: httpx.Client,
+) -> dict[str, Any] | None:
+    """Return the open PR for ``head=branch, base=base`` if one exists."""
+    owner = repo.split("/", 1)[0]
+    response = client.get(
+        f"/repos/{repo}/pulls",
+        params={"head": f"{owner}:{branch}", "base": base, "state": "open"},
+    )
+    response.raise_for_status()
+    prs = response.json()
+    if isinstance(prs, list) and prs:
+        return prs[0]
+    return None
 
 
 def read_spec_docs(spec_s3_prefix: str) -> dict[str, str]:
@@ -586,6 +637,40 @@ def get_pr(req: GetPrInput, client: httpx.Client) -> dict[str, Any]:
         "merged": body["merged"],
         "title": body["title"],
         "head_sha": body["head"]["sha"],
+    }
+
+
+def get_file(req: GetFileInput, client: httpx.Client) -> dict[str, Any]:
+    """Read ``path`` from ``repo`` at ``ref`` via the GitHub Contents API.
+
+    Returns ``{content, sha, ref, exists}``:
+
+    * ``exists=False`` + empty content/sha when the path doesn't exist at
+      that ref. Lets callers distinguish "file missing" from "fetch
+      failed" without parsing HTTP errors.
+    * The Contents API returns base64-encoded content for files; this
+      handler decodes it as UTF-8 (errors='replace') so the caller gets
+      plain text. SHA is the blob SHA — useful for conditional writes.
+    """
+    response = client.get(
+        f"/repos/{req.repo}/contents/{req.path}",
+        params={"ref": req.ref},
+    )
+    if response.status_code == httpx.codes.NOT_FOUND:
+        return {"exists": False, "content": "", "sha": "", "ref": req.ref}
+    response.raise_for_status()
+    body = response.json()
+    encoded = body.get("content", "")
+    encoding = body.get("encoding", "base64")
+    if encoding == "base64":
+        decoded = base64.b64decode(encoded.replace("\n", "")).decode("utf-8", errors="replace")
+    else:
+        decoded = str(encoded)
+    return {
+        "exists": True,
+        "content": decoded,
+        "sha": body.get("sha", ""),
+        "ref": req.ref,
     }
 
 
@@ -961,6 +1046,7 @@ OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     CreateBranchInput: ("create_branch", create_branch),
     CommitFilesInput: ("commit_files", commit_files),
     GetPrInput: ("get_pr", get_pr),
+    GetFileInput: ("get_file", get_file),
     CommentIssueInput: ("comment_issue", comment_issue),
     LabelIssueInput: ("label_issue", label_issue),
     GetIssueInput: ("get_issue", get_issue),

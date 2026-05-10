@@ -56,5 +56,5 @@ def test_compose_message_combines_triggering_comment_and_prior_feedback() -> Non
     )
     assert "Additional user guidance" in msg
     assert "please also include /readyz" in msg
-    assert "Reviewer feedback from a prior rejected spec" in msg
+    assert "Spec feedback to address" in msg
     assert "missing 503-on-dependency-failure case" in msg

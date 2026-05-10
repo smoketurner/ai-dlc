@@ -47,6 +47,7 @@ EventType = Literal[
     "TASK.APPROVED",
     "TASK.REJECTED",
     "TASK.ITERATION_REQUESTED",
+    "SPEC.ITERATION_REQUESTED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
     "RUN.COMPLETED",
@@ -289,6 +290,28 @@ class TaskIterationRequested(Payload):
     feedback: FeedbackItem
 
 
+class SpecIterationRequested(Payload):
+    """A reviewer commented ``@<bot> ...`` on a spec PR — re-run architect.
+
+    Emitted by the dashboard webhook handler when a non-bot human
+    @-mentions the bot on the spec PR. The projector accumulates
+    ``feedback_body`` onto the run row's ``pending_spec_feedback`` list
+    and advances ``spec_pr_open → spec_pending``; the state router then
+    dispatches the architect again with the accumulated feedback as
+    ``prior_feedback``. The architect rewrites the docs onto the same
+    branch, the existing PR auto-updates, the review thread stays
+    continuous.
+    """
+
+    project_slug: str
+    spec_slug: str
+    pr_url: str
+    delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
+    commenter: Annotated[str, Field(min_length=1, max_length=128)]
+    comment_id: Annotated[int, Field(ge=1)]
+    feedback_body: Annotated[str, Field(min_length=1, max_length=8192)]
+
+
 class RunCancelRequested(Payload):
     """A user or system requested cancellation of an in-flight run.
 
@@ -388,6 +411,7 @@ type AnyPayload = (
     | TaskApproved
     | TaskRejected
     | TaskIterationRequested
+    | SpecIterationRequested
     | ReviewReady
     | TestReportReady
     | RunCompleted

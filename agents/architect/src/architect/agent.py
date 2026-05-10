@@ -83,7 +83,9 @@ def generate_spec(
         agent: Strands ``Agent`` built via :func:`build_agent`.
         intent: Free-text feature intent from the user.
         project_slug: Project the spec belongs to.
-        prior_feedback: Reviewer feedback from a prior rejection, or ``None``.
+        prior_feedback: Spec feedback to address — either a prior
+            rejection's reviewer notes or accumulated PR-comment
+            iteration. ``None`` for fresh runs.
         triggering_comment_body: Free-text guidance from the
             ``@aidlc-bot <text>`` comment that minted this run, with the
             bot mention already stripped, or ``None`` if the run wasn't
@@ -125,7 +127,8 @@ def compose_message(
     if prior_feedback:
         parts += [
             "",
-            "Reviewer feedback from a prior rejected spec — address every point:",
+            "Spec feedback to address — apply every point. (Source: prior "
+            "rejection or PR-comment iteration; treat both as authoritative.)",
             prior_feedback.strip(),
         ]
     parts += [

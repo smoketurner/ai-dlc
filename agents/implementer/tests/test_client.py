@@ -156,7 +156,7 @@ async def test_execute_task_blocked_no_diff_opens_draft_pr_with_blocked_md(
     assert calls["write_blocked_md"][0]["blocked_reason"] == "agent produced no diff"
     assert calls["write_blocked_md"][0]["task_id"] == "T-001"
     assert calls["commit_changes"] == ["T-001 (blocked): Add /healthz route"]
-    assert calls["push_branch"] == ["aidlc/add-healthz/t-001"]
+    assert calls["push_branch"] == ["aidlc/add-healthz/01999999-9999/t-001"]
     assert len(calls["open_pr"]) == 1
     assert calls["open_pr"][0]["draft"] is True
     assert "(blocked)" in calls["open_pr"][0]["title"]
@@ -216,7 +216,7 @@ async def test_execute_task_normal_path_commits_pushes_opens_pr(
     assert calls["materialize_spec_in_repo"] == ["add-healthz"]
     assert calls["update_tasks_md"] == [("T-001", "add-healthz")]
     assert calls["commit_changes"] == ["T-001: Add /healthz route"]
-    assert calls["push_branch"] == ["aidlc/add-healthz/t-001"]
+    assert calls["push_branch"] == ["aidlc/add-healthz/01999999-9999/t-001"]
     assert len(calls["open_pr"]) == 1
 
 
@@ -244,5 +244,5 @@ async def test_execute_task_skips_commit_when_tree_clean_after_materialize(
 
     assert result.pr_url == "https://github.com/owner/name/pull/42"
     assert calls["commit_changes"] == []  # skipped
-    assert calls["push_branch"] == ["aidlc/add-healthz/t-001"]
+    assert calls["push_branch"] == ["aidlc/add-healthz/01999999-9999/t-001"]
     assert len(calls["open_pr"]) == 1

@@ -9,10 +9,15 @@ The dispatcher Lambda invokes this runtime once per terminal event
      reports ``HealthyBusy`` while the synthesis runs.
   3. Spawns a daemon thread that asks the Strands agent for a
      :class:`RetrospectiveDecision`. If the decision proposes a
-     MEMORY.md addition, opens a PR via ``repo_helper`` that appends
-     the addition to ``docs/MEMORY.md`` on a fresh branch.
+     lesson, opens a PR via ``repo_helper`` that appends the addition
+     to either ``docs/MEMORY.md`` (structured six-section schema) or
+     ``AGENTS.md`` (free-form append).
   4. Returns ``{"status": "dispatched", ...}`` to the caller in
      ~100ms.
+
+Memory reads go through ``repo_helper.get_file`` against ``main`` so
+the repo is the source of truth — no S3 mirror lag, no duplicate
+bullets after rapid retrospective fires.
 
 Retrospectives never advance the run state machine — they're a
 side-channel learner. Failures are logged and swallowed; the system
@@ -33,19 +38,19 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from common.memory_md import MemoryDoc, Section, parse, render
+from common.memory_md import MemoryDoc, parse, render
 from common.runtime import RetrospectorInput
 from retrospector.agent import retrospect
 from retrospector.decision import RetrospectiveDecision
 
 if TYPE_CHECKING:
     from mypy_boto3_lambda.client import LambdaClient
-    from mypy_boto3_s3.client import S3Client
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
 
 MEMORY_MD_PATH = "docs/MEMORY.md"
+AGENTS_MD_PATH = "AGENTS.md"
 RUN_ID_BRANCH_RE = re.compile(r"[^a-z0-9-]+")
 
 
@@ -55,20 +60,9 @@ def lambda_client() -> LambdaClient:
     return boto3.client("lambda")
 
 
-@cache
-def s3_client() -> S3Client:
-    """Process-cached boto3 S3 client (reads the per-project MEMORY.md mirror)."""
-    return boto3.client("s3")
-
-
 def repo_helper_function_name() -> str:
     """Lambda function name of the ``repo_helper`` tool."""
     return os.environ["AIDLC_REPO_HELPER_FUNCTION_NAME"]
-
-
-def memory_md_bucket() -> str:
-    """S3 bucket name where the architect mirrors the per-project ``MEMORY.md``."""
-    return os.environ["AIDLC_MEMORY_MD_BUCKET"]
 
 
 @app.entrypoint
@@ -91,7 +85,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_retrospective(payload: RetrospectorInput, async_task_id: int) -> None:
-    """Body of the retrospective — ask the agent, optionally open a MEMORY.md PR."""
+    """Body of the retrospective — ask the agent, optionally open a memory-file PR."""
     try:
         decision = retrospect(
             event_type=payload.event_type,
@@ -113,11 +107,12 @@ def run_retrospective(payload: RetrospectorInput, async_task_id: int) -> None:
                 rationale=decision.rationale[:200],
             )
             return
-        pr_url = open_memory_md_pr(payload=payload, decision=decision)
+        pr_url = open_memory_pr(payload=payload, decision=decision)
         logger.info(
             "retrospective: lesson recorded",
             run_id=payload.run_id,
             event_type=payload.event_type,
+            target_file=decision.target_file,
             confidence=decision.confidence,
             pr_url=pr_url,
         )
@@ -127,48 +122,43 @@ def run_retrospective(payload: RetrospectorInput, async_task_id: int) -> None:
         app.complete_async_task(async_task_id)
 
 
-def open_memory_md_pr(
+def open_memory_pr(
     *,
     payload: RetrospectorInput,
     decision: RetrospectiveDecision,
 ) -> str:
-    """Append ``decision.memory_md_addition`` to docs/MEMORY.md and open a PR.
+    """Append ``decision.memory_md_addition`` to the chosen file and open a PR.
 
-    Reads the current MEMORY.md from the architect's S3 mirror, parses
-    it against the strict six-section schema, appends the agent's
-    addition under ``decision.section``, and renders the canonical
-    Markdown back. The result is committed to a fresh branch and a PR
-    is opened against ``main``.
-
-    The S3 mirror lags ``main`` by one architect-sync cycle. A
-    same-day duplicate addition is possible; the human reviewer
-    catches it on the PR. Future work can swap the S3 read for a
-    direct ``repo_helper.get_file`` once that op exists.
-
-    Returns the PR URL.
+    Reads the current file from ``main`` via ``repo_helper.get_file``
+    (the repo is the source of truth — no S3 staleness). For
+    ``MEMORY.md`` the body is parsed against the six-section schema
+    and the addition lands under ``decision.section``; for
+    ``AGENTS.md`` the addition is appended verbatim at the end of the
+    file. The result is committed to a fresh branch and a PR is
+    opened against ``main``.
     """
-    if decision.section is None:
-        msg = "decision.section must be set when opening a MEMORY.md PR"
+    if decision.target_file is None:
+        msg = "decision.target_file must be set when opening a memory-file PR"
         raise ValueError(msg)
     branch = branch_name(run_id=payload.run_id)
+    path = MEMORY_MD_PATH if decision.target_file == "MEMORY.md" else AGENTS_MD_PATH
     invoke_repo_helper(
         op="create_branch",
         repo=payload.target_repo,
         branch=branch,
         base="main",
     )
-    existing = fetch_memory_md(project_slug=payload.project_slug)
-    new_content = render_memory_md_patch(
+    existing = fetch_file(repo=payload.target_repo, path=path)
+    new_content = render_patch(
         existing=existing,
-        section=decision.section,
-        addition=decision.memory_md_addition,
+        decision=decision,
     )
     invoke_repo_helper(
         op="commit_files",
         repo=payload.target_repo,
         branch=branch,
         message=render_commit_message(decision),
-        files=[{"path": MEMORY_MD_PATH, "content": new_content}],
+        files=[{"path": path, "content": new_content}],
     )
     out = invoke_repo_helper(
         op="open_pr",
@@ -185,33 +175,43 @@ def open_memory_md_pr(
     return pr_url
 
 
-def fetch_memory_md(*, project_slug: str) -> str:
-    """Read the current ``docs/MEMORY.md`` from the architect's S3 mirror.
+def fetch_file(*, repo: str, path: str) -> str:
+    """Read ``path`` from ``main`` via ``repo_helper.get_file``.
 
-    Returns the empty string when no mirror exists (e.g., the project
-    has never had an architect run). In that case
-    :func:`render_memory_md_patch` produces a fresh canonical body
-    from the empty :class:`MemoryDoc` default.
+    Returns the empty string when the file doesn't exist (e.g., the
+    project hasn't created an ``AGENTS.md`` yet). Callers handle the
+    empty-existing case by seeding a default body.
     """
-    key = f"projects/{project_slug}/MEMORY.md"
-    try:
-        obj = s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
-    except Exception:
+    out = invoke_repo_helper(op="get_file", repo=repo, path=path, ref="main")
+    result = out.get("result") or {}
+    if not result.get("exists"):
         return ""
-    return obj["Body"].read().decode("utf-8")
+    return str(result.get("content", ""))
 
 
-def render_memory_md_patch(*, existing: str, section: Section, addition: str) -> str:
-    """Produce the new MEMORY.md content by appending under ``section``.
+def render_patch(*, existing: str, decision: RetrospectiveDecision) -> str:
+    """Produce the new file content for whichever target_file was chosen."""
+    if decision.target_file == "MEMORY.md":
+        if decision.section is None:
+            msg = "MEMORY.md target requires a section"
+            raise ValueError(msg)
+        doc = parse(existing) if existing.strip() else MemoryDoc()
+        return render(doc.with_appended(decision.section, decision.memory_md_addition.strip()))
+    return render_agents_md_patch(existing=existing, addition=decision.memory_md_addition)
 
-    Parses the existing body via :func:`common.memory_md.parse`,
-    appends ``addition`` to the named section, and re-renders. When
-    ``existing`` is empty (no mirror yet), starts from the default
-    :class:`MemoryDoc` so the resulting file has all six canonical
-    headers and the new bullet under the right one.
+
+def render_agents_md_patch(*, existing: str, addition: str) -> str:
+    """Append ``addition`` to ``AGENTS.md`` content (free-form Markdown).
+
+    Adds a blank line between the existing body and the addition so the
+    new content reads as a fresh paragraph / section. When the file
+    is empty (no existing AGENTS.md), seeds it with a minimal title.
     """
-    doc = parse(existing) if existing.strip() else MemoryDoc()
-    return render(doc.with_appended(section, addition.strip()))
+    body = existing.rstrip("\n")
+    add = addition.strip()
+    if not body:
+        return f"# Project Memory\n\n{add}\n"
+    return f"{body}\n\n{add}\n"
 
 
 def render_commit_message(decision: RetrospectiveDecision) -> str:
@@ -235,6 +235,9 @@ def render_pr_body(
     """PR body — quotes the agent's rationale and links the source event."""
     parts = [
         f"Recorded a lesson from {payload.event_type} on this run.",
+        "",
+        f"**Target file:** `{decision.target_file}`"
+        + (f" (section `{decision.section}`)" if decision.section else ""),
         "",
         "**Lesson:**",
         decision.lesson_summary,
