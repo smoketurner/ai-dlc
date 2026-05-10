@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import boto3
 import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from botocore.exceptions import ClientError
 from event_projector.handler import agentcore, ddb, handler
 from moto import mock_aws
 
@@ -250,6 +251,75 @@ def test_spec_ready_no_op_when_not_in_architect_running() -> None:
         Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
     )["Item"]
     assert state["current_state"]["S"] == "received"
+
+
+def test_spec_ready_from_architect_running_clears_feedback_queue() -> None:
+    """SPEC.READY from architect_running flushes accumulated iteration feedback.
+
+    Mirrors the task-level TASK.READY-from-iterating flush: the just-
+    delivered spec consumed any pending @-mention feedback, so the
+    next iteration starts from a clean queue. Without this, iteration
+    N+1 would re-dispatch the architect with stale feedback from
+    iterations 1..N.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+            "spec_delivery_ids": {"SS": ["webhook-A", "webhook-B"]},
+            "pending_spec_feedback": {
+                "L": [{"S": "tighten the API"}, {"S": "rename Foo"}],
+            },
+        },
+    )
+    handler(eb_event(envelope(type="SPEC.READY")), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "spec_drafted"
+    assert state["pending_spec_feedback"]["L"] == []
+    assert "spec_delivery_ids" not in state
+
+
+def test_issue_triaged_projects_workflow_kind_and_action() -> None:
+    """ISSUE.TRIAGED persists workflow_kind + triage_action on the STATE row.
+
+    These two attributes drive how the dashboard renders triage
+    decisions and how the router branches on the chosen workflow.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "triaging"},
+        },
+    )
+    triaged = envelope(
+        type="ISSUE.TRIAGED",
+        payload={
+            "project_slug": "demo",
+            "target_repo": "o/r",
+            "issue_url": "https://github.com/o/r/issues/7",
+            "issue_number": 7,
+            "action": "proceed",
+            "workflow_kind": "spec_driven",
+            "decision_s3_key": "runs/run-1/triage.json",
+            "rationale": "ok",
+            "session_id": "run-1-triage",
+        },
+    )
+    handler(eb_event(triaged), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "triage_decided"
+    assert state["workflow_kind"]["S"] == "spec_driven"
+    assert state["triage_action"]["S"] == "proceed"
 
 
 def test_run_failed_advances_any_non_terminal_to_failed() -> None:
@@ -761,6 +831,25 @@ def test_forward_to_memory_calls_create_event_with_required_shape(aws_env: Magic
     assert entry["blob"]["run_id"] == "run-1"
 
 
+def test_forward_to_memory_swallows_botocore_error(aws_env: MagicMock) -> None:
+    """Memory CreateEvent errors are warning-logged, not raised.
+
+    The projector's transaction has already committed by the time
+    forward_to_memory runs; a re-delivery is a clean idempotent no-op
+    (the EVENT row's attribute_not_exists(sk) rolls the second
+    delivery's whole transaction back). So a transient AgentCore
+    Memory failure is logged + metric'd, and the Lambda still returns
+    ok=True/committed=True.
+    """
+    aws_env.create_event.side_effect = ClientError(
+        {"Error": {"Code": "ServiceUnavailable", "Message": "memory unavailable"}},
+        "CreateEvent",
+    )
+    out = handler(eb_event(envelope()), ctx())
+    assert out["ok"] is True
+    assert out["committed"] is True
+
+
 # ---------------------------------------------------------------------------
 # Dispatch circuit-breaker counter reset
 # ---------------------------------------------------------------------------
@@ -1041,6 +1130,10 @@ def test_spec_iteration_accumulator_does_not_write_outbox_row() -> None:
     )["Item"]
     assert state["current_state"]["S"] == "architect_running"
     assert query_outbox("run-1") == []
+    # The feedback body + delivery id land on the state row so the
+    # in-flight architect cycle consumes them when it flushes.
+    assert state["pending_spec_feedback"]["L"][0]["S"] == "tighten the API"
+    assert state["spec_delivery_ids"]["SS"] == ["webhook-1"]
 
 
 def test_spec_iteration_in_pr_open_advances_and_writes_outbox() -> None:
@@ -1068,6 +1161,47 @@ def test_spec_iteration_in_pr_open_advances_and_writes_outbox() -> None:
     )["Item"]
     assert state["current_state"]["S"] == "spec_pending"
     assert len(query_outbox("run-1")) == 1
+    # Feedback + delivery id queued for the next architect cycle.
+    assert state["pending_spec_feedback"]["L"][0]["S"] == "tighten the API"
+    assert state["spec_delivery_ids"]["SS"] == ["webhook-1"]
+
+
+def test_spec_iteration_in_architect_running_appends_to_existing_feedback() -> None:
+    """A second SPEC.ITERATION_REQUESTED during the architect cycle appends.
+
+    Parallels the task-level second-iteration-during-implementer test:
+    the architect is still working on the first feedback, so the
+    second one is appended without a state transition. Whichever
+    cycle flushes pending_spec_feedback consumes both.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+            "spec_delivery_ids": {"SS": ["webhook-1"]},
+            "pending_spec_feedback": {"L": [{"S": "tighten the API"}]},
+        },
+    )
+    second = envelope(
+        type="SPEC.ITERATION_REQUESTED",
+        event_id="01J0000000000000000000000C",
+        payload={
+            "project_slug": "demo",
+            "feedback_body": "also rename Foo",
+            "delivery_id": "webhook-2",
+        },
+    )
+    handler(eb_event(second), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "architect_running"
+    assert sorted(state["spec_delivery_ids"]["SS"]) == ["webhook-1", "webhook-2"]
+    assert len(state["pending_spec_feedback"]["L"]) == 2
+    assert state["pending_spec_feedback"]["L"][1]["S"] == "also rename Foo"
 
 
 def test_task_iteration_accumulator_does_not_write_outbox_row() -> None:
