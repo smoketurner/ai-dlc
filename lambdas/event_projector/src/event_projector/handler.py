@@ -45,6 +45,7 @@ from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from botocore.exceptions import ClientError
 
+from common.ddb import PutBuilder
 from common.events import EventType as PlatformEventType
 from common.events import UntypedEnvelope
 from common.state import TERMINAL_RUN_STATES, RunState, TaskState
@@ -345,18 +346,19 @@ def event_row_item(
     metadata + state writes safe under at-least-once delivery.
     """
     event_id = detail.get("event_id", "unknown")
-    return {
-        "Put": {
-            "TableName": runs_table(),
-            "Item": {
-                "pk": {"S": f"RUN#{run_id}"},
-                "sk": {"S": f"EVENT#{event_id}"},
-                "type": {"S": event_type},
-                "envelope": {"S": json.dumps(detail)},
+    return (
+        PutBuilder(
+            table=runs_table(),
+            item={
+                "pk": f"RUN#{run_id}",
+                "sk": f"EVENT#{event_id}",
+                "type": event_type,
+                "envelope": json.dumps(detail),
             },
-            "ConditionExpression": "attribute_not_exists(sk)",
-        },
-    }
+        )
+        .condition_not_exists("sk")
+        .to_item()
+    )
 
 
 def run_state_item(  # noqa: C901, PLR0912, PLR0915
@@ -573,21 +575,20 @@ def task_row_item(
 def outbox_item(run_id: str, detail: dict[str, Any]) -> TransactWriteItemTypeDef:
     """The OUTBOX row the EventBridge Pipe forwards to the beacon queue."""
     event_id = detail.get("event_id", "")
-    project_slug = project_slug_from_envelope(detail=detail, run_id=run_id)
-    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
-    return {
-        "Put": {
-            "TableName": runs_table(),
-            "Item": {
-                "pk": {"S": f"RUN#{run_id}"},
-                "sk": {"S": f"OUTBOX#{event_id}"},
-                "run_id": {"S": run_id},
-                "project_slug": {"S": project_slug},
-                "expire_at": {"N": str(expire_at)},
+    return (
+        PutBuilder(
+            table=runs_table(),
+            item={
+                "pk": f"RUN#{run_id}",
+                "sk": f"OUTBOX#{event_id}",
+                "run_id": run_id,
+                "project_slug": project_slug_from_envelope(detail=detail, run_id=run_id),
+                "expire_at": int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS,
             },
-            "ConditionExpression": "attribute_not_exists(sk)",
-        },
-    }
+        )
+        .condition_not_exists("sk")
+        .to_item()
+    )
 
 
 # ---------------------------------------------------------------------------
