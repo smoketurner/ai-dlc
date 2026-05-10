@@ -26,6 +26,7 @@ from aws_lambda_powertools import Logger, Tracer
 from botocore.config import Config
 from botocore.exceptions import ClientError, ReadTimeoutError
 
+from common.ddb import PutBuilder, TransactWriteItemsBuilder, UpdateBuilder
 from common.ids import new_event_id
 from state_router.config import (
     DISPATCH_CONNECT_TIMEOUT_SECONDS,
@@ -135,73 +136,32 @@ def transactional_advance(
     by the rollback path to bump ``dispatch_failure_count`` atomically
     with the state reversal.
     """
-    attr = "status" if target_sk.startswith("TASK#") else "current_state"
-    set_parts = ["#a = :to", "updated_at = :ts"]
-    values: dict[str, dict[str, str]] = {
-        ":from": {"S": advance_from},
-        ":to": {"S": advance_to},
-        ":ts": {"S": now_iso()},
-    }
-    names = {"#a": attr}
-    for i, (k, v) in enumerate(extra_attrs.items() if extra_attrs else ()):
-        set_parts.append(f"#k{i} = :v{i}")
-        values[f":v{i}"] = {"S": v}
-        names[f"#k{i}"] = k
-    add_parts: list[str] = []
-    for i, (k, n) in enumerate(extra_increments.items() if extra_increments else ()):
-        add_parts.append(f"#i{i} :n{i}")
-        values[f":n{i}"] = {"N": str(n)}
-        names[f"#i{i}"] = k
-    expression = "SET " + ", ".join(set_parts)
-    if add_parts:
-        expression += " ADD " + ", ".join(add_parts)
-    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
-    try:
-        ddb().transact_write_items(
-            TransactItems=[
-                {
-                    "Update": {
-                        "TableName": runs_table(),
-                        "Key": {"pk": {"S": target_pk}, "sk": {"S": target_sk}},
-                        "UpdateExpression": expression,
-                        "ConditionExpression": "#a = :from",
-                        "ExpressionAttributeNames": names,
-                        "ExpressionAttributeValues": values,
-                    },
-                },
-                {
-                    "Put": {
-                        "TableName": runs_table(),
-                        "Item": {
-                            "pk": {"S": f"RUN#{run_id}"},
-                            "sk": {"S": f"OUTBOX#{new_event_id()}"},
-                            "run_id": {"S": run_id},
-                            "project_slug": {"S": project_slug},
-                            "expire_at": {"N": str(expire_at)},
-                        },
-                    },
-                },
-            ],
+    state_attr = "status" if target_sk.startswith("TASK#") else "current_state"
+    update = (
+        UpdateBuilder(
+            table=runs_table(),
+            key={"pk": target_pk, "sk": target_sk},
         )
-    except ClientError as exc:
-        if is_conditional_check_failed(exc):
-            return False
-        raise
-    return True
-
-
-def is_conditional_check_failed(exc: ClientError) -> bool:
-    """``True`` when a TransactWriteItems was cancelled by a condition mismatch.
-
-    The DDB error surfaces as ``TransactionCanceledException`` with a
-    per-item ``CancellationReasons`` list. ``ConditionalCheckFailed`` in
-    any reason means the transaction lost a race (the state cursor
-    moved past ``advance_from``); we no-op silently.
-    """
-    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
-        return False
-    reasons = exc.response.get("CancellationReasons", []) or []
-    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
+        .set(state_attr, advance_to)
+        .set("updated_at", now_iso())
+        .condition_eq(state_attr, advance_from)
+    )
+    for attribute, value in (extra_attrs or {}).items():
+        update.set(attribute, value)
+    for attribute, delta in (extra_increments or {}).items():
+        update.add(attribute, delta)
+    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
+    outbox = PutBuilder(
+        table=runs_table(),
+        item={
+            "pk": f"RUN#{run_id}",
+            "sk": f"OUTBOX#{new_event_id()}",
+            "run_id": run_id,
+            "project_slug": project_slug,
+            "expire_at": expire_at,
+        },
+    )
+    return TransactWriteItemsBuilder().update(update).put(outbox).commit(ddb())
 
 
 def dispatch_to_runtime(
