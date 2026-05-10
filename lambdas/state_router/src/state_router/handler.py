@@ -1,16 +1,19 @@
 """SQS-driven state router for the SDLC pipeline.
 
-One beacon message per active run sits on the ``state-router`` queue.
-Each receive triggers this handler:
+The beacon is an interrupt, not a heartbeat: a beacon means "the router
+has work to do right now". Each receive triggers this handler:
 
 1. Read the run's STATE row + every TASK row from DynamoDB.
 2. Compute the next :data:`~.actions.Action` via :func:`.dispatch.decide`.
 3. Execute the action via :func:`.execute.execute` — invoke an agent,
    emit an event, write a synthetic spec, etc.
-4. Leave the beacon undeleted so the visibility timeout expires and the
-   queue re-delivers the message; the next poll will see whatever the
-   projector has advanced to in the meantime. Terminal runs delete the
-   beacon directly.
+4. Delete the beacon (success ack to SQS). The next state-advancing
+   event re-emits a fresh beacon from the projector.
+
+Implication: while a run is parked on a Noop (waiting on a human PR
+review, an agent's async response, etc.), the queue is empty and the
+router does not run. The webhook → EventBridge → projector pipeline is
+the wake-up edge.
 
 The router never advances state on its own initiative for "what
 happened in the world" transitions — those go through the projector
@@ -29,7 +32,6 @@ from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from common.state import TERMINAL_RUN_STATES
 from state_router.aws import ddb
 from state_router.config import runs_table
 from state_router.dispatch import decide
@@ -47,62 +49,49 @@ metrics = Metrics(namespace="ai-dlc", service="state_router")
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Process every SQS record in the batch.
 
-    Each beacon is processed once per Lambda invocation, then either:
+    Each beacon is processed once per Lambda invocation and then deleted
+    by SQS (the handler returns no batch-item failures). If
+    :func:`process_record` raises, the exception propagates and SQS
+    redelivers under its standard error semantics; that is the only
+    path that keeps a beacon visible.
 
-    * **Reported as a batch-item failure** (the default for non-terminal
-      runs) — Lambda's SQS event source mapping leaves the message
-      visible after the queue's visibility timeout, redelivering it on
-      the next poll. This is how the state machine ticks forward
-      between agent completion / webhook events.
-    * **Returned as a successful record** (terminal, orphan, or malformed
-      beacons) — Lambda auto-deletes those messages on success, so the
-      beacon is gone for good.
-
-    Requires ``function_response_types=["ReportBatchItemFailures"]`` on
-    the event source mapping. The beacon queue has no DLQ + no
-    ``maxReceiveCount`` cap — a beacon cycles indefinitely until the
-    run reaches a terminal state. SQS-level pathology surfaces via
-    CloudWatch alarms on receive-count age, not via DLQ-by-redelivery.
+    The empty ``batchItemFailures`` list is preserved in the response
+    shape so the event source mapping's
+    ``function_response_types=["ReportBatchItemFailures"]`` setting
+    keeps working — switching it off would require an infrastructure
+    change.
     """
     records = event.get("Records") or []
-    failures: list[dict[str, str]] = []
     for record in records:
-        if process_record(record):
-            failures.append({"itemIdentifier": record["messageId"]})
+        process_record(record)
     metrics.add_metric(name="BeaconsProcessed", unit=MetricUnit.Count, value=len(records))
-    return {"batchItemFailures": failures}
+    return {"batchItemFailures": []}
 
 
-def process_record(record: dict[str, Any]) -> bool:
+def process_record(record: dict[str, Any]) -> None:
     """Decode + dispatch one beacon.
 
-    Returns ``True`` when the beacon should remain in the queue (active
-    run, must keep cycling) and ``False`` when SQS should delete it
-    (terminal / orphan / malformed). The handler reports the ``True``
-    cases as ``batchItemFailures`` to keep them visible.
+    Always succeeds (returns ``None``) once the message body has been
+    parsed: malformed / orphan / terminal beacons are logged and the
+    SQS ack lets the message be deleted. State-advancing work is the
+    projector's responsibility; the next event from the platform bus
+    re-emits a beacon that the router will pick up.
     """
     try:
         body = json.loads(record.get("body") or "{}")
     except json.JSONDecodeError:
         logger.warning("malformed beacon body", extra={"messageId": record.get("messageId")})
-        return False
+        return
     run_id = body.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         logger.warning("beacon missing run_id", extra={"body": body})
-        return False
+        return
     run = read_run(run_id)
     if run is None:
         logger.info("orphan beacon — no run row", extra={"run_id": run_id})
-        return False
-    if run.current_state in TERMINAL_RUN_STATES:
-        logger.info(
-            "terminal run, releasing beacon",
-            extra={"run_id": run_id, "state": str(run.current_state)},
-        )
-        return False
+        return
     action = decide(run)
     execute(run, action)
-    return True
 
 
 @tracer.capture_method

@@ -67,6 +67,16 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[MagicMock]:
     agentcore.cache_clear()
 
 
+def query_outbox(run_id: str) -> list[dict[str, Any]]:
+    """Return all OUTBOX# rows for a run, freshest order doesn't matter."""
+    items = ddb().query(
+        TableName=TABLE,
+        KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={":p": {"S": f"RUN#{run_id}"}, ":prefix": {"S": "OUTBOX#"}},
+    )["Items"]
+    return list(items)
+
+
 def envelope(**overrides: Any) -> dict[str, Any]:
     base = {
         "schema_version": "1.0",
@@ -644,25 +654,6 @@ def test_duplicate_event_id_silently_skipped() -> None:
     assert len(items) == 1
 
 
-def test_ddb_stream_event_passthrough() -> None:
-    out = handler(
-        {
-            "Records": [
-                {
-                    "eventID": "1",
-                    "eventName": "INSERT",
-                    "eventSource": "aws:dynamodb",
-                    "eventVersion": "1.1",
-                    "awsRegion": "us-east-1",
-                    "dynamodb": {"SequenceNumber": "1", "Keys": {"pk": {"S": "RUN#1"}}},
-                },
-            ],
-        },
-        ctx(),
-    )
-    assert out == {"batchItemFailures": []}
-
-
 def test_unknown_trigger_returns_error() -> None:
     out = handler({"foo": "bar"}, ctx())
     assert out["ok"] is False
@@ -866,3 +857,203 @@ def test_task_approved_does_not_touch_dispatch_failure_count() -> None:
     )["Item"]
     assert task["status"]["S"] == "merged"
     assert task["dispatch_failure_count"]["N"] == "2"  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# Outbox row written atomically with state advance
+# ---------------------------------------------------------------------------
+
+
+def test_run_state_advance_writes_outbox_row() -> None:
+    """Successful run-state advance writes one OUTBOX# row in the same transaction."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+        },
+    )
+    handler(eb_event(envelope(type="SPEC.READY")), ctx())
+    rows = query_outbox("run-1")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["sk"]["S"] == "OUTBOX#01J0000000000000000000000A"
+    assert row["run_id"]["S"] == "run-1"
+    assert row["project_slug"]["S"] == "demo"
+    assert int(row["expire_at"]["N"]) > 0
+
+
+def test_task_state_advance_writes_outbox_row() -> None:
+    """Successful task-state advance writes one OUTBOX# row."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+        },
+    )
+    task_ready = envelope(
+        type="TASK.READY",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "diff_summary": "x",
+            "session_id": "run-1-T-001",
+        },
+    )
+    handler(eb_event(task_ready), ctx())
+    rows = query_outbox("run-1")
+    assert len(rows) == 1
+    assert rows[0]["project_slug"]["S"] == "demo"
+
+
+def test_advisory_event_does_not_write_outbox_row() -> None:
+    """REVIEW.READY updates side data only — no state advance, no outbox."""
+    review = envelope(
+        type="REVIEW.READY",
+        payload={
+            "project_slug": "demo",
+            "task_id": "T-001",
+            "verdict": "approve",
+            "session_id": "run-1-T-001-reviewer",
+        },
+    )
+    handler(eb_event(review), ctx())
+    assert query_outbox("run-1") == []
+
+
+def test_idempotent_redelivery_writes_outbox_only_once() -> None:
+    """Re-delivered state-advance event: first call commits, second is a CCFE no-op."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+        },
+    )
+    spec_ready = envelope(type="SPEC.READY")
+    handler(eb_event(spec_ready), ctx())
+    handler(eb_event(spec_ready), ctx())
+    assert len(query_outbox("run-1")) == 1
+
+
+def test_spec_iteration_accumulator_does_not_write_outbox_row() -> None:
+    """SPEC.ITERATION_REQUESTED while architect is mid-cycle accumulates only.
+
+    The cursor stays in ``architect_running``; the queued feedback will
+    be consumed when the in-flight cycle finishes. The router has no
+    new work, so no outbox row.
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+        },
+    )
+    iteration = envelope(
+        type="SPEC.ITERATION_REQUESTED",
+        payload={
+            "project_slug": "demo",
+            "feedback_body": "tighten the API",
+            "delivery_id": "webhook-1",
+        },
+    )
+    handler(eb_event(iteration), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "architect_running"
+    assert query_outbox("run-1") == []
+
+
+def test_spec_iteration_in_pr_open_advances_and_writes_outbox() -> None:
+    """SPEC.ITERATION_REQUESTED in spec_pr_open advances + writes one outbox row."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "spec_pr_open"},
+        },
+    )
+    iteration = envelope(
+        type="SPEC.ITERATION_REQUESTED",
+        payload={
+            "project_slug": "demo",
+            "feedback_body": "tighten the API",
+            "delivery_id": "webhook-1",
+        },
+    )
+    handler(eb_event(iteration), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "spec_pending"
+    assert len(query_outbox("run-1")) == 1
+
+
+def test_task_iteration_accumulator_does_not_write_outbox_row() -> None:
+    """TASK.ITERATION_REQUESTED in implementer_running accumulates, no outbox."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "TASK#T-001"},
+            "status": {"S": "implementer_running"},
+        },
+    )
+    iteration = envelope(
+        type="TASK.ITERATION_REQUESTED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "task_id": "T-001",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "delivery_id": "webhook-1",
+            "feedback": {
+                "kind": "ci_failure",
+                "workflow_name": "ci",
+                "conclusion": "failure",
+                "head_sha": "abcdef0",
+                "html_url": "https://github.com/o/r/actions/runs/1",
+            },
+        },
+    )
+    handler(eb_event(iteration), ctx())
+    assert query_outbox("run-1") == []
+
+
+def test_run_completed_writes_outbox_for_terminal_cleanup() -> None:
+    """Terminal transitions write an outbox row so the router acks + exits cleanly."""
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "tasks_complete"},
+        },
+    )
+    completed = envelope(
+        type="RUN.COMPLETED",
+        payload={
+            "project_slug": "demo",
+            "spec_slug": "add-healthz",
+            "tasks_completed": 3,
+        },
+    )
+    handler(eb_event(completed), ctx())
+    state = ddb().get_item(
+        TableName=TABLE,
+        Key={"pk": {"S": "RUN#run-1"}, "sk": {"S": "STATE"}},
+    )["Item"]
+    assert state["current_state"]["S"] == "done"
+    assert len(query_outbox("run-1")) == 1

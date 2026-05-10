@@ -208,7 +208,7 @@ module "event_projector" {
   version = "~> 8.0"
 
   function_name = "${local.prefix}-event-projector"
-  description   = "EventBridge + DDB Streams → runs read-model + AgentCore Memory CreateEvent."
+  description   = "EventBridge → runs read-model + outbox row + AgentCore Memory CreateEvent."
   handler       = "event_projector.handler.handler"
   runtime       = "python3.13"
   architectures = ["arm64"]
@@ -240,22 +240,20 @@ module "event_projector" {
   policy_statements = {
     runs_table = {
       # PutItem writes the EVENT row + the initial STATE upsert; UpdateItem
-      # accumulates usage, advances current_state, applies iteration
-      # accumulators; GetItem reads current_state / status off STATE and
-      # TASK rows for ``apply_state_transition``'s conditional updates.
-      effect    = "Allow"
-      actions   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem"]
-      resources = [var.runs_table_arn]
-    }
-    ddb_streams = {
+      # accumulates usage, applies iteration accumulators; GetItem reads
+      # current_state / status off STATE and TASK rows for
+      # ``apply_state_transition``'s conditional updates;
+      # TransactWriteItems advances state and writes the OUTBOX row in
+      # one atomic step (the outbox row is what the EventBridge Pipe
+      # forwards to the state-router beacon queue).
       effect = "Allow"
       actions = [
-        "dynamodb:DescribeStream",
-        "dynamodb:GetRecords",
-        "dynamodb:GetShardIterator",
-        "dynamodb:ListStreams",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:GetItem",
+        "dynamodb:TransactWriteItems",
       ]
-      resources = [var.runs_stream_arn]
+      resources = [var.runs_table_arn]
     }
     memory_create_event = {
       effect = "Allow"
@@ -264,15 +262,6 @@ module "event_projector" {
         "bedrock-agentcore:GetMemory",
       ]
       resources = [var.memory_arn]
-    }
-  }
-
-  event_source_mapping = {
-    runs_stream = {
-      event_source_arn        = var.runs_stream_arn
-      starting_position       = "LATEST"
-      batch_size              = 10
-      function_response_types = ["ReportBatchItemFailures"]
     }
   }
 

@@ -1,22 +1,19 @@
 """Projector Lambda — fans out platform events into the read model + memory.
 
-Two trigger sources, dispatched by event shape:
-
-* **EventBridge rule** — every event on the platform bus. We update the run
-  state row in DynamoDB (so the dashboard's SSE poller has fresh data) and
-  forward the event to AgentCore Memory via ``CreateEvent`` so cross-session
-  memory strategies can index it.
-
-* **DynamoDB Streams** (runs + approvals tables) — currently a no-op
-  passthrough; surfaces here so the wiring exists when a stream consumer
-  is needed. Routed through Powertools' ``BatchProcessor`` so a single
-  poison record reports only itself as a partial failure rather than
-  poison-pilling the whole batch.
+Triggered by every event on the platform EventBridge bus. We update the
+run state row in DynamoDB (so the dashboard's SSE poller has fresh data)
+and forward the event to AgentCore Memory via ``CreateEvent`` so cross-
+session memory strategies can index it.
 
 The projector is the **only writer** of the run + task state-machine
 cursors: it applies :func:`common.state_transitions.apply_run_transition`
 / ``apply_task_transition`` and writes the new state via a conditional
-``UpdateItem``.
+:func:`transact_write_items` that bundles the state update with an
+``OUTBOX#{event_id}`` row. EventBridge Pipes consume the runs-table
+stream, filter for outbox rows, and forward them as SQS beacons to the
+state router — so beacon delivery is atomic with the state advance and
+re-delivery is handled by DDB Streams' built-in retry semantics rather
+than a synchronous SQS publish that could fail mid-projection.
 
 The projector is idempotent: every write uses the event_id as a sort-key
 suffix or a ``ConditionExpression`` that keeps repeats from clobbering
@@ -34,15 +31,6 @@ from typing import TYPE_CHECKING, Any, cast
 import boto3
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
-from aws_lambda_powertools.utilities.batch import (
-    BatchProcessor,
-    EventType,
-    process_partial_response,
-)
-from aws_lambda_powertools.utilities.batch.types import PartialItemFailureResponse
-from aws_lambda_powertools.utilities.data_classes.dynamo_db_stream_event import (
-    DynamoDBRecord,
-)
 from aws_lambda_powertools.utilities.parser import ValidationError, parse
 from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
@@ -59,12 +47,20 @@ from common.state_transitions import (
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
+    from mypy_boto3_dynamodb.type_defs import TransactWriteItemTypeDef
 
 logger = Logger(service="event_projector")
 tracer = Tracer(service="event_projector")
 metrics = Metrics(namespace="ai-dlc", service="event_projector")
 
-stream_processor = BatchProcessor(event_type=EventType.DynamoDBStreams)
+OUTBOX_TTL_SECONDS = 3600
+"""How long an outbox row lives before DDB TTL sweeps it.
+
+The EventBridge Pipe consumes the runs stream within seconds of insert,
+so the row itself is needed only briefly. The stream record persists for
+24h regardless of TTL, so a pipe outage of up to 24h still recovers; TTL
+is purely table-hygiene to keep outbox rows from accumulating.
+"""
 
 
 @cache
@@ -92,18 +88,8 @@ def memory_id() -> str:
 @logger.inject_lambda_context(log_event=False)
 @tracer.capture_lambda_handler
 @metrics.log_metrics(capture_cold_start_metric=True)
-def handler(
-    event: dict[str, Any],
-    context: LambdaContext,
-) -> dict[str, Any] | PartialItemFailureResponse:
-    """Fan out one EventBridge event or one DDB-Stream batch to consumers."""
-    if "Records" in event:
-        return process_partial_response(
-            event=event,
-            record_handler=process_stream_record,
-            processor=stream_processor,
-            context=context,
-        )
+def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
+    """Fan out one EventBridge event into the read model + memory + outbox."""
     if "detail" in event and "detail-type" in event:
         return handle_eventbridge(event)
     logger.warning("unknown trigger shape", extra={"keys": sorted(event.keys())})
@@ -143,20 +129,6 @@ def normalise(event: dict[str, Any]) -> dict[str, Any]:
     if isinstance(detail, str):
         return {**event, "detail": json.loads(detail)}
     return event
-
-
-def process_stream_record(record: DynamoDBRecord) -> None:
-    """Per-record handler for the DDB Streams branch.
-
-    Currently a no-op pass-through; raising propagates to the BatchProcessor
-    which records the record's sequence number under ``batchItemFailures``
-    so DDB Streams retries only the failed record.
-    """
-    seq = record.dynamodb.sequence_number if record.dynamodb else None
-    logger.debug(
-        "ddb stream record",
-        extra={"event_name": record.event_name, "seq": seq},
-    )
 
 
 @tracer.capture_method
@@ -351,7 +323,7 @@ def accumulate_usage(
 
 
 # ---------------------------------------------------------------------------
-# State-transition application (flag-gated; Phase 2 cutover)
+# State-transition application
 # ---------------------------------------------------------------------------
 
 # Events that advance task-level state. Anything else is treated as
@@ -392,16 +364,23 @@ def apply_run_state_transition(
     event_type: str,
     envelope: dict[str, Any],
 ) -> None:
-    """Read run STATE, compute next state, write conditionally.
+    """Read run STATE, compute next state, transactionally advance + outbox.
 
     For ``SPEC.ITERATION_REQUESTED`` the projector also writes the
     feedback body onto the run's ``pending_spec_feedback`` list:
 
-    * In ``spec_pr_open``: append AND advance to ``spec_pending``.
+    * In ``spec_pr_open``: append AND advance to ``spec_pending`` (one
+      transaction with the outbox row).
     * In :data:`SPEC_ITERATION_ACCUMULATOR_STATES` (architect mid-cycle):
-      append in place; let the in-flight cycle finish.
+      append in place; no state change, no outbox — the architect picks
+      up the queued feedback on its next iteration.
     * Otherwise: drop on the floor — late comments after merge / cancel
       shouldn't disturb a terminal run.
+
+    Successful advances bundle a beacon-intent row into the same
+    transaction; the EventBridge Pipe forwards it to the state router.
+    Accumulator-only writes and idempotent re-deliveries write no
+    outbox row.
     """
     current = read_run_state(run_id)
     next_state = apply_run_transition(
@@ -418,15 +397,12 @@ def apply_run_state_transition(
         return
     if next_state is None:
         return
-    event_id = envelope.get("event_id", "")
-    timestamp = envelope.get("timestamp", "")
     advance_run_state(
         run_id=run_id,
         from_state=current,
         to_state=next_state,
-        event_id=event_id,
-        timestamp=timestamp,
         event_type=event_type,
+        envelope=envelope,
     )
 
 
@@ -436,22 +412,28 @@ def apply_spec_iteration(
     current: RunState | None,
     next_state: RunState | None,
     envelope: dict[str, Any],
-) -> None:
-    """Append spec-iteration feedback + (optionally) advance state.
+) -> bool:
+    """Append spec-iteration feedback + (optionally) advance state + outbox.
+
+    Returns ``True`` only when state advanced to ``spec_pending`` (the
+    transactional path that also writes an outbox row). ``False`` for
+    accumulator-only writes (no outbox — agent picks up queued feedback
+    on its next iteration), dropped late comments, or conditional-check
+    losses.
 
     The ``ConditionExpression`` guards on the run's current state so a
     feedback append doesn't clobber a row that just transitioned out
     of ``spec_pr_open`` (e.g., a concurrent merge → ``SPEC.APPROVED``).
     """
     if current in TERMINAL_RUN_STATES:
-        return
+        return False
     payload = envelope.get("payload") or {}
     body = payload.get("feedback_body")
     if not isinstance(body, str) or not body.strip():
-        return
+        return False
     advance = next_state == RunState.spec_pending and current is not None
     if not advance and current not in SPEC_ITERATION_ACCUMULATOR_STATES:
-        return
+        return False
     expression, values, condition = build_spec_iteration_update(
         current=current,
         body=body,
@@ -460,6 +442,69 @@ def apply_spec_iteration(
         timestamp=envelope.get("timestamp", ""),
         advance_to_spec_pending=advance,
     )
+    if advance:
+        return commit_spec_iteration_advance(
+            run_id=run_id,
+            current=current,
+            expression=expression,
+            condition=condition,
+            values=values,
+            envelope=envelope,
+        )
+    return commit_spec_iteration_accumulate(
+        run_id=run_id,
+        current=current,
+        expression=expression,
+        condition=condition,
+        values=values,
+    )
+
+
+def commit_spec_iteration_advance(
+    *,
+    run_id: str,
+    current: RunState | None,
+    expression: str,
+    condition: str,
+    values: dict[str, Any],
+    envelope: dict[str, Any],
+) -> bool:
+    """Atomically advance to ``spec_pending`` and write the outbox row."""
+    try:
+        ddb().transact_write_items(
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": runs_table(),
+                        "Key": {"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+                        "UpdateExpression": expression,
+                        "ConditionExpression": condition,
+                        "ExpressionAttributeValues": values,
+                    },
+                },
+                outbox_put_item(run_id=run_id, envelope=envelope),
+            ],
+        )
+    except ClientError as exc:
+        if is_idempotent_transaction_failure(exc):
+            logger.info(
+                "run moved while advancing spec-iteration feedback",
+                extra={"run_id": run_id, "current": current.value if current else None},
+            )
+            return False
+        raise
+    return True
+
+
+def commit_spec_iteration_accumulate(
+    *,
+    run_id: str,
+    current: RunState | None,
+    expression: str,
+    condition: str,
+    values: dict[str, Any],
+) -> bool:
+    """Append feedback in place; no outbox row, no state advance."""
     try:
         ddb().update_item(
             TableName=runs_table(),
@@ -474,8 +519,9 @@ def apply_spec_iteration(
                 "run moved while accumulating spec-iteration feedback",
                 extra={"run_id": run_id, "current": current.value if current else None},
             )
-            return
+            return False
         raise
+    return False
 
 
 def build_spec_iteration_update(
@@ -541,17 +587,19 @@ def apply_task_state_transition(
     event_type: str,
     envelope: dict[str, Any],
 ) -> None:
-    """Read TASK row, compute next state, write conditionally.
+    """Read TASK row, compute next state, transactionally advance + outbox.
 
     For ``TASK.ITERATION_REQUESTED``, also append the delivery_id to the
     task's ``delivery_ids`` set and the feedback item to
-    ``pending_feedback``. The state advance + accumulator update happen
-    in one ``UpdateItem`` so they're atomic.
+    ``pending_feedback``; the accumulator update happens in the same
+    transaction as the state advance so they're atomic.
 
     When the event arrives mid-iteration (current state is
     :data:`ITERATION_ACCUMULATOR_STATES`), there is no state transition
-    but the new feedback still has to land — :func:`accumulate_iteration_in_place`
-    writes the accumulators with a state-guard but no advance.
+    but the new feedback still has to land —
+    :func:`accumulate_iteration_in_place` writes the accumulators with a
+    state-guard but no advance, and no outbox row is written (the
+    router has nothing new to dispatch).
     """
     payload = envelope.get("payload") or {}
     task_id = payload.get("task_id")
@@ -585,10 +633,8 @@ def apply_task_state_transition(
         task_id=task_id,
         from_state=current,
         to_state=next_state,
-        event_id=envelope.get("event_id", ""),
-        timestamp=envelope.get("timestamp", ""),
-        payload=payload,
         event_type=event_type,
+        envelope=envelope,
     )
 
 
@@ -658,16 +704,90 @@ counter in the first place.
 """
 
 
+def outbox_put_item(*, run_id: str, envelope: dict[str, Any]) -> TransactWriteItemTypeDef:
+    """Build the OUTBOX row written alongside every state advance.
+
+    The EventBridge Pipe filtering on ``begins_with(sk, 'OUTBOX#')`` picks
+    these rows off the runs-table stream and forwards them to the
+    state-router SQS beacon queue. The pipe's input transformer reads
+    ``run_id`` for the message body and ``project_slug`` for the SQS
+    fair-queue ``MessageGroupId``.
+
+    ``ConditionExpression: attribute_not_exists(sk)`` keeps a re-delivered
+    event from writing a duplicate outbox row; combined with the state-
+    update's own conditional-check, the entire transaction rolls back on
+    any re-delivery.
+
+    The ``expire_at`` attribute lets DDB sweep the row after
+    :data:`OUTBOX_TTL_SECONDS` so the outbox doesn't accumulate.
+    """
+    event_id = envelope.get("event_id", "")
+    project_slug = project_slug_from_envelope(envelope=envelope, run_id=run_id)
+    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
+    item: TransactWriteItemTypeDef = {
+        "Put": {
+            "TableName": runs_table(),
+            "Item": {
+                "pk": {"S": f"RUN#{run_id}"},
+                "sk": {"S": f"OUTBOX#{event_id}"},
+                "run_id": {"S": run_id},
+                "project_slug": {"S": project_slug},
+                "expire_at": {"N": str(expire_at)},
+            },
+            "ConditionExpression": "attribute_not_exists(sk)",
+        },
+    }
+    return item
+
+
+def project_slug_from_envelope(*, envelope: dict[str, Any], run_id: str) -> str:
+    """Read ``project_slug`` from the event payload; fall back to ``run_id``.
+
+    The beacon queue is a Standard queue with SQS fair-queue grouping; the
+    pipe sets ``MessageGroupId`` to the row's ``project_slug`` so noisy-
+    neighbor metrics are reported per project. Every state-advancing event
+    payload carries ``project_slug`` (a required field on
+    :class:`common.events.Payload`), but the fallback to ``run_id`` keeps
+    the outbox write defensible if a future event ever omits it.
+    """
+    payload = envelope.get("payload") or {}
+    slug = payload.get("project_slug")
+    if isinstance(slug, str) and slug:
+        return slug
+    return run_id
+
+
+def is_idempotent_transaction_failure(exc: ClientError) -> bool:
+    """``True`` when a TransactWriteItems was cancelled due to a condition mismatch.
+
+    The DDB error surfaces as ``TransactionCanceledException`` with a
+    per-item ``CancellationReasons`` list. ``ConditionalCheckFailed`` in
+    any reason means we've seen this event before — either the state
+    cursor has moved past the expected ``:from`` value, or the outbox row
+    for this event_id already exists. Both are silent no-ops; other
+    cancellation codes (capacity, validation, etc.) propagate.
+    """
+    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
+        return False
+    reasons = exc.response.get("CancellationReasons", []) or []
+    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
+
+
 def advance_run_state(
     *,
     run_id: str,
     from_state: RunState | None,
     to_state: RunState,
-    event_id: str,
-    timestamp: str,
     event_type: str,
-) -> None:
-    """Conditional UpdateItem that advances ``current_state``.
+    envelope: dict[str, Any],
+) -> bool:
+    """Atomically advance ``current_state`` and write the outbox row.
+
+    Returns ``True`` when the transaction committed (state advanced +
+    outbox row written), ``False`` on a conditional-check loss
+    (idempotent re-delivery — either the state cursor has moved past
+    ``from_state`` or the outbox row for the envelope's ``event_id``
+    already exists).
 
     On a state-advancing :data:`DISPATCH_RESET_EVENTS` event, the same
     update zeroes ``dispatch_failure_count`` so a successful dispatch
@@ -681,8 +801,8 @@ def advance_run_state(
     remove_parts: list[str] = []
     values: dict[str, dict[str, str | int | list[Any]]] = {
         ":to": {"S": to_state.value},
-        ":eid": {"S": event_id},
-        ":ts": {"S": timestamp},
+        ":eid": {"S": envelope.get("event_id", "")},
+        ":ts": {"S": envelope.get("timestamp", "")},
         ":one": {"N": "1"},
     }
     if event_type in DISPATCH_RESET_EVENTS:
@@ -705,21 +825,29 @@ def advance_run_state(
     if remove_parts:
         expression += " REMOVE " + ", ".join(remove_parts)
     try:
-        ddb().update_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            UpdateExpression=expression,
-            ConditionExpression=condition,
-            ExpressionAttributeValues=values,
+        ddb().transact_write_items(
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": runs_table(),
+                        "Key": {"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+                        "UpdateExpression": expression,
+                        "ConditionExpression": condition,
+                        "ExpressionAttributeValues": values,
+                    },
+                },
+                outbox_put_item(run_id=run_id, envelope=envelope),
+            ],
         )
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        if is_idempotent_transaction_failure(exc):
             logger.info(
                 "run state already advanced (idempotent no-op)",
                 extra={"run_id": run_id, "to": to_state.value},
             )
-            return
+            return False
         raise
+    return True
 
 
 def advance_task_state(
@@ -728,16 +856,17 @@ def advance_task_state(
     task_id: str,
     from_state: TaskState,
     to_state: TaskState,
-    event_id: str,
-    timestamp: str,
-    payload: dict[str, Any],
     event_type: str,
-) -> None:
-    """Conditional UpdateItem that advances ``status`` on a TASK row.
+    envelope: dict[str, Any],
+) -> bool:
+    """Atomically advance ``status`` on a TASK row and write the outbox row.
 
-    For ``TASK.ITERATION_REQUESTED``, also accumulates the delivery_id
-    set + pending_feedback list in the same call.
+    Returns ``True`` when the transaction committed, ``False`` on a
+    conditional-check loss (idempotent re-delivery). For
+    ``TASK.ITERATION_REQUESTED``, also accumulates the delivery_id set
+    + pending_feedback list in the same transaction.
     """
+    payload = envelope.get("payload") or {}
     set_parts = [
         "#s = :to",
         "last_event_id = :eid",
@@ -748,8 +877,8 @@ def advance_task_state(
     values: dict[str, Any] = {
         ":from": {"S": from_state.value},
         ":to": {"S": to_state.value},
-        ":eid": {"S": event_id},
-        ":ts": {"S": timestamp},
+        ":eid": {"S": envelope.get("event_id", "")},
+        ":ts": {"S": envelope.get("timestamp", "")},
     }
     names = {"#s": "status"}
     apply_iteration_request_clauses(
@@ -779,22 +908,33 @@ def advance_task_state(
     if remove_parts:
         expression += " REMOVE " + ", ".join(remove_parts)
     try:
-        ddb().update_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
-            UpdateExpression=expression,
-            ConditionExpression="#s = :from",
-            ExpressionAttributeNames=names,
-            ExpressionAttributeValues=values,
+        ddb().transact_write_items(
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": runs_table(),
+                        "Key": {
+                            "pk": {"S": f"RUN#{run_id}"},
+                            "sk": {"S": f"TASK#{task_id}"},
+                        },
+                        "UpdateExpression": expression,
+                        "ConditionExpression": "#s = :from",
+                        "ExpressionAttributeNames": names,
+                        "ExpressionAttributeValues": values,
+                    },
+                },
+                outbox_put_item(run_id=run_id, envelope=envelope),
+            ],
         )
     except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        if is_idempotent_transaction_failure(exc):
             logger.info(
                 "task state already advanced (idempotent no-op)",
                 extra={"run_id": run_id, "task_id": task_id, "to": to_state.value},
             )
-            return
+            return False
         raise
+    return True
 
 
 def apply_iteration_request_clauses(

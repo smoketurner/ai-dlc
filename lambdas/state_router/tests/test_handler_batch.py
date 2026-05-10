@@ -1,10 +1,11 @@
 """Tests for the state_router Lambda handler's batch-failure return shape.
 
-The handler relies on Lambda's ``ReportBatchItemFailures`` event-source
-contract: every active beacon is reported as a batch-item failure so
-SQS keeps it visible (the visibility timeout is what schedules the
-next state-machine tick). Terminal / orphan / malformed beacons are
-omitted from the failures list so SQS auto-deletes them on success.
+Under the event-driven beacon model, every successfully-processed
+beacon is acked to SQS (no batch-item failures). The router's job is
+to dispatch any pending action and return; the next state-advancing
+event will cause the projector to emit a fresh beacon. Only an
+unhandled exception in :func:`process_record` keeps a beacon visible —
+SQS retries those under its standard error semantics.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
+import pytest
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from common.state import RunState
@@ -52,21 +54,25 @@ def make_run(state: RunState | None) -> Run:
     )
 
 
-def test_active_beacon_reported_as_failure() -> None:
-    """An active (non-terminal) run keeps its beacon visible via batchItemFailures."""
+def test_active_beacon_acked_after_dispatch() -> None:
+    """Active runs dispatch and ack — no batch-item failure, beacon deleted."""
     event = {"Records": [beacon("r-1", message_id="msg-active")]}
     with (
         patch("state_router.handler.read_run", return_value=make_run(RunState.tasks_in_progress)),
-        patch("state_router.handler.execute"),
+        patch("state_router.handler.execute") as mock_execute,
     ):
         out = handler(event, ctx())
-    assert out == {"batchItemFailures": [{"itemIdentifier": "msg-active"}]}
+    assert out == {"batchItemFailures": []}
+    assert mock_execute.call_count == 1
 
 
-def test_terminal_beacon_returned_as_success() -> None:
-    """A run in a terminal state is omitted from failures, so SQS deletes it."""
+def test_terminal_beacon_acked() -> None:
+    """A run in a terminal state acks normally; ``decide`` returns Noop."""
     event = {"Records": [beacon("r-1", message_id="msg-done")]}
-    with patch("state_router.handler.read_run", return_value=make_run(RunState.done)):
+    with (
+        patch("state_router.handler.read_run", return_value=make_run(RunState.done)),
+        patch("state_router.handler.execute"),
+    ):
         out = handler(event, ctx())
     assert out == {"batchItemFailures": []}
 
@@ -93,8 +99,8 @@ def test_beacon_missing_run_id_returned_as_success() -> None:
     assert out == {"batchItemFailures": []}
 
 
-def test_mixed_batch_only_actives_in_failures() -> None:
-    """Handler segregates the batch — actives kept, terminals deleted."""
+def test_mixed_batch_all_acked() -> None:
+    """Mixed batch: every beacon is acked under the event-driven model."""
     event = {
         "Records": [
             beacon("r-active", message_id="msg-1"),
@@ -114,4 +120,19 @@ def test_mixed_batch_only_actives_in_failures() -> None:
         patch("state_router.handler.execute"),
     ):
         out = handler(event, ctx())
-    assert out["batchItemFailures"] == [{"itemIdentifier": "msg-1"}]
+    assert out == {"batchItemFailures": []}
+
+
+def test_unhandled_exception_propagates() -> None:
+    """Unhandled errors propagate so SQS keeps the beacon visible for retry.
+
+    Under the event-driven model, redelivery is no longer a state-machine
+    tick — it's pure error retry. The handler does not swallow exceptions
+    from ``decide`` / ``execute`` / ``read_run``.
+    """
+    event = {"Records": [beacon("r-broken", message_id="msg-1")]}
+    with (
+        patch("state_router.handler.read_run", side_effect=RuntimeError("ddb down")),
+        pytest.raises(RuntimeError, match="ddb down"),
+    ):
+        handler(event, ctx())
