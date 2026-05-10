@@ -34,6 +34,7 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
@@ -43,9 +44,14 @@ from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.parser import ValidationError, parse
 from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
-from common.ddb import PutBuilder
+from common.ddb import (
+    PutBuilder,
+    TransactWriteItemsBuilder,
+    UpdateBuilder,
+    deserialize_item,
+)
 from common.events import EventType as PlatformEventType
 from common.events import UntypedEnvelope
 from common.state import TERMINAL_RUN_STATES, RunState, TaskState
@@ -57,7 +63,6 @@ from common.state_transitions import (
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
-    from mypy_boto3_dynamodb.type_defs import TransactWriteItemTypeDef
 
 logger = Logger(service="event_projector")
 tracer = Tracer(service="event_projector")
@@ -196,6 +201,19 @@ class RunMode:
     next_state: RunState | None = None
     accumulates_feedback: bool = False
 
+    @classmethod
+    def for_event_without_run_transition(cls) -> RunMode:
+        """The RunMode for events whose primary write is the TASK row.
+
+        Task-level events (TASK.READY, TASK.BLOCKED, etc.) still touch
+        the STATE row to record the event's timestamp, last_event_id,
+        status string, and usage totals so the timeline + per-run
+        counters keep rolling up. Those updates carry no
+        ConditionExpression — the EVENT row's
+        ``attribute_not_exists(sk)`` already gates re-delivery.
+        """
+        return cls(from_state=None, next_state=None, accumulates_feedback=False)
+
 
 @dataclass(frozen=True)
 class TaskMode:
@@ -219,31 +237,35 @@ def project_event(*, envelope: UntypedEnvelope, detail: dict[str, Any]) -> bool:
     """
     run_id = str(envelope.run_id)
     event_type = envelope.type or "UNKNOWN"
-    items: list[TransactWriteItemTypeDef] = [event_row_item(run_id, event_type, detail)]
+    transaction = TransactWriteItemsBuilder()
+    transaction.put(event_row_item(run_id, event_type, detail))
     if event_type in TASK_LEVEL_EVENTS:
-        items.extend(task_event_items(run_id, event_type, detail))
+        add_task_event_items(transaction, run_id, event_type, detail)
     else:
-        items.extend(run_event_items(run_id, event_type, detail))
-    try:
-        ddb().transact_write_items(TransactItems=items)
-    except ClientError as exc:
-        if is_conditional_check_failed(exc):
-            logger.info(
-                "event already projected (idempotent no-op)",
-                extra={"run_id": run_id, "event_type": event_type},
-            )
-            return False
-        raise
-    return True
+        add_run_event_items(transaction, run_id, event_type, detail)
+    committed = transaction.commit(ddb())
+    if not committed:
+        logger.info(
+            "event already projected (idempotent no-op)",
+            extra={"run_id": run_id, "event_type": event_type},
+        )
+    return committed
 
 
-def run_event_items(
+def add_run_event_items(
+    transaction: TransactWriteItemsBuilder,
     run_id: str,
     event_type: str,
     detail: dict[str, Any],
-) -> list[TransactWriteItemTypeDef]:
-    """Build the STATE Update + optional OUTBOX Put for a run-level event."""
-    current = read_run_state(run_id)
+) -> None:
+    """Add the STATE Update + optional OUTBOX Put for a run-level event."""
+    current = read_state_attribute(
+        pk=f"RUN#{run_id}",
+        sk="STATE",
+        attribute="current_state",
+        enum_type=RunState,
+        log_context={"run_id": run_id},
+    )
     next_state = apply_run_transition(
         event_type=cast("PlatformEventType", event_type),
         current_state=current,
@@ -252,10 +274,9 @@ def run_event_items(
         mode = spec_iteration_mode(current=current, next_state=next_state, detail=detail)
     else:
         mode = RunMode(from_state=current, next_state=next_state)
-    items: list[TransactWriteItemTypeDef] = [run_state_item(run_id, event_type, detail, mode)]
+    transaction.update(run_state_item(run_id, event_type, detail, mode))
     if mode.next_state is not None:
-        items.append(outbox_item(run_id, detail))
-    return items
+        transaction.put(outbox_item(run_id, detail))
 
 
 def spec_iteration_mode(
@@ -286,24 +307,47 @@ def spec_iteration_mode(
     )
 
 
-def task_event_items(
+def add_task_event_items(
+    transaction: TransactWriteItemsBuilder,
     run_id: str,
     event_type: str,
     detail: dict[str, Any],
-) -> list[TransactWriteItemTypeDef]:
-    """STATE metadata Update + TASK row Update + optional OUTBOX Put."""
+) -> None:
+    """Add the STATE metadata + TASK row + optional OUTBOX items for a task event."""
     payload = detail.get("payload") or {}
     task_id = payload.get("task_id")
     if not isinstance(task_id, str) or not task_id:
         logger.warning("task event missing task_id", extra={"event_type": event_type})
-        return [run_state_item(run_id, event_type, detail, RunMode(from_state=None))]
-    current = read_task_state(run_id, task_id)
+        transaction.update(
+            run_state_item(
+                run_id,
+                event_type,
+                detail,
+                RunMode.for_event_without_run_transition(),
+            ),
+        )
+        return
+    current = read_state_attribute(
+        pk=f"RUN#{run_id}",
+        sk=f"TASK#{task_id}",
+        attribute="status",
+        enum_type=TaskState,
+        log_context={"task_id": task_id, "run_id": run_id},
+    )
     if current is None:
         logger.info(
             "task row missing — skipping task transition",
             extra={"run_id": run_id, "task_id": task_id, "event_type": event_type},
         )
-        return [run_state_item(run_id, event_type, detail, RunMode(from_state=None))]
+        transaction.update(
+            run_state_item(
+                run_id,
+                event_type,
+                detail,
+                RunMode.for_event_without_run_transition(),
+            ),
+        )
+        return
     next_state = apply_task_transition(
         event_type=cast("PlatformEventType", event_type),
         current_state=current,
@@ -319,14 +363,18 @@ def task_event_items(
         next_state=next_state,
         accumulates_feedback=accumulates,
     )
-    items: list[TransactWriteItemTypeDef] = [
-        run_state_item(run_id, event_type, detail, RunMode(from_state=None)),
-    ]
+    transaction.update(
+        run_state_item(
+            run_id,
+            event_type,
+            detail,
+            RunMode.for_event_without_run_transition(),
+        ),
+    )
     if next_state is not None or accumulates:
-        items.append(task_row_item(run_id, event_type, detail, mode))
+        transaction.update(task_row_item(run_id, event_type, detail, mode))
     if next_state is not None:
-        items.append(outbox_item(run_id, detail))
-    return items
+        transaction.put(outbox_item(run_id, detail))
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +386,7 @@ def event_row_item(
     run_id: str,
     event_type: str,
     detail: dict[str, Any],
-) -> TransactWriteItemTypeDef:
+) -> PutBuilder:
     """The EVENT timeline row — master idempotency key for the event.
 
     A re-delivered envelope fails ``attribute_not_exists(sk)`` and the
@@ -346,161 +394,205 @@ def event_row_item(
     metadata + state writes safe under at-least-once delivery.
     """
     event_id = detail.get("event_id", "unknown")
-    return (
-        PutBuilder(
-            table=runs_table(),
-            item={
-                "pk": f"RUN#{run_id}",
-                "sk": f"EVENT#{event_id}",
-                "type": event_type,
-                "envelope": json.dumps(detail),
-            },
-        )
-        .condition_not_exists("sk")
-        .to_item()
-    )
+    return PutBuilder(
+        table=runs_table(),
+        item={
+            "pk": f"RUN#{run_id}",
+            "sk": f"EVENT#{event_id}",
+            "type": event_type,
+            "envelope": json.dumps(detail),
+        },
+    ).condition_not_exists("sk")
 
 
-def run_state_item(  # noqa: C901, PLR0912, PLR0915
+def run_state_item(
     run_id: str,
     event_type: str,
     detail: dict[str, Any],
     mode: RunMode,
-) -> TransactWriteItemTypeDef:
-    """The STATE row Update — every clause this row needs in one Update.
+) -> UpdateBuilder:
+    """Build the STATE row Update for this event.
 
-    The branching is intrinsic to a STATE row that mixes always-on
-    metadata (status, updated_at, if-not-exists project_slug, GSI keys
-    for issue-driven REQUEST.RECEIVED, per-event-type projections,
-    usage totals via ``ADD``) with optional state-advance and spec-
-    iteration-feedback clauses. Splitting into single-call helpers
-    only added indirection (every helper had exactly one caller),
-    so the linter suppressions accept that this is one cohesive
-    item-builder rather than separable concerns.
+    Composes always-on metadata (status, timestamps, last_event_*),
+    payload projections (project_slug, GSI keys, spec_slug, etc.),
+    usage totals, optional state-advance, optional spec-feedback
+    accumulator, and the right ConditionExpression onto a single
+    UpdateBuilder.
 
-    Condition policy: pure metadata-only updates carry no
-    ``ConditionExpression`` — the EVENT row's
+    Pure metadata-only updates carry no ConditionExpression — the
+    EVENT row's ``attribute_not_exists(sk)`` already gates re-delivery.
+    Advancing or accumulator events condition on the cursor's exact
+    value (or ``attribute_not_exists(current_state)`` for the first
+    event) so a concurrent event that just moved past drops cleanly
+    via CCFE.
+    """
+    payload = detail.get("payload") or {}
+    update = (
+        UpdateBuilder(
+            table=runs_table(),
+            key={"pk": f"RUN#{run_id}", "sk": "STATE"},
+        )
+        .set("status", event_type)
+        .set("updated_at", detail.get("timestamp", ""))
+        .set("last_event_id", detail.get("event_id", ""))
+        .set("last_event_at", detail.get("timestamp", ""))
+    )
+    apply_payload_projections(update, run_id=run_id, event_type=event_type, payload=payload)
+    apply_usage_totals(update, payload=payload)
+    apply_run_state_advance(update, mode=mode, event_type=event_type)
+    apply_spec_feedback_accumulator(update, mode=mode, payload=payload)
+    apply_run_state_condition(update, mode=mode)
+    return update
+
+
+def apply_payload_projections(
+    update: UpdateBuilder,
+    *,
+    run_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Project payload fields onto the STATE row.
+
+    Covers the always-on fields (``project_slug`` via if_not_exists,
+    the ``REQUEST.RECEIVED`` GSI keys, ``spec_slug``,
+    ``spec_s3_prefix``) and the per-event-type fields
+    (``ISSUE.TRIAGED`` workflow_kind + triage_action, ``SPEC.READY``
+    tasks_total + task_ids, ``RUN.COMPLETED`` tasks_completed). Each
+    is gated on the payload field being well-formed.
+    """
+    project_slug = payload.get("project_slug")
+    if isinstance(project_slug, str) and project_slug:
+        update.set_if_not_exists("project_slug", project_slug)
+    source_issue_url = payload.get("source_issue_url")
+    if event_type == "REQUEST.RECEIVED" and isinstance(source_issue_url, str) and source_issue_url:
+        update.set_if_not_exists("gsi1pk", f"ISSUE#{source_issue_url}")
+        update.set_if_not_exists("gsi1sk", f"RUN#{run_id}")
+        update.set_if_not_exists("source_issue_url", source_issue_url)
+    spec_slug = payload.get("spec_slug")
+    if isinstance(spec_slug, str) and spec_slug:
+        update.set("spec_slug", spec_slug)
+    spec_s3_prefix = payload.get("spec_s3_prefix")
+    if isinstance(spec_s3_prefix, str) and spec_s3_prefix:
+        update.set("spec_s3_prefix", spec_s3_prefix)
+    apply_event_specific_projections(update, event_type=event_type, payload=payload)
+
+
+def apply_event_specific_projections(
+    update: UpdateBuilder,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Project fields that exist only for specific event types.
+
+    ISSUE.TRIAGED carries the chosen workflow + the decision verb;
+    SPEC.READY carries the task count + task ID set the dashboard
+    renders; RUN.COMPLETED carries the final tasks_completed counter
+    for the run summary.
+    """
+    if event_type == "ISSUE.TRIAGED":
+        workflow_kind = payload.get("workflow_kind")
+        if isinstance(workflow_kind, str) and workflow_kind:
+            update.set("workflow_kind", workflow_kind)
+        action = payload.get("action")
+        if isinstance(action, str) and action:
+            update.set("triage_action", action)
+    elif event_type == "SPEC.READY":
+        task_count = payload.get("task_count")
+        if isinstance(task_count, int):
+            update.set("tasks_total", task_count)
+        task_ids = payload.get("task_ids")
+        if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
+            update.set("task_ids", set(task_ids))
+    elif event_type == "RUN.COMPLETED":
+        update.set("tasks_completed", int(payload.get("tasks_completed", 0)))
+
+
+def apply_usage_totals(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:
+    """ADD per-event token / cost / duration totals when non-zero.
+
+    Each ADD is conditional on the value being non-zero to avoid a
+    no-op DDB write. Float ``cost_usd`` passes through the builder
+    which Decimal-normalises before serialisation.
+    """
+    in_tokens = int(payload.get("token_in", 0) or 0)
+    if in_tokens:
+        update.add("total_token_in", in_tokens)
+    out_tokens = int(payload.get("token_out", 0) or 0)
+    if out_tokens:
+        update.add("total_token_out", out_tokens)
+    cost = float(payload.get("cost_usd", 0.0) or 0.0)
+    if cost:
+        update.add("total_cost_usd", cost)
+    duration = int(payload.get("duration_ms", 0) or 0)
+    if duration:
+        update.add("total_duration_ms", duration)
+
+
+def apply_run_state_advance(
+    update: UpdateBuilder,
+    *,
+    mode: RunMode,
+    event_type: str,
+) -> None:
+    """Advance ``current_state`` when ``mode.next_state`` is set.
+
+    SET ``current_state``, ADD ``state_transitions``, optionally reset
+    ``dispatch_failure_count`` for dispatch-completion events, and on
+    ``SPEC.READY`` arriving from ``architect_running`` clear
+    ``pending_spec_feedback`` and REMOVE ``spec_delivery_ids`` (the
+    architect cycle consumed them).
+    """
+    if mode.next_state is None:
+        return
+    update.set("current_state", mode.next_state.value)
+    update.add("state_transitions", 1)
+    if event_type in DISPATCH_RESET_EVENTS:
+        update.set("dispatch_failure_count", 0)
+    if event_type == "SPEC.READY" and mode.from_state == RunState.architect_running:
+        update.set("pending_spec_feedback", [])
+        update.remove("spec_delivery_ids")
+
+
+def apply_spec_feedback_accumulator(
+    update: UpdateBuilder,
+    *,
+    mode: RunMode,
+    payload: dict[str, Any],
+) -> None:
+    """Append SPEC.ITERATION_REQUESTED feedback onto ``pending_spec_feedback``.
+
+    Fires only when ``mode.accumulates_feedback``. The delivery_id is
+    added to the dedupe ``spec_delivery_ids`` set so the architect can
+    skip already-consumed deliveries on re-run.
+    """
+    if not mode.accumulates_feedback:
+        return
+    body = payload.get("feedback_body")
+    if not isinstance(body, str) or not body.strip():
+        return
+    update.list_append("pending_spec_feedback", [body])
+    delivery_id = payload.get("delivery_id")
+    if isinstance(delivery_id, str) and delivery_id:
+        update.add("spec_delivery_ids", {delivery_id})
+
+
+def apply_run_state_condition(update: UpdateBuilder, *, mode: RunMode) -> None:
+    """Attach the STATE row's ConditionExpression.
+
+    Pure metadata-only updates carry no condition — the EVENT row's
     ``attribute_not_exists(sk)`` already gates re-delivery. Advancing
     or accumulator events condition on the cursor's exact value (or
     ``attribute_not_exists(current_state)`` for the first event) so a
     concurrent event that just moved past drops cleanly via CCFE.
     """
-    payload = detail.get("payload") or {}
-    timestamp = detail.get("timestamp", "")
-    event_id = detail.get("event_id", "")
-    set_parts = [
-        "#s = :status",
-        "updated_at = :ts",
-        "last_event_id = :eid",
-        "last_event_at = :ts",
-    ]
-    add_parts: list[str] = []
-    remove_parts: list[str] = []
-    names: dict[str, str] = {"#s": "status"}
-    values: dict[str, dict[str, Any]] = {
-        ":status": {"S": event_type},
-        ":ts": {"S": timestamp},
-        ":eid": {"S": event_id},
-    }
-    project_slug = payload.get("project_slug")
-    if isinstance(project_slug, str) and project_slug:
-        set_parts.append("project_slug = if_not_exists(project_slug, :proj)")
-        values[":proj"] = {"S": project_slug}
-    source_issue_url = payload.get("source_issue_url")
-    if event_type == "REQUEST.RECEIVED" and isinstance(source_issue_url, str) and source_issue_url:
-        set_parts.append("gsi1pk = if_not_exists(gsi1pk, :issue)")
-        set_parts.append("gsi1sk = if_not_exists(gsi1sk, :runref)")
-        set_parts.append("source_issue_url = if_not_exists(source_issue_url, :issue_url)")
-        values[":issue"] = {"S": f"ISSUE#{source_issue_url}"}
-        values[":runref"] = {"S": f"RUN#{run_id}"}
-        values[":issue_url"] = {"S": source_issue_url}
-    spec_slug = payload.get("spec_slug")
-    if isinstance(spec_slug, str) and spec_slug:
-        set_parts.append("spec_slug = :spec_slug")
-        values[":spec_slug"] = {"S": spec_slug}
-    spec_s3_prefix = payload.get("spec_s3_prefix")
-    if isinstance(spec_s3_prefix, str) and spec_s3_prefix:
-        set_parts.append("spec_s3_prefix = :spec_prefix")
-        values[":spec_prefix"] = {"S": spec_s3_prefix}
-    if event_type == "ISSUE.TRIAGED":
-        workflow_kind = payload.get("workflow_kind")
-        if isinstance(workflow_kind, str) and workflow_kind:
-            set_parts.append("workflow_kind = :wk")
-            values[":wk"] = {"S": workflow_kind}
-        action = payload.get("action")
-        if isinstance(action, str) and action:
-            set_parts.append("triage_action = :ta")
-            values[":ta"] = {"S": action}
-    if event_type == "SPEC.READY":
-        if isinstance(payload.get("task_count"), int):
-            set_parts.append("tasks_total = :tt")
-            values[":tt"] = {"N": str(payload["task_count"])}
-        task_ids = payload.get("task_ids")
-        if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
-            set_parts.append("task_ids = :tids")
-            values[":tids"] = {"SS": list(task_ids)}
-    if event_type == "RUN.COMPLETED":
-        set_parts.append("tasks_completed = :tc")
-        values[":tc"] = {"N": str(int(payload.get("tasks_completed", 0)))}
-    in_tokens = int(payload.get("token_in", 0) or 0)
-    out_tokens = int(payload.get("token_out", 0) or 0)
-    cost = float(payload.get("cost_usd", 0.0) or 0.0)
-    duration = int(payload.get("duration_ms", 0) or 0)
-    if in_tokens:
-        add_parts.append("total_token_in :ti")
-        values[":ti"] = {"N": str(in_tokens)}
-    if out_tokens:
-        add_parts.append("total_token_out :to_")
-        values[":to_"] = {"N": str(out_tokens)}
-    if cost:
-        add_parts.append("total_cost_usd :cost")
-        values[":cost"] = {"N": str(cost)}
-    if duration:
-        add_parts.append("total_duration_ms :dur")
-        values[":dur"] = {"N": str(duration)}
-    if mode.next_state is not None:
-        set_parts.append("current_state = :to")
-        values[":to"] = {"S": mode.next_state.value}
-        add_parts.append("state_transitions :one")
-        values[":one"] = {"N": "1"}
-        if event_type in DISPATCH_RESET_EVENTS:
-            set_parts.append("dispatch_failure_count = :zero")
-            values[":zero"] = {"N": "0"}
-        if event_type == "SPEC.READY" and mode.from_state == RunState.architect_running:
-            set_parts.append("pending_spec_feedback = :feedback_empty_advance")
-            values[":feedback_empty_advance"] = {"L": []}
-            remove_parts.append("spec_delivery_ids")
-    if mode.accumulates_feedback:
-        body = payload.get("feedback_body")
-        if isinstance(body, str) and body.strip():
-            set_parts.append(
-                "pending_spec_feedback = list_append("
-                "if_not_exists(pending_spec_feedback, :feedback_empty), :feedback_one)",
-            )
-            values[":feedback_empty"] = {"L": []}
-            values[":feedback_one"] = {"L": [{"S": body}]}
-            delivery_id = payload.get("delivery_id")
-            if isinstance(delivery_id, str) and delivery_id:
-                add_parts.append("spec_delivery_ids :spec_did")
-                values[":spec_did"] = {"SS": [delivery_id]}
     if mode.next_state is None and not mode.accumulates_feedback:
-        condition = None
-    elif mode.from_state is None:
-        condition = "attribute_not_exists(current_state)"
+        return
+    if mode.from_state is None:
+        update.condition_not_exists("current_state")
     else:
-        condition = "current_state = :from"
-        values[":from"] = {"S": mode.from_state.value}
-    expression = compose_expression(set_parts, add_parts, remove_parts)
-    update: dict[str, Any] = {
-        "TableName": runs_table(),
-        "Key": {"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-        "UpdateExpression": expression,
-        "ExpressionAttributeNames": names,
-        "ExpressionAttributeValues": values,
-    }
-    if condition is not None:
-        update["ConditionExpression"] = condition
-    return cast("TransactWriteItemTypeDef", {"Update": update})
+        update.condition_eq("current_state", mode.from_state.value)
 
 
 def task_row_item(
@@ -508,126 +600,88 @@ def task_row_item(
     event_type: str,
     detail: dict[str, Any],
     mode: TaskMode,
-) -> TransactWriteItemTypeDef:
-    """The TASK row Update — advance or in-place iteration accumulator.
+) -> UpdateBuilder:
+    """Build the TASK row Update — state advance + iteration accumulator + pr_url.
 
-    On ``TASK.READY`` arriving from ``iterating``, also flushes the
-    feedback queue (the just-merged commit consumed it). On
-    ``TASK.ITERATION_REQUESTED``, appends to ``pending_feedback`` +
-    ADDs the delivery_id (whether or not the event also advances
-    state).
+    The condition ``status = :from`` is always attached; a re-delivery
+    or race that lost the cursor drops cleanly via CCFE.
     """
     payload = detail.get("payload") or {}
-    timestamp = detail.get("timestamp", "")
-    set_parts = ["last_event_id = :eid", "last_event_at = :ts"]
-    add_parts: list[str] = []
-    remove_parts: list[str] = []
-    values: dict[str, Any] = {
-        ":from": {"S": mode.from_state.value},
-        ":eid": {"S": detail.get("event_id", "")},
-        ":ts": {"S": timestamp},
-    }
-    names: dict[str, str] = {"#s": "status"}
-    if mode.next_state is not None:
-        set_parts.insert(0, "#s = :to")
-        values[":to"] = {"S": mode.next_state.value}
-        if event_type in DISPATCH_RESET_EVENTS:
-            set_parts.append("dispatch_failure_count = :zero")
-            values[":zero"] = {"N": "0"}
-        if event_type == "TASK.READY" and mode.from_state == TaskState.iterating:
-            set_parts.append("pending_feedback = :empty_list")
-            values[":empty_list"] = {"L": []}
-            remove_parts.append("delivery_ids")
-    if event_type == "TASK.ITERATION_REQUESTED":
-        feedback = payload.get("feedback")
-        if isinstance(feedback, dict):
-            set_parts.append(
-                "pending_feedback = list_append("
-                "if_not_exists(pending_feedback, :feedback_empty), :feedback_one"
-                ")",
-            )
-            values[":feedback_empty"] = {"L": []}
-            values[":feedback_one"] = {"L": [{"M": map_feedback(feedback)}]}
-        delivery_id = payload.get("delivery_id")
-        if isinstance(delivery_id, str) and delivery_id:
-            add_parts.append("delivery_ids :did")
-            values[":did"] = {"SS": [delivery_id]}
+    update = (
+        UpdateBuilder(
+            table=runs_table(),
+            key={"pk": f"RUN#{run_id}", "sk": f"TASK#{mode.task_id}"},
+        )
+        .set("last_event_id", detail.get("event_id", ""))
+        .set("last_event_at", detail.get("timestamp", ""))
+        .condition_eq("status", mode.from_state.value)
+    )
+    apply_task_state_advance(update, mode=mode, event_type=event_type)
+    apply_task_iteration_clauses(update, event_type=event_type, payload=payload)
     pr_url = payload.get("pr_url")
     if isinstance(pr_url, str) and pr_url:
-        set_parts.append("pr_url = :pr_url")
-        values[":pr_url"] = {"S": pr_url}
-    expression = compose_expression(set_parts, add_parts, remove_parts)
-    return {
-        "Update": {
-            "TableName": runs_table(),
-            "Key": {
-                "pk": {"S": f"RUN#{run_id}"},
-                "sk": {"S": f"TASK#{mode.task_id}"},
-            },
-            "UpdateExpression": expression,
-            "ConditionExpression": "#s = :from",
-            "ExpressionAttributeNames": names,
-            "ExpressionAttributeValues": values,
-        },
-    }
+        update.set("pr_url", pr_url)
+    return update
 
 
-def outbox_item(run_id: str, detail: dict[str, Any]) -> TransactWriteItemTypeDef:
+def apply_task_state_advance(
+    update: UpdateBuilder,
+    *,
+    mode: TaskMode,
+    event_type: str,
+) -> None:
+    """SET status to next state, reset dispatch counter, flush on iterating→pr_open.
+
+    On ``TASK.READY`` arriving from ``iterating``, the just-merged
+    commit consumed the queued feedback — clear ``pending_feedback``
+    and REMOVE ``delivery_ids`` so the next iteration starts fresh.
+    """
+    if mode.next_state is None:
+        return
+    update.set("status", mode.next_state.value)
+    if event_type in DISPATCH_RESET_EVENTS:
+        update.set("dispatch_failure_count", 0)
+    if event_type == "TASK.READY" and mode.from_state == TaskState.iterating:
+        update.set("pending_feedback", [])
+        update.remove("delivery_ids")
+
+
+def apply_task_iteration_clauses(
+    update: UpdateBuilder,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Append the feedback dict to ``pending_feedback`` and ADD the delivery_id.
+
+    Fires on every ``TASK.ITERATION_REQUESTED`` — whether or not the
+    event also advances task state. The feedback dict serialises to a
+    DDB Map directly via ``TypeSerializer``; bool / int / None fields
+    are disambiguated correctly without per-type coercion.
+    """
+    if event_type != "TASK.ITERATION_REQUESTED":
+        return
+    feedback = payload.get("feedback")
+    if isinstance(feedback, dict):
+        update.list_append("pending_feedback", [feedback])
+    delivery_id = payload.get("delivery_id")
+    if isinstance(delivery_id, str) and delivery_id:
+        update.add("delivery_ids", {delivery_id})
+
+
+def outbox_item(run_id: str, detail: dict[str, Any]) -> PutBuilder:
     """The OUTBOX row the EventBridge Pipe forwards to the beacon queue."""
     event_id = detail.get("event_id", "")
-    return (
-        PutBuilder(
-            table=runs_table(),
-            item={
-                "pk": f"RUN#{run_id}",
-                "sk": f"OUTBOX#{event_id}",
-                "run_id": run_id,
-                "project_slug": project_slug_from_envelope(detail=detail, run_id=run_id),
-                "expire_at": int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS,
-            },
-        )
-        .condition_not_exists("sk")
-        .to_item()
-    )
-
-
-# ---------------------------------------------------------------------------
-# Expression builders
-# ---------------------------------------------------------------------------
-
-
-def compose_expression(
-    set_parts: list[str],
-    add_parts: list[str],
-    remove_parts: list[str],
-) -> str:
-    """Stitch SET / ADD / REMOVE clauses into one UpdateExpression."""
-    expression = "SET " + ", ".join(set_parts)
-    if add_parts:
-        expression += " ADD " + ", ".join(add_parts)
-    if remove_parts:
-        expression += " REMOVE " + ", ".join(remove_parts)
-    return expression
-
-
-def map_feedback(feedback: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Convert a flat feedback dict into a one-level DDB map.
-
-    All FeedbackItem fields are scalars (str / int / bool); nested
-    structures don't exist today. If a future FeedbackItem grows
-    nested state, extend this function.
-    """
-    out: dict[str, dict[str, Any]] = {}
-    for k, v in feedback.items():
-        if isinstance(v, str):
-            out[k] = {"S": v}
-        elif isinstance(v, bool):
-            out[k] = {"BOOL": v}
-        elif isinstance(v, int):
-            out[k] = {"N": str(v)}
-        elif v is None:
-            out[k] = {"NULL": True}
-    return out
+    return PutBuilder(
+        table=runs_table(),
+        item={
+            "pk": f"RUN#{run_id}",
+            "sk": f"OUTBOX#{event_id}",
+            "run_id": run_id,
+            "project_slug": project_slug_from_envelope(detail=detail, run_id=run_id),
+            "expire_at": int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS,
+        },
+    ).condition_not_exists("sk")
 
 
 def project_slug_from_envelope(*, detail: dict[str, Any], run_id: str) -> str:
@@ -646,68 +700,46 @@ def project_slug_from_envelope(*, detail: dict[str, Any], run_id: str) -> str:
     return run_id
 
 
-def is_conditional_check_failed(exc: ClientError) -> bool:
-    """``True`` when a TransactWriteItems was cancelled by a condition mismatch.
-
-    Surfaces as ``TransactionCanceledException`` with a per-item
-    ``CancellationReasons`` list. Any ``ConditionalCheckFailed`` reason
-    means we lost a race or this is a re-delivery — both silent no-ops.
-    """
-    if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
-        return False
-    reasons = exc.response.get("CancellationReasons", []) or []
-    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
-
-
 # ---------------------------------------------------------------------------
 # State reads
 # ---------------------------------------------------------------------------
 
 
-def read_run_state(run_id: str) -> RunState | None:
-    """Read ``current_state`` off the run's STATE row, or ``None``."""
-    item = (
-        ddb()
-        .get_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            ProjectionExpression="current_state",
-        )
-        .get("Item")
+def read_state_attribute[T: StrEnum](
+    *,
+    pk: str,
+    sk: str,
+    attribute: str,
+    enum_type: type[T],
+    log_context: dict[str, str],
+) -> T | None:
+    """Read one STR attribute off a runs-table row and parse it as a StrEnum.
+
+    Returns ``None`` if the row is missing, the attribute is absent or
+    empty, or the value can't be parsed by ``enum_type``. Aliases the
+    attribute name via ``ExpressionAttributeNames`` so reserved-word
+    attributes (``status``) work without per-call special-casing.
+    """
+    response = ddb().get_item(
+        TableName=runs_table(),
+        Key={"pk": {"S": pk}, "sk": {"S": sk}},
+        ProjectionExpression="#a",
+        ExpressionAttributeNames={"#a": attribute},
     )
+    item = response.get("Item")
     if not item:
         return None
-    raw = item.get("current_state", {}).get("S")
-    if not raw:
+    decoded = deserialize_item(cast("dict[str, Any]", item))
+    raw = decoded.get(attribute)
+    if not isinstance(raw, str) or not raw:
         return None
     try:
-        return RunState(raw)
+        return enum_type(raw)
     except ValueError:
-        logger.warning("unknown run state in DDB", extra={"raw": raw, "run_id": run_id})
-        return None
-
-
-def read_task_state(run_id: str, task_id: str) -> TaskState | None:
-    """Read ``status`` off a TASK row, or ``None`` if the row is missing."""
-    item = (
-        ddb()
-        .get_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": f"TASK#{task_id}"}},
-            ProjectionExpression="#s",
-            ExpressionAttributeNames={"#s": "status"},
+        logger.warning(
+            "unknown attribute value in DDB",
+            extra={"attribute": attribute, "raw": raw, **log_context},
         )
-        .get("Item")
-    )
-    if not item:
-        return None
-    raw = item.get("status", {}).get("S")
-    if not raw:
-        return None
-    try:
-        return TaskState(raw)
-    except ValueError:
-        logger.warning("unknown task state in DDB", extra={"raw": raw, "task_id": task_id})
         return None
 
 
@@ -739,7 +771,7 @@ def forward_to_memory(envelope: dict[str, Any]) -> None:
             eventTimestamp=parse_event_timestamp(envelope),
             payload=[{"blob": envelope}],
         )
-    except Exception as exc:
+    except (ClientError, BotoCoreError) as exc:
         logger.warning("memory CreateEvent failed", extra={"err": repr(exc)})
         metrics.add_metric(name="MemoryWriteFailures", unit=MetricUnit.Count, value=1)
 
