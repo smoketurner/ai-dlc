@@ -1,11 +1,12 @@
 ################################################################################
-# Gateway VPC endpoints for S3 and DynamoDB. Both are free and avoid NAT
-# data-processing charges for high-volume calls.
+# Gateway VPC endpoints for S3 and DynamoDB. Both are free and keep S3 +
+# DynamoDB traffic on the AWS backbone instead of routing through the IGW.
 #
-# Interface endpoints were removed in favour of NAT egress — the Fargate
-# dashboard is the only VPC-resident workload, AgentCore Runtime uses
-# network_mode = PUBLIC, and no Lambdas are VPC-attached. NAT covers the
-# control-plane traffic the dashboard makes.
+# Interface endpoints were removed — the Fargate dashboard is the only
+# VPC-resident workload, runs in public subnets with a public IP, and
+# reaches other AWS APIs directly via the IGW. AgentCore Runtime uses
+# network_mode = PUBLIC, and no Lambdas are VPC-attached, so nothing in
+# the VPC needs private interface endpoints today.
 ################################################################################
 
 module "vpc_endpoints" {
