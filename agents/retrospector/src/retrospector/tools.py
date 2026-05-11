@@ -6,8 +6,8 @@ The Retrospector reads:
     comments, when the terminal event was a PR close (merged or not);
   * the closed issue + its comment thread, when the terminal event was
     an issue close / bot unassign;
-  * the project's ``docs/MEMORY.md`` (via the artifact_tool gateway,
-    same as architect/proposer) so it can avoid proposing duplicates.
+  * the project's ``MEMORY.md`` (via the artifact_tool gateway, same
+    as architect/proposer) so it can avoid proposing duplicates.
 
 All GitHub reads go through the existing ``repo_helper`` Lambda — no
 direct GitHub credentials in this container.
@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 import boto3
 from strands import tool
 
-from common.memory_md import read_memory_md
+from common.memory_md import read_memory_md, read_stack_profile_md
 
 if TYPE_CHECKING:
     from mypy_boto3_lambda.client import LambdaClient
@@ -80,6 +80,7 @@ def list_issue_comments(repo: str, issue_number: int) -> dict[str, Any]:
 
 # Strands wrappers — exposed to the agent.
 read_memory_md_tool = tool(read_memory_md)
+read_stack_profile_md_tool = tool(read_stack_profile_md)
 get_pr_tool = tool(get_pr)
 list_pr_comments_tool = tool(list_pr_comments)
 list_pr_review_comments_tool = tool(list_pr_review_comments)

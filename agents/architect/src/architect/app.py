@@ -27,7 +27,11 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from architect.agent import build_agent, generate_spec, model_id
-from architect.repo_grounding import clone_target_repo, sync_memory_md_from_clone
+from architect.repo_grounding import (
+    clone_target_repo,
+    sync_memory_md_from_clone,
+    sync_stack_profile_from_clone,
+)
 from architect.spec import SpecBundle, render_design, render_requirements, render_tasks
 from architect.tools import write_spec_doc
 from common.event_emit import publish
@@ -77,6 +81,7 @@ def run_architect(payload: ArchitectInput, task_id: int) -> None:
             project_slug=payload.project_slug,
             target_repo=payload.target_repo,
         )
+        sync_stack_profile_from_clone(project_slug=payload.project_slug)
         agent = build_agent(payload.run_id)
         spec = generate_spec(
             agent,

@@ -274,18 +274,15 @@ def test_push_branch_happy_path_uses_set_upstream(monkeypatch: pytest.MonkeyPatc
 def test_push_branch_falls_back_to_force_with_lease_on_reject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reject → fetch the remote branch → force-with-lease push pinned to FETCH_HEAD."""
+    """Reject → fetch the remote branch → force-with-lease push."""
     seen: list[tuple[str, ...]] = []
-    remote_sha = "abc123def456abc123def456abc123def4567890"
 
     def fake_run_git(*args: str, cwd: Any = None) -> str:
         del cwd
         seen.append(args)
-        if args[0] == "push" and not any(a.startswith("--force-with-lease") for a in args):
+        if args[0] == "push" and "--force-with-lease" not in args:
             msg = "git push failed (exit 1) ... ! [rejected] ... non-fast-forward"
             raise RuntimeError(msg)
-        if args == ("rev-parse", "FETCH_HEAD"):
-            return f"{remote_sha}\n"
         return ""
 
     monkeypatch.setattr(repo_ops, "run_git", fake_run_git)
@@ -293,13 +290,7 @@ def test_push_branch_falls_back_to_force_with_lease_on_reject(
     assert seen == [
         ("push", "--set-upstream", "origin", "aidlc/spec/t-001"),
         ("fetch", "origin", "aidlc/spec/t-001"),
-        ("rev-parse", "FETCH_HEAD"),
-        (
-            "push",
-            f"--force-with-lease=aidlc/spec/t-001:{remote_sha}",
-            "origin",
-            "aidlc/spec/t-001",
-        ),
+        ("push", "--force-with-lease", "origin", "aidlc/spec/t-001"),
     ]
 
 
@@ -467,15 +458,7 @@ def test_parse_pr_number_rejects_garbage() -> None:
 
 
 def test_checkout_task_branch_runs_fetch_then_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fetch uses an explicit refspec into ``refs/remotes/origin/<branch>``.
-
-    Regression: ``clone_repo`` shallow-clones with ``--branch main``
-    which restricts the default fetch refspec to main. A bare
-    ``git fetch origin <task-branch>`` only updates ``FETCH_HEAD`` —
-    the subsequent ``checkout -B <branch> origin/<branch>`` then fails
-    with "is not a commit" because the remote-tracking ref was never
-    populated.
-    """
+    """Fetch the task branch, then check it out via ``origin/<branch>``."""
     calls: list[tuple[str, ...]] = []
 
     def fake_run_git(*args: str, **_: Any) -> str:
@@ -484,11 +467,7 @@ def test_checkout_task_branch_runs_fetch_then_checkout(monkeypatch: pytest.Monke
 
     monkeypatch.setattr(repo_ops, "run_git", fake_run_git)
     repo_ops.checkout_task_branch("aidlc/my-spec/t-001")
-    assert calls[0] == (
-        "fetch",
-        "origin",
-        "aidlc/my-spec/t-001:refs/remotes/origin/aidlc/my-spec/t-001",
-    )
-    assert calls[1][:2] == ("checkout", "-B")
-    assert calls[1][2] == "aidlc/my-spec/t-001"
-    assert calls[1][3] == "origin/aidlc/my-spec/t-001"
+    assert calls == [
+        ("fetch", "origin", "aidlc/my-spec/t-001"),
+        ("checkout", "-B", "aidlc/my-spec/t-001", "origin/aidlc/my-spec/t-001"),
+    ]

@@ -8,6 +8,7 @@
 ARG PYTHON_VERSION=3.14
 ARG NODE_MAJOR=22
 ARG CLAUDE_CODE_VERSION=2.1.126
+ARG MISE_VERSION=2026.5.6
 
 # Trixie variant ships uv 0.11.x (matches pyproject required-version >=0.11);
 # the bookworm variant lags at uv 0.9.x.
@@ -37,19 +38,25 @@ FROM --platform=linux/arm64 python:${PYTHON_VERSION}-slim-trixie AS runtime
 
 ARG NODE_MAJOR
 ARG CLAUDE_CODE_VERSION
+ARG MISE_VERSION
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:/usr/local/bin:$PATH" \
+    PATH="/home/agent/.local/share/mise/shims:/app/.venv/bin:/usr/local/bin:$PATH" \
     AIDLC_WORKSPACE_ROOT=/workspace \
     AIDLC_WORKSPACE=/workspace/repo \
-    CLAUDE_CODE_USE_BEDROCK=1
+    CLAUDE_CODE_USE_BEDROCK=1 \
+    MISE_DATA_DIR=/home/agent/.local/share/mise \
+    MISE_CONFIG_DIR=/home/agent/.config/mise
 
 # git for repo ops; nodejs for the Claude Code CLI; ca-certificates so HTTPS
 # works; curl + jq for endpoint probing and JSON inspection; make as the
 # canonical lint/test entrypoint many project Makefiles encode; ripgrep + fd
 # because Claude Code's instructions tell it to prefer ``rg`` over ``grep``
 # and ``fd`` over ``find`` — having them present unlocks the faster paths.
+# mise lets the agent install per-repo toolchains on the fly when a project
+# pins versions via ``.tool-versions`` / ``mise.toml`` — covers Rust, Go,
+# Java, Ruby, etc. without rebuilding this image for every language.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -63,13 +70,18 @@ RUN apt-get update \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-arm64.tar.gz" \
+        -o /tmp/mise.tar.gz \
+    && tar -xzf /tmp/mise.tar.gz -C /tmp \
+    && install -m 0755 /tmp/mise/bin/mise /usr/local/bin/mise \
+    && rm -rf /tmp/mise /tmp/mise.tar.gz \
     && apt-get purge -y --auto-remove gnupg \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && groupadd --system --gid 1000 agent \
     && useradd --system --uid 1000 --gid agent --create-home agent \
-    && mkdir -p /workspace \
-    && chown -R agent:agent /workspace
+    && mkdir -p /workspace /home/agent/.local/share/mise /home/agent/.config/mise \
+    && chown -R agent:agent /workspace /home/agent/.local /home/agent/.config
 
 # uv is the project repos' build/test driver — the agent is told to run
 # ``uv sync`` and ``uv run ruff/ty/pytest`` in /workspace/repo, so it must

@@ -16,7 +16,7 @@ module "retrospector_dispatcher" {
   function_name = "${local.prefix}-retrospector-dispatcher"
   description   = "Fires the Retrospector AgentCore Runtime on every terminal event."
   handler       = "retrospector_dispatcher.handler.handler"
-  runtime       = "python3.13"
+  runtime       = "python3.14"
   architectures = ["arm64"]
   memory_size   = 256
   timeout       = 30
@@ -29,7 +29,7 @@ module "retrospector_dispatcher" {
     pip_requirements = "${local.source_dir}/retrospector_dispatcher/requirements.txt"
   }]
   build_in_docker = true
-  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_RETROSPECTOR_RUNTIME_ARN = var.retrospector_runtime_arn

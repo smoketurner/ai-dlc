@@ -12,11 +12,12 @@ import json
 from unittest.mock import MagicMock, patch
 
 from common.state import RunState, TaskState
-from state_router.actions import GuardedAdvance, InvokeAgent, InvokeRepoHelper, Noop
+from state_router.actions import GuardedAdvance, InvokeAgent, InvokeRepoHelper, Noop, SeedTasks
 from state_router.execute import (
     execute,
     execute_guarded_advance,
     execute_invoke_repo_helper,
+    execute_seed_tasks,
     pick_advance_to,
     record_repo_helper_failure,
 )
@@ -224,6 +225,30 @@ def test_unknown_action_type_logs_and_no_ops() -> None:
     with patch("state_router.execute.dispatch_to_runtime") as dispatch:
         execute(make_run(), Noop("just because"))
     assert dispatch.call_count == 0
+
+
+def test_execute_seed_tasks_writes_slugs_on_task_rows() -> None:
+    """Seeded TASK rows must carry project_slug + spec_slug so webhook
+    handlers don't ship empty strings on TASK.ITERATION_REQUESTED /
+    TASK.APPROVED / TASK.REJECTED.
+    """
+    action = SeedTasks(
+        run_id="r-1",
+        task_ids=("T-001", "T-002"),
+        project_slug="demo",
+        spec_slug="demo-spec",
+    )
+    fake_ddb = MagicMock()
+    with (
+        patch("state_router.execute.ddb", return_value=fake_ddb),
+        patch("state_router.execute.runs_table", return_value="runs-test"),
+    ):
+        execute_seed_tasks(action)
+    assert fake_ddb.put_item.call_count == 2
+    for call in fake_ddb.put_item.call_args_list:
+        item = call.kwargs["Item"]
+        assert item["project_slug"] == {"S": "demo"}
+        assert item["spec_slug"] == {"S": "demo-spec"}
 
 
 def make_open_spec_pr_action() -> InvokeRepoHelper:

@@ -20,7 +20,12 @@ from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from critic.critique import Critique
 from critic.hooks import build_hooks
-from critic.tools import browse_url_tool, read_memory_md_tool, read_spec_doc_tool
+from critic.tools import (
+    browse_url_tool,
+    read_memory_md_tool,
+    read_spec_doc_tool,
+    read_stack_profile_md_tool,
+)
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 
@@ -46,7 +51,12 @@ def build_agent(run_id: str) -> Agent:
             streaming=True,
         ),
         system_prompt=load_system_prompt("critic", variant),
-        tools=[read_memory_md_tool, read_spec_doc_tool, browse_url_tool],
+        tools=[
+            read_memory_md_tool,
+            read_stack_profile_md_tool,
+            read_spec_doc_tool,
+            browse_url_tool,
+        ],
         hooks=build_hooks(),
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )

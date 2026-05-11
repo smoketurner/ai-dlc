@@ -28,9 +28,11 @@ from functools import cache
 from typing import TYPE_CHECKING, Final, Literal
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.errors import MemoryDocParseError
+from common.stack_discovery import StackProfile, render_stack_profile
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -183,7 +185,8 @@ def memory_md_bucket() -> str:
 def read_memory_md(project_slug: str) -> str:
     """Read the canonical MEMORY.md for a project, prefixed with sync time.
 
-    The architect syncs ``docs/MEMORY.md`` + ``AGENTS.md`` from the
+    The architect syncs the project's ``MEMORY.md`` (root, or
+    ``docs/MEMORY.md`` for legacy repos) + ``AGENTS.md`` from the
     cloned repo into ``s3://{bucket}/projects/{project_slug}/MEMORY.md``
     on every architect run (see
     ``architect.repo_grounding.sync_memory_md_from_clone``). The four
@@ -213,3 +216,92 @@ def read_memory_md(project_slug: str) -> str:
     if last_modified is None:
         return body
     return f"_(synced from clone on {last_modified.isoformat()})_\n\n{body}"
+
+
+STACK_PROFILE_KEY_TEMPLATE: Final = "projects/{project_slug}/stack_profile.json"
+
+
+def stack_profile_key(project_slug: str) -> str:
+    """Return the S3 key under which the project's stack profile lives."""
+    return STACK_PROFILE_KEY_TEMPLATE.format(project_slug=project_slug)
+
+
+def read_stack_profile(project_slug: str) -> StackProfile | None:
+    """Read the per-project :class:`StackProfile` snapshot from S3.
+
+    Returns ``None`` when no snapshot has been written for the project
+    yet, or when the stored JSON fails to validate against the current
+    :class:`StackProfile` schema (which means the snapshot is from an
+    older code version and should be regenerated).
+
+    Args:
+        project_slug: Project identifier — e.g., ``ai-dlc``.
+    """
+    key = stack_profile_key(project_slug)
+    try:
+        obj = memory_md_s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
+    except BotoCoreError, ClientError:
+        return None
+    raw = obj["Body"].read().decode("utf-8")
+    try:
+        return StackProfile.model_validate_json(raw)
+    except ValueError:
+        return None
+
+
+def write_stack_profile(project_slug: str, profile: StackProfile) -> bool:
+    """Persist the project's :class:`StackProfile` to S3.
+
+    Idempotent: when the rendered JSON matches what's already at the key,
+    the write is skipped. Returns ``True`` when a put was issued.
+
+    Args:
+        project_slug: Project identifier — e.g., ``ai-dlc``.
+        profile: The profile to persist.
+    """
+    body = profile.model_dump_json(indent=2)
+    key = stack_profile_key(project_slug)
+    bucket = memory_md_bucket()
+    client = memory_md_s3_client()
+    if stack_profile_unchanged(client, bucket, key, body):
+        return False
+    client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body.encode("utf-8"),
+        ContentType="application/json; charset=utf-8",
+    )
+    return True
+
+
+def stack_profile_unchanged(client: S3Client, bucket: str, key: str, body: str) -> bool:
+    """Return True when the stored object's body equals ``body`` byte-for-byte."""
+    try:
+        existing = client.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8")
+    except BotoCoreError, ClientError:
+        return False
+    return existing == body
+
+
+def read_stack_profile_md(project_slug: str) -> str:
+    """Read the project's stack profile and render it as Markdown for an agent.
+
+    Companion to :func:`read_memory_md`. Each Strands agent registers
+    this function directly as a tool so the rendering semantics
+    (compact, component-grouped, ``<stack_profile>``-style block) live
+    in one place rather than four near-identical copies.
+
+    Args:
+        project_slug: Project identifier — e.g., ``ai-dlc``.
+
+    Returns:
+        Rendered Markdown, or the empty string when no profile has been
+        written yet for the project (e.g., the architect hasn't run, or
+        the run had no ``target_repo``). Callers treat ``""`` as "no
+        stack signal" and fall back to manual file inspection via
+        ``list_repo_paths`` / ``read_repo_file``.
+    """
+    profile = read_stack_profile(project_slug)
+    if profile is None:
+        return ""
+    return render_stack_profile(profile)

@@ -21,8 +21,10 @@ from reviewer.hooks import build_hooks
 from reviewer.review import Review
 from reviewer.tools import (
     browse_url_tool,
+    get_pr_diff_tool,
     read_memory_md_tool,
     read_spec_doc_tool,
+    read_stack_profile_md_tool,
     run_pr_in_sandbox_tool,
 )
 
@@ -50,7 +52,14 @@ def build_agent(run_id: str) -> Agent:
             streaming=True,
         ),
         system_prompt=load_system_prompt("reviewer", variant),
-        tools=[read_memory_md_tool, read_spec_doc_tool, run_pr_in_sandbox_tool, browse_url_tool],
+        tools=[
+            read_memory_md_tool,
+            read_stack_profile_md_tool,
+            read_spec_doc_tool,
+            get_pr_diff_tool,
+            run_pr_in_sandbox_tool,
+            browse_url_tool,
+        ],
         hooks=build_hooks(),
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )

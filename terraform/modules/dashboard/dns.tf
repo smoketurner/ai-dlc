@@ -1,10 +1,9 @@
 ################################################################################
-# ACM cert + Route 53 records for the dashboard hostname.
+# ACM cert + Route 53 alias for the dashboard hostname.
 #
-# Only created when `dashboard_fqdn` and `route53_zone_id` are both set —
-# i.e., when the env wants HTTPS with a friendly hostname. The cert uses
-# DNS validation against the provided hosted zone, and an A-alias is
-# created from the FQDN to the ALB.
+# Only created when `dashboard_fqdn` and `route53_zone_id` are both set.
+# The cert is regional (API Gateway HTTP custom domains require a cert in
+# the same region as the API, not us-east-1).
 ################################################################################
 
 resource "aws_acm_certificate" "this" {
@@ -55,8 +54,8 @@ resource "aws_route53_record" "alias" {
   type    = "A"
 
   alias {
-    name                   = aws_lb.this.dns_name
-    zone_id                = aws_lb.this.zone_id
-    evaluate_target_health = true
+    name                   = aws_apigatewayv2_domain_name.this[0].domain_name_configuration[0].target_domain_name
+    zone_id                = aws_apigatewayv2_domain_name.this[0].domain_name_configuration[0].hosted_zone_id
+    evaluate_target_health = false
   }
 }

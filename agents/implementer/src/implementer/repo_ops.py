@@ -165,6 +165,14 @@ def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
     carry leftover branches, uncommitted edits, or the wrong HEAD from
     a prior run, so we always reset back to the configured base branch
     and update the access token before handing the repo to Claude Code.
+
+    Uses ``--filter=blob:none`` (partial clone) so blob contents are
+    fetched on demand rather than upfront — the agent only reads a
+    small fraction of any non-trivial repo. The default refspec
+    (``+refs/heads/*:refs/remotes/origin/*``) is used so every branch
+    is trackable on fetch, and full commit history is kept so
+    ``origin/main...HEAD`` merge-base lookups succeed on iteration runs
+    where the task branch was created off an older main commit.
     """
     target = repo_path()
     url = f"https://x-access-token:{session.access_token}@github.com/{session.target_repo}.git"
@@ -174,7 +182,7 @@ def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(  # noqa: S603 - args are well-formed
-        [GIT_BIN, "clone", "--depth", "1", "--branch", branch, url, str(target)],
+        [GIT_BIN, "clone", "--filter=blob:none", "--branch", branch, url, str(target)],
         check=True,
         capture_output=True,
         text=True,
@@ -190,7 +198,7 @@ def reset_existing_clone(target: Path, *, url: str, branch: str) -> None:
     it, and removes any untracked files. Idempotent.
     """
     run_git("remote", "set-url", "origin", url, cwd=target)
-    run_git("fetch", "--depth", "1", "origin", branch, cwd=target)
+    run_git("fetch", "origin", branch, cwd=target)
     # Detach HEAD before resetting so any old task branch can be safely
     # force-recreated by ``create_branch`` later.
     run_git("checkout", "--detach", f"origin/{branch}", cwd=target)
@@ -249,21 +257,17 @@ def push_branch(branch: str) -> None:
     A re-run for the same ``(spec_slug, task_id)`` finds the remote branch
     populated from the prior run while the local branch was force-recreated
     off ``main``. The first push fails with ``! [rejected] ... non-fast-
-    forward``; we fetch the remote ref and force-push with an explicit
-    lease pinned to ``FETCH_HEAD``. ``clone_repo`` uses ``--branch main``
-    which scopes the remote refspec to ``refs/heads/main`` only — the
-    fetch lands the task branch's tip in ``FETCH_HEAD`` but never updates
-    ``refs/remotes/origin/<branch>``, so the implicit-lease form fails
-    with "stale info". The explicit-lease form still trips on a
-    concurrent maintainer push between fetch and push.
+    forward``; we fetch the remote ref (which updates
+    ``refs/remotes/origin/<branch>`` thanks to the default refspec set up
+    by ``clone_repo``) and force-with-lease push so a concurrent
+    maintainer push between fetch and push is still detected.
     """
     try:
         run_git("push", "--set-upstream", "origin", branch)
     except RuntimeError as exc:
         logger.info("push rejected; fetching and force-pushing", branch=branch, error=str(exc))
         run_git("fetch", "origin", branch)
-        remote_sha = run_git("rev-parse", "FETCH_HEAD").strip()
-        run_git("push", f"--force-with-lease={branch}:{remote_sha}", "origin", branch)
+        run_git("push", "--force-with-lease", "origin", branch)
         logger.info("force-pushed existing branch", branch=branch)
 
 
@@ -486,17 +490,8 @@ def checkout_task_branch(branch: str) -> None:
     the prior implementer run; we want HEAD to land on top of it (rather
     than recreating from main, which is what ``create_branch`` does for
     iteration_count == 0). Idempotent — ``-B`` recreates the local ref.
-
-    The explicit ``branch:refs/remotes/origin/branch`` refspec is
-    required because ``clone_repo`` shallow-clones with
-    ``--branch main``, which configures
-    ``remote.origin.fetch = +refs/heads/main:refs/remotes/origin/main``.
-    A bare ``git fetch origin <task-branch>`` updates ``FETCH_HEAD``
-    but doesn't populate ``refs/remotes/origin/<task-branch>``, so
-    ``checkout -B <branch> origin/<branch>`` would fail with
-    "is not a commit" without the explicit refspec.
     """
-    run_git("fetch", "origin", f"{branch}:refs/remotes/origin/{branch}")
+    run_git("fetch", "origin", branch)
     run_git("checkout", "-B", branch, f"origin/{branch}")
 
 

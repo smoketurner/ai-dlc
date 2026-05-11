@@ -10,8 +10,9 @@ The dispatcher Lambda invokes this runtime once per terminal event
   3. Spawns a daemon thread that asks the Strands agent for a
      :class:`RetrospectiveDecision`. If the decision proposes a
      lesson, opens a PR via ``repo_helper`` that appends the addition
-     to either ``docs/MEMORY.md`` (structured six-section schema) or
-     ``AGENTS.md`` (free-form append).
+     to either ``MEMORY.md`` (structured six-section schema; root
+     preferred, ``docs/`` fallback for legacy projects) or
+     ``AGENTS.md`` (free-form append, root only).
   4. Returns ``{"status": "dispatched", ...}`` to the caller in
      ~100ms.
 
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
 
-MEMORY_MD_PATH = "docs/MEMORY.md"
+MEMORY_MD_CANDIDATES = ("MEMORY.md", "docs/MEMORY.md")
 AGENTS_MD_PATH = "AGENTS.md"
 RUN_ID_BRANCH_RE = re.compile(r"[^a-z0-9-]+")
 
@@ -141,14 +142,20 @@ def open_memory_pr(
         msg = "decision.target_file must be set when opening a memory-file PR"
         raise ValueError(msg)
     branch = branch_name(run_id=payload.run_id)
-    path = MEMORY_MD_PATH if decision.target_file == "MEMORY.md" else AGENTS_MD_PATH
+    if decision.target_file == "MEMORY.md":
+        path, existing = resolve_memory_path(
+            repo=payload.target_repo,
+            candidates=MEMORY_MD_CANDIDATES,
+        )
+    else:
+        path = AGENTS_MD_PATH
+        existing = fetch_file(repo=payload.target_repo, path=path)
     invoke_repo_helper(
         op="create_branch",
         repo=payload.target_repo,
         branch=branch,
         base="main",
     )
-    existing = fetch_file(repo=payload.target_repo, path=path)
     new_content = render_patch(
         existing=existing,
         decision=decision,
@@ -187,6 +194,22 @@ def fetch_file(*, repo: str, path: str) -> str:
     if not result.get("exists"):
         return ""
     return str(result.get("content", ""))
+
+
+def resolve_memory_path(*, repo: str, candidates: tuple[str, ...]) -> tuple[str, str]:
+    """Probe ``candidates`` in order and return ``(path, existing_body)``.
+
+    Used by :func:`open_memory_pr` to pick the right location for the
+    project's memory file. Preference: first candidate (typically root)
+    when the file exists there; ``docs/`` fallback when only that is
+    present; first candidate again as the default for projects that have
+    no memory file yet (so new repos get the modern root-level layout).
+    """
+    for path in candidates:
+        body = fetch_file(repo=repo, path=path)
+        if body:
+            return path, body
+    return candidates[0], ""
 
 
 def render_patch(*, existing: str, decision: RetrospectiveDecision) -> str:

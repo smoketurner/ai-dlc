@@ -10,7 +10,16 @@ from moto import mock_aws
 
 from common import memory_md
 from common.errors import MemoryDocParseError
-from common.memory_md import MemoryDoc, parse, read_memory_md, render
+from common.memory_md import (
+    MemoryDoc,
+    parse,
+    read_memory_md,
+    read_stack_profile,
+    render,
+    stack_profile_key,
+    write_stack_profile,
+)
+from common.stack_discovery import StackComponent, StackProfile
 
 _MEMORY_BUCKET = "ai-dlc-test-memory-md"
 _PROJECT_SLUG = "ai-dlc"
@@ -159,3 +168,74 @@ def test_read_memory_md_returns_empty_string_when_object_missing(
     """No snapshot for the project yet — return ``""``."""
     del memory_bucket
     assert read_memory_md(_PROJECT_SLUG) == ""
+
+
+# ---------------------------------------------------------------------------
+# read_stack_profile / write_stack_profile — JSON snapshot of stack discovery
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_PROFILE = StackProfile(
+    components=(
+        StackComponent(
+            path=".",
+            language="python",
+            version=">=3.14,<3.15",
+            package_manager="uv",
+            manifest="pyproject.toml",
+            test_command="uv run pytest",
+        ),
+    ),
+    primary_language="python",
+    workspace_kind="uv",
+    monorepo=True,
+    polyglot=False,
+    containerized=True,
+    ci_provider="github-actions",
+    tool_versions={"python": "3.14.0"},
+)
+
+
+def test_stack_profile_key_uses_per_project_namespace() -> None:
+    assert stack_profile_key("ai-dlc") == "projects/ai-dlc/stack_profile.json"
+
+
+def test_read_stack_profile_returns_none_when_missing(memory_bucket: None) -> None:
+    del memory_bucket
+    assert read_stack_profile(_PROJECT_SLUG) is None
+
+
+def test_write_then_read_roundtrip(memory_bucket: None) -> None:
+    del memory_bucket
+    assert write_stack_profile(_PROJECT_SLUG, _SAMPLE_PROFILE) is True
+    loaded = read_stack_profile(_PROJECT_SLUG)
+    assert loaded == _SAMPLE_PROFILE
+
+
+def test_write_is_idempotent(memory_bucket: None) -> None:
+    """Second write of identical content is skipped (returns False)."""
+    del memory_bucket
+    assert write_stack_profile(_PROJECT_SLUG, _SAMPLE_PROFILE) is True
+    assert write_stack_profile(_PROJECT_SLUG, _SAMPLE_PROFILE) is False
+
+
+def test_write_re_puts_on_content_change(memory_bucket: None) -> None:
+    del memory_bucket
+    write_stack_profile(_PROJECT_SLUG, _SAMPLE_PROFILE)
+    updated = _SAMPLE_PROFILE.model_copy(update={"polyglot": True})
+    assert write_stack_profile(_PROJECT_SLUG, updated) is True
+    loaded = read_stack_profile(_PROJECT_SLUG)
+    assert loaded is not None
+    assert loaded.polyglot is True
+
+
+def test_read_stack_profile_returns_none_for_invalid_json(memory_bucket: None) -> None:
+    """An old or hand-edited snapshot that no longer parses → ``None``."""
+    del memory_bucket
+    boto3.client("s3", region_name="us-east-1").put_object(
+        Bucket=_MEMORY_BUCKET,
+        Key=stack_profile_key(_PROJECT_SLUG),
+        Body=b'{"components": [], "unexpected_field": 1}',
+        ContentType="application/json",
+    )
+    assert read_stack_profile(_PROJECT_SLUG) is None

@@ -192,8 +192,7 @@ def test_open_memory_pr_invokes_repo_helper_chain_for_memory_md(
     decision = make_memory_decision()
     repo_helper_mock = MagicMock(
         side_effect=[
-            {"ok": True, "result": {"branch": "retrospective/x"}},  # create_branch
-            {  # get_file (called by fetch_file)
+            {  # get_file (root MEMORY.md — exists, ends the candidate probe)
                 "ok": True,
                 "result": {
                     "exists": True,
@@ -202,6 +201,7 @@ def test_open_memory_pr_invokes_repo_helper_chain_for_memory_md(
                     "ref": "main",
                 },
             },
+            {"ok": True, "result": {"branch": "retrospective/x"}},  # create_branch
             {"ok": True, "result": {"commit_sha": "newsha"}},  # commit_files
             {"ok": True, "result": {"pr_url": "https://x/pr/9", "pr_number": 9}},  # open_pr
         ],
@@ -210,11 +210,63 @@ def test_open_memory_pr_invokes_repo_helper_chain_for_memory_md(
     pr_url = open_memory_pr(payload=payload, decision=decision)
     assert pr_url == "https://x/pr/9"
     ops = [call.kwargs["op"] for call in repo_helper_mock.call_args_list]
-    assert ops == ["create_branch", "get_file", "commit_files", "open_pr"]
+    assert ops == ["get_file", "create_branch", "commit_files", "open_pr"]
     commit_call = repo_helper_mock.call_args_list[2]
     files = commit_call.kwargs["files"]
-    assert files[0]["path"] == "docs/MEMORY.md"
+    assert files[0]["path"] == "MEMORY.md"
     assert "FastAPI + Jinja2 + Alpine.js" in files[0]["content"]
+
+
+def test_open_memory_pr_falls_back_to_docs_memory_md(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``MEMORY.md`` is absent at root, write to ``docs/MEMORY.md``."""
+    payload = make_payload()
+    decision = make_memory_decision()
+    repo_helper_mock = MagicMock(
+        side_effect=[
+            {"ok": True, "result": {"exists": False, "content": "", "sha": "", "ref": "main"}},
+            {
+                "ok": True,
+                "result": {
+                    "exists": True,
+                    "content": EXISTING_MEMORY_MD,
+                    "sha": "abc",
+                    "ref": "main",
+                },
+            },
+            {"ok": True, "result": {"branch": "retrospective/x"}},
+            {"ok": True, "result": {"commit_sha": "newsha"}},
+            {"ok": True, "result": {"pr_url": "https://x/pr/9", "pr_number": 9}},
+        ],
+    )
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
+    open_memory_pr(payload=payload, decision=decision)
+    commit_call = repo_helper_mock.call_args_list[3]
+    files = commit_call.kwargs["files"]
+    assert files[0]["path"] == "docs/MEMORY.md"
+
+
+def test_open_memory_pr_defaults_to_root_when_no_file_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No memory file anywhere — seed a new one at the root."""
+    payload = make_payload()
+    decision = make_memory_decision()
+    repo_helper_mock = MagicMock(
+        side_effect=[
+            {"ok": True, "result": {"exists": False, "content": "", "sha": "", "ref": "main"}},
+            {"ok": True, "result": {"exists": False, "content": "", "sha": "", "ref": "main"}},
+            {"ok": True, "result": {"branch": "retrospective/x"}},
+            {"ok": True, "result": {"commit_sha": "newsha"}},
+            {"ok": True, "result": {"pr_url": "https://x/pr/9", "pr_number": 9}},
+        ],
+    )
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
+    open_memory_pr(payload=payload, decision=decision)
+    commit_call = repo_helper_mock.call_args_list[3]
+    files = commit_call.kwargs["files"]
+    assert files[0]["path"] == "MEMORY.md"
 
 
 def test_open_memory_pr_writes_to_agents_md_when_chosen(
@@ -224,11 +276,11 @@ def test_open_memory_pr_writes_to_agents_md_when_chosen(
     decision = make_agents_decision()
     repo_helper_mock = MagicMock(
         side_effect=[
-            {"ok": True, "result": {"branch": "retrospective/x"}},
             {  # get_file
                 "ok": True,
                 "result": {"exists": False, "content": "", "sha": "", "ref": "main"},
             },
+            {"ok": True, "result": {"branch": "retrospective/x"}},
             {"ok": True, "result": {"commit_sha": "newsha"}},
             {"ok": True, "result": {"pr_url": "https://x/pr/9"}},
         ],
@@ -236,7 +288,7 @@ def test_open_memory_pr_writes_to_agents_md_when_chosen(
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
     pr_url = open_memory_pr(payload=payload, decision=decision)
     assert pr_url == "https://x/pr/9"
-    get_file_call = repo_helper_mock.call_args_list[1]
+    get_file_call = repo_helper_mock.call_args_list[0]
     assert get_file_call.kwargs == {
         "op": "get_file",
         "repo": "smoketurner/ai-dlc",

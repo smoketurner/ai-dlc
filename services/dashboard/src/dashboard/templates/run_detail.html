@@ -1,11 +1,31 @@
 {% extends "base.html" %}
 {% block title %}{{ run_id }} · ai-dlc{% endblock %}
 {% block content %}
-<div x-data="runDetail($el.dataset.runId)" x-init="connect()" data-run-id="{{ run_id }}" class="space-y-4">
+<div x-data="runDetail($el.dataset.runId, $el.dataset.cursor)"
+     x-init="connect()"
+     data-run-id="{{ run_id }}"
+     data-cursor="{{ events[-1].event_id if events else '' }}"
+     class="space-y-4">
   <div class="flex items-baseline justify-between">
     <div>
       <h1 class="text-xl font-semibold">Run {{ run_id }}</h1>
       <p class="text-sm text-slate-500">{{ summary.project_slug }}</p>
+      {% if summary.target_repo or summary.source_issue_url %}
+      <p class="text-xs text-slate-600 mt-1 flex flex-wrap items-baseline gap-2">
+        {% if summary.target_repo %}
+        <a href="https://github.com/{{ summary.target_repo }}" target="_blank" rel="noopener"
+           class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 hover:bg-slate-200 font-mono">
+          {{ summary.target_repo }}
+        </a>
+        {% endif %}
+        {% if summary.source_issue_url %}
+        <a href="{{ summary.source_issue_url }}" target="_blank" rel="noopener"
+           class="px-2 py-0.5 rounded bg-sky-100 text-sky-800 hover:bg-sky-200">
+          {% if summary.issue_number %}#{{ summary.issue_number }}{% else %}issue{% endif %}{% if summary.issue_title %} · {{ summary.issue_title }}{% endif %}
+        </a>
+        {% endif %}
+      </p>
+      {% endif %}
     </div>
     <div class="flex items-baseline gap-3">
       <span class="px-2 py-0.5 rounded text-xs bg-slate-200" x-text="lastType || '{{ summary.status }}'"></span>
@@ -69,38 +89,106 @@
     </article>
   </section>
   {% endif %}
+  {% if summary.pr_url or tasks %}
+  {# Server-rendered from the STATE row + TASK rows. Live-arriving task
+     PRs land in the timeline immediately but this section only refreshes
+     on full page reload, which is fine — the PR audit doesn't need to be
+     real-time. #}
+  <section class="bg-white shadow-sm rounded p-4 space-y-3">
+    <header class="flex items-baseline gap-3">
+      <h2 class="text-base font-semibold">Pull requests</h2>
+      <span class="text-xs text-slate-500">{{ (tasks|length) + (1 if summary.pr_url else 0) }}</span>
+    </header>
+    <ul class="divide-y text-sm">
+      {% if summary.pr_url %}
+      <li class="py-2 flex items-baseline gap-3">
+        <span class="px-2 py-0.5 rounded text-xs bg-indigo-100 text-indigo-800 font-mono">spec</span>
+        <a href="{{ summary.pr_url }}" target="_blank" rel="noopener"
+           class="text-sky-700 hover:underline truncate font-mono">{{ summary.pr_url }}</a>
+        {% if summary.current_state %}
+        <span class="ml-auto px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ summary.current_state }}</span>
+        {% endif %}
+      </li>
+      {% endif %}
+      {% for task in tasks %}
+      <li class="py-2 flex items-baseline gap-3">
+        <span class="px-2 py-0.5 rounded text-xs bg-slate-200 text-slate-700 font-mono">{{ task.task_id[:8] }}</span>
+        <a href="{{ task.pr_url }}" target="_blank" rel="noopener"
+           class="text-sky-700 hover:underline truncate font-mono">{{ task.pr_url }}</a>
+        <span class="ml-auto flex items-baseline gap-2">
+          {% if task.status in ("merged", "approved", "completed") %}
+          <span class="px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-800 font-mono">{{ task.status }}</span>
+          {% elif task.status in ("rejected", "blocked", "failed") %}
+          <span class="px-2 py-0.5 rounded text-xs bg-rose-100 text-rose-800 font-mono">{{ task.status }}</span>
+          {% elif task.status in ("iterating", "pending_approval") %}
+          <span class="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-800 font-mono">{{ task.status }}</span>
+          {% else %}
+          <span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ task.status }}</span>
+          {% endif %}
+          {% if task.last_event_at %}
+          <span class="text-xs text-slate-400 font-mono">{{ task.last_event_at }}</span>
+          {% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
   <ul class="bg-white shadow-sm rounded divide-y">
     {% for ev in events %}
-    <li class="px-4 py-3 text-sm flex items-baseline gap-3">
+    <li class="px-4 py-3 text-sm flex items-baseline gap-3 flex-wrap">
       <span class="text-slate-400 font-mono text-xs">{{ ev.timestamp }}</span>
       <span class="font-semibold">{{ ev.type }}</span>
+      {% for link in ev.links %}
+      <a href="{{ link.url }}" target="_blank" rel="noopener"
+         class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono">{{ link.label }}</a>
+      {% endfor %}
       <span class="text-slate-600 truncate" title="{{ ev.payload }}">{{ ev.payload | tojson }}</span>
     </li>
     {% endfor %}
     <template x-for="ev in liveEvents" :key="ev.event_id">
-      <li class="px-4 py-3 text-sm flex items-baseline gap-3 bg-emerald-50">
+      <li class="px-4 py-3 text-sm flex items-baseline gap-3 bg-emerald-50 flex-wrap">
         <span class="text-slate-400 font-mono text-xs" x-text="ev.timestamp"></span>
         <span class="font-semibold" x-text="ev.type"></span>
+        <template x-for="link in ev.links" :key="link.url">
+          <a :href="link.url" target="_blank" rel="noopener"
+             x-text="link.label"
+             class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono"></a>
+        </template>
         <span class="text-slate-600 truncate" x-text="JSON.stringify(ev.payload)"></span>
       </li>
     </template>
   </ul>
 </div>
 <script>
-function runDetail(runId) {
+function runDetail(runId, initialCursor) {
+  const POLL_MS = 2500;
   return {
     liveEvents: [],
     lastType: '',
+    cursor: initialCursor || '',
+    timer: null,
     connect() {
-      const es = new EventSource(`/v1/runs/${runId}/stream`);
-      es.onmessage = (m) => {
-        try {
-          const ev = JSON.parse(m.data);
-          this.liveEvents.push(ev);
-          this.lastType = ev.type;
-        } catch (_) {}
-      };
-      es.addEventListener('close', () => es.close());
+      this.poll();
+      this.timer = window.setInterval(() => this.poll(), POLL_MS);
+    },
+    async poll() {
+      const qs = this.cursor ? `?since=${encodeURIComponent(this.cursor)}` : '';
+      let resp;
+      try {
+        resp = await fetch(`/v1/runs/${encodeURIComponent(runId)}/events${qs}`);
+      } catch (_) { return; }
+      if (!resp.ok) return;
+      const body = await resp.json();
+      for (const ev of body.events || []) {
+        this.liveEvents.push(ev);
+        this.lastType = ev.type;
+        if (ev.event_id > this.cursor) this.cursor = ev.event_id;
+      }
+      if (body.terminal && this.timer !== null) {
+        window.clearInterval(this.timer);
+        this.timer = null;
+      }
     },
     async deleteRun() {
       if (!window.confirm(`Delete run ${runId}? This permanently removes its events.`)) return;

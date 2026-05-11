@@ -23,8 +23,8 @@ module "common_layer" {
 
   layer_name               = "${var.project}-${var.env}-common"
   description              = "Shared ai-dlc Python runtime: common package + powertools + boto3."
-  runtime                  = "python3.13"
-  compatible_runtimes      = ["python3.13"]
+  runtime                  = "python3.14"
+  compatible_runtimes      = ["python3.14"]
   compatible_architectures = ["arm64"]
 
   source_path = [
@@ -39,5 +39,5 @@ module "common_layer" {
     },
   ]
   build_in_docker = true
-  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 }

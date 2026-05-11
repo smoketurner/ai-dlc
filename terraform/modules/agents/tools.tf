@@ -18,7 +18,7 @@ module "tool_lambda" {
   function_name = "${local.prefix}-${each.key}"
   description   = "AgentCore Gateway target Lambda — ${each.key}"
   handler       = "${each.key}.handler.handler"
-  runtime       = "python3.13"
+  runtime       = "python3.14"
   architectures = ["arm64"]
   memory_size   = 512
   timeout       = 30
@@ -31,7 +31,7 @@ module "tool_lambda" {
     pip_requirements = "${local.source_dir}/${each.key}/requirements.txt"
   }]
   build_in_docker = true
-  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = each.key == "repo_helper" ? merge(
     local.common_aws_env,

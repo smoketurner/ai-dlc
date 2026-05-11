@@ -6,8 +6,9 @@ for a FastAPI project). On invocation the entrypoint shallow-clones the
 target repo into ``/workspace/repo``; ``read_repo_file`` and
 ``list_repo_paths`` expose bounded views of that tree as Strands tools.
 
-After the clone, :func:`sync_memory_md_from_clone` syncs
-``docs/MEMORY.md`` + ``AGENTS.md`` from the clone into the per-project
+After the clone, :func:`sync_memory_md_from_clone` syncs ``MEMORY.md``
+(at the repo root, or under ``docs/`` for legacy projects) and
+``AGENTS.md`` from the clone into the per-project
 S3 bucket so downstream agents (Critic, Proposer) — which never clone —
 can ground themselves via ``read_memory_md``.
 
@@ -31,6 +32,8 @@ import structlog
 from botocore.exceptions import ClientError
 
 from common.github_app import token_for_call
+from common.memory_md import write_stack_profile
+from common.stack_discovery import discover_stack
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -43,7 +46,10 @@ GIT_BIN = "/usr/bin/git"
 MAX_FILE_BYTES = 16384  # 16 KiB cap so tool output stays in context.
 MAX_LIST_ENTRIES = 200  # ``list_repo_paths`` upper bound on returned paths.
 
-MEMORY_MD_SOURCES = ("docs/MEMORY.md", "AGENTS.md")
+MEMORY_MD_SOURCE_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("MEMORY.md", "docs/MEMORY.md"),
+    ("AGENTS.md",),
+)
 MEMORY_MD_KEY_TEMPLATE = "projects/{project_slug}/MEMORY.md"
 
 
@@ -164,7 +170,7 @@ def s3_client() -> S3Client:
 
 
 def sync_memory_md_from_clone(*, project_slug: str, target_repo: str | None = None) -> None:
-    """Sync ``docs/MEMORY.md`` + ``AGENTS.md`` from the clone into S3.
+    """Sync the project's ``MEMORY.md`` + ``AGENTS.md`` from the clone into S3.
 
     Builds a single combined Markdown body with one section per source
     file present in the clone, then uploads to
@@ -188,7 +194,7 @@ def sync_memory_md_from_clone(*, project_slug: str, target_repo: str | None = No
         logger.info(
             "no MEMORY.md sources in clone; skipping sync",
             project_slug=project_slug,
-            sources=list(MEMORY_MD_SOURCES),
+            source_groups=[list(group) for group in MEMORY_MD_SOURCE_GROUPS],
         )
         return
     key = MEMORY_MD_KEY_TEMPLATE.format(project_slug=project_slug)
@@ -218,7 +224,13 @@ def sync_memory_md_from_clone(*, project_slug: str, target_repo: str | None = No
 
 
 def compose_memory_md_body(*, target_repo: str | None) -> str | None:
-    """Read each MEMORY.md source from the clone and join into one body.
+    """Read each MEMORY.md source group from the clone and join into one body.
+
+    Each group is a tuple of candidate paths in preference order — root
+    first, then ``docs/`` fallback. The first path that exists per group
+    contributes one section to the body; subsequent paths in the same
+    group are ignored so a repo that has both ``MEMORY.md`` and
+    ``docs/MEMORY.md`` doesn't get duplicate content.
 
     Returns ``None`` when none of the sources exist — the caller treats
     that as "skip the sync entirely" so a project without grounding
@@ -231,10 +243,12 @@ def compose_memory_md_body(*, target_repo: str | None) -> str | None:
     in :func:`existing_object_matches`.
     """
     sections: list[str] = []
-    for source in MEMORY_MD_SOURCES:
-        content = read_repo_file(source)
-        if content:
-            sections.append(f"## {source}\n\n{content.rstrip()}\n")
+    for group in MEMORY_MD_SOURCE_GROUPS:
+        for source in group:
+            content = read_repo_file(source)
+            if content:
+                sections.append(f"## {source}\n\n{content.rstrip()}\n")
+                break
     if not sections:
         return None
     header = ["# Project memory (synced from repo clone)", ""]
@@ -242,6 +256,39 @@ def compose_memory_md_body(*, target_repo: str | None) -> str | None:
         header.append(f"> Source repo: {target_repo}")
         header.append("")
     return "\n".join(header) + "\n".join(sections)
+
+
+def sync_stack_profile_from_clone(*, project_slug: str) -> None:
+    """Walk the clone, run :func:`discover_stack`, and write the profile to S3.
+
+    Idempotent on identical content (see
+    :func:`common.memory_md.write_stack_profile`). Skipped silently when
+    the workspace clone isn't present (no ``target_repo`` for this run);
+    swallow any write error so a failed S3 put doesn't take down the
+    architect run — the spec can still be drafted from
+    ``list_repo_paths`` and ``read_repo_file``.
+
+    Companion to :func:`sync_memory_md_from_clone`. Both functions write
+    to the same per-project bucket so downstream agents (Critic,
+    Reviewer, Tester) pick up structured stack context alongside the
+    human-written MEMORY.md.
+    """
+    if not REPO_PATH.exists():
+        logger.info("no clone to scan; skipping stack profile sync", project_slug=project_slug)
+        return
+    try:
+        profile = discover_stack(REPO_PATH)
+        wrote = write_stack_profile(project_slug, profile)
+    except (OSError, ClientError) as exc:
+        logger.warning("stack profile sync failed", project_slug=project_slug, err=str(exc))
+        return
+    logger.info(
+        "stack profile synced" if wrote else "stack profile unchanged; skipping put",
+        project_slug=project_slug,
+        components=len(profile.components),
+        primary_language=profile.primary_language,
+        polyglot=profile.polyglot,
+    )
 
 
 def existing_object_matches(*, bucket: str, key: str, body: str) -> bool:

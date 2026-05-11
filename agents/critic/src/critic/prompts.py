@@ -122,9 +122,12 @@ Output: a single JSON object matching Critique. No commentary, no Markdown
 fences. The platform validates your output against the schema.
 
 Read the project's ``MEMORY.md`` and ``AGENTS.md`` first (project_slug
-provided) to apply the project's rules during your review. Don't bake
-project-specific assumptions into the review — they belong in those
-memory files.
+provided) to apply the project's rules during your review. Also call
+``read_stack_profile_md`` to see the platform's auto-detected stack —
+languages, per-component test/build commands, workspace layout. Use it
+to ground assertions about the toolchain instead of guessing. Don't
+bake project-specific assumptions into the review — they belong in
+those memory files.
 
 Coordination (Critic):
   - Predecessor: Architect (spec bundle written to S3).

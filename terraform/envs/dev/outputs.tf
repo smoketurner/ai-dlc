@@ -3,28 +3,6 @@
 # via `terraform output -json`.
 ################################################################################
 
-# network ----------------------------------------------------------------------
-
-output "vpc_id" {
-  description = "VPC ID for the env."
-  value       = module.network.vpc_id
-}
-
-output "private_subnet_ids" {
-  description = "Private subnet IDs (Lambdas, Fargate, optional AgentCore VPC mode)."
-  value       = module.network.private_subnet_ids
-}
-
-output "public_subnet_ids" {
-  description = "Public subnet IDs (ALB)."
-  value       = module.network.public_subnet_ids
-}
-
-output "lambda_security_group_id" {
-  description = "SG attached to platform Lambdas in private subnets."
-  value       = module.network.lambda_security_group_id
-}
-
 # state ------------------------------------------------------------------------
 
 output "artifacts_bucket" {
@@ -141,24 +119,19 @@ output "platform_lambda_arns" {
 
 # dashboard --------------------------------------------------------------------
 
-output "dashboard_alb_dns" {
-  description = "Dashboard ALB DNS name (raw AWS hostname; users hit dashboard_url instead)."
-  value       = module.dashboard.alb_dns_name
-}
-
 output "dashboard_url" {
   description = "Public dashboard URL (HTTPS via the Route 53 + ACM-managed FQDN)."
   value       = module.dashboard.url
 }
 
-output "dashboard_ecs_cluster" {
-  description = "Dashboard ECS cluster name."
-  value       = module.dashboard.ecs_cluster_name
+output "dashboard_api_endpoint" {
+  description = "Raw API Gateway execution URL for the dashboard Lambda."
+  value       = module.dashboard.api_endpoint
 }
 
-output "dashboard_ecs_service" {
-  description = "Dashboard ECS service name (empty until image_tag is set)."
-  value       = module.dashboard.ecs_service_name
+output "dashboard_lambda_function_name" {
+  description = "Dashboard Lambda function name (used by CI to update the image)."
+  value       = module.dashboard.lambda_function_name
 }
 
 output "github_webhook_secret_id" {

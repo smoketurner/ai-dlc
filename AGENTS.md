@@ -6,11 +6,11 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 - **Python 3.14** with the Astral toolchain (`uv` workspace, `ruff`, `ty`).
 - **Agents**: Strands Agents (Architect, Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
-- **Models**: Architect / Critic → Claude Opus 4.7. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
+- **Models**: Architect / Critic → Claude Opus 4.7. Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
 - **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run/task state.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
-- **Dashboard**: FastAPI + Jinja2 + Alpine.js (CDN, no JS build) on ECS Fargate behind an ALB with Cognito OIDC auth.
+- **Dashboard**: FastAPI + Jinja2 + Alpine.js (CDN, no JS build) on API Gateway + Lambda with Cognito OIDC auth.
 - **Auth**: Amazon Cognito (single user pool covers ALB + API Gateway).
 - **HITL**: GitHub PR reviews/comments → webhook → EventBridge event → `event_projector` advances DDB state → `state_router` dispatches the next side-effect.
 - **IaC**: Terraform only (`hashicorp/aws ~> 6`).
@@ -19,7 +19,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 | Path | Role |
 |------|------|
-| `packages/common/` | Pydantic event envelopes, hybrid-memory utility, OTEL setup, shared boto3 wrappers. |
+| `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), boto3 helpers (`ddb.py`, `s3.py`, `runs.py`), `MEMORY.md` utility (`memory_md.py`), settings (`settings.py`). |
 | `agents/architect/` | Strands agent — writes the three-doc spec bundle (requirements + design + tasks). |
 | `agents/critic/` | Strands agent — adversarially reviews the spec (advisory). |
 | `agents/implementer/` | Claude Agent SDK agent — opens code PRs. |
@@ -27,7 +27,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | `agents/tester/` | Strands agent — flags test gaps in each task PR (advisory). |
 | `agents/triage/` | Strands agent — classifies issue-driven runs (`proceed` / `ask` / `defer` / `decline`). |
 | `agents/proposer/` | Strands agent — research-driven (issue → triage classifies as `research`); opens PRs proposing prompt or MEMORY.md edits. |
-| `agents/retrospector/` | Strands agent — fires on every terminal event (PR merge, PR close, issue close); appends lessons to `docs/MEMORY.md` via PR. |
+| `agents/retrospector/` | Strands agent — fires on every terminal event (PR merge, PR close, issue close); appends lessons to `MEMORY.md` via PR. |
 | `lambdas/entry_adapter/` | API Gateway → DDB run row + EventBridge `REQUEST.RECEIVED` + SQS beacon. |
 | `lambdas/state_router/` | SQS beacon consumer; reads DDB state and dispatches the next side-effect (agent invoke, repo op, event emit). Never writes state. |
 | `lambdas/event_projector/` | EventBridge events → DDB state advance (sole writer of `current_state`) + AgentCore Memory `CreateEvent`. |
@@ -37,14 +37,55 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | `lambdas/retrospector_dispatcher/` | EventBridge → AgentCore Runtime invocation for the Retrospector on every terminal event. |
 | `services/dashboard/` | FastAPI submission/tracking UI. |
 | `terraform/modules/` | Reusable Terraform modules (one per concern). |
-| `terraform/envs/{dev,prod}/` | Environment compositions. |
+| `terraform/envs/dev/` | Environment composition (prod TBD). |
 | `terraform/bootstrap/` | One-time S3 + DDB state backend. |
 | `docs/ADRs/` | Architectural Decision Records (written by the Architect agent). |
-| `docs/MEMORY.md` | Canonical human-reviewed project memory. |
+| `MEMORY.md` | Canonical human-reviewed project memory. |
 
 ## Memory model
 
 `MEMORY.md` carries repository-scoped context (conventions, ADR bullets, constraints) and is reviewed in PRs. AgentCore Memory carries cross-session facts (user preferences, learned signals) and session events (≤60 days). Sync is one-way: MEMORY.md → AgentCore Memory on every successful session via `CreateEvent`. The reverse only happens through agent-proposed PR edits — humans gate writes to MEMORY.md.
+
+## Request lifecycle
+
+One request → many state transitions, all coordinated through DynamoDB + SQS + EventBridge. The two-Lambda split is load-bearing: `state_router` only reads DDB and triggers side-effects; `event_projector` is the sole writer of `current_state`. This keeps state machine logic in one place and makes every transition observable as an EventBridge event.
+
+1. **Entry**: API Gateway or GitHub webhook → `entry_adapter` writes the run row to DDB, emits `REQUEST.RECEIVED` on EventBridge, sends an SQS beacon.
+2. **Dispatch**: `state_router` consumes the beacon, reads `current_state` from DDB, looks up the handler in `dispatch.py` / `dispatch_run.py` / `dispatch_task.py`, and executes the side-effect (invoke AgentCore Runtime, call a repo op, emit an event). Never writes state.
+3. **Agent work**: the invoked agent emits one or more domain events (e.g. `SPEC.PROPOSED`, `TASK.IMPLEMENTED`) back to EventBridge.
+4. **Projection**: `event_projector` consumes the event, advances `current_state` per `state_transitions.py`, calls AgentCore Memory `CreateEvent`, and enqueues the next SQS beacon if the new state needs dispatch.
+5. **HITL**: GitHub PR review/comment → webhook → EventBridge event → same `event_projector` path. Humans gate state advance the same way agents do.
+6. **Terminal events** (PR merged/closed, issue closed) fan out via `retrospector_dispatcher` to the Retrospector agent for the lesson-extraction pass.
+
+The run-level state cursor (`RunState` in `packages/common/src/common/state.py`) walks one path of this diagram. Exact event→state transitions are encoded in `RUN_TRANSITIONS` (`state_transitions.py`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> received: REQUEST.RECEIVED
+    received --> triaging
+    triaging --> triage_decided: ISSUE.TRIAGED
+
+    triage_decided --> spec_pending: action=proceed
+    triage_decided --> proposer_running: action=research
+    triage_decided --> done: action=defer / decline
+
+    spec_pending --> architect_running
+    architect_running --> spec_drafted: SPEC.READY
+    spec_drafted --> critic_running
+    critic_running --> spec_critiqued: CRITIQUE.READY
+    spec_critiqued --> spec_pr_open
+    spec_pr_open --> spec_approved: SPEC.APPROVED
+    spec_pr_open --> spec_pending: SPEC.ITERATION_REQUESTED
+    spec_pr_open --> failed: SPEC.REJECTED
+
+    spec_approved --> tasks_in_progress
+    tasks_in_progress --> tasks_complete
+    tasks_complete --> done: RUN.COMPLETED
+
+    proposer_running --> done: RUN.COMPLETED
+```
+
+`RUN.FAILED` and `RUN.CANCEL_REQUESTED` are wildcard transitions: they advance any non-terminal state to `failed` or `cancelled` respectively. `TaskState` is the per-task cursor (`pending → implementer_running → pr_open → reviewer_running → tester_running → iterating → pending_approval → merged / closed / failed / blocked`) that the run-level `tasks_in_progress` state iterates over.
 
 ## Adding a new agent
 
@@ -69,7 +110,7 @@ uv run pytest -m live_aws tests/integration/...       # full end-to-end against 
 Image build and Terraform apply are GitHub Actions workflows. Production applies require manual approval via GitHub Environments.
 
 ```bash
-gh workflow run images-build.yml --ref main           # all seven agents → ECR
+gh workflow run images-build.yml --ref main           # all eight agents → ECR
 gh workflow run dashboard-build.yml --ref main         # dashboard container → ECR + ECS update-service
 gh workflow run terraform-apply.yml --ref main         # apply (dev auto, prod gated)
 ```
@@ -84,6 +125,20 @@ cd agents/architect && uv sync && AIDLC_ENV=dev uv run python -m architect.app
 ```
 
 The dashboard runs locally with `uv run uvicorn dashboard.app:app --reload --port 8080` from `services/dashboard/`. Cognito OIDC is bypassed in dev mode (set `AIDLC_AUTH=disabled`).
+
+## Terraform (local)
+
+`terraform.tfvars` and `backend.hcl` are gitignored. On first checkout, copy the `.example` template and supply the partial backend config:
+
+```bash
+cd terraform/envs/dev
+cp terraform.tfvars.example terraform.tfvars        # then fill in real values
+terraform init -reconfigure \
+  -backend-config="bucket=<state-bucket-name>" \
+  -backend-config="profile=aidlc-admin"
+```
+
+`-reconfigure` is required the first time after `backend.tf` was converted to a partial config. The state bucket name and AWS profile can also live in a gitignored `terraform/envs/dev/backend.hcl` invoked via `-backend-config=backend.hcl`. CI supplies `bucket` from the `TF_STATE_BUCKET` repo variable and leaves `profile` empty so the S3 backend falls through to OIDC env-var creds.
 
 ## Lint, type, test policy
 

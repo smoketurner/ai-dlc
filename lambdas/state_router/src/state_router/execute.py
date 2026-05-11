@@ -436,6 +436,8 @@ def execute_seed_tasks(action: SeedTasks) -> None:
                     "sk": {"S": f"TASK#{task_id}"},
                     "status": {"S": "pending"},
                     "iteration_count": {"N": "0"},
+                    "project_slug": {"S": action.project_slug},
+                    "spec_slug": {"S": action.spec_slug},
                     "created_at": {"S": ts},
                     "updated_at": {"S": ts},
                 },

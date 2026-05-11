@@ -14,7 +14,8 @@ import boto3
 from strands import tool
 
 from common.agentcore_browser import browse_url
-from common.sandbox import run_pr_in_sandbox
+from common.memory_md import read_stack_profile_md
+from common.sandbox import get_pr_diff, run_pr_in_sandbox
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -102,6 +103,8 @@ def report_s3_key(*, run_id: str, task_id: str) -> str:
 
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
+read_stack_profile_md_tool = tool(read_stack_profile_md)
 read_spec_doc_tool = tool(read_spec_doc)
+get_pr_diff_tool = tool(get_pr_diff)
 run_pr_in_sandbox_tool = tool(run_pr_in_sandbox)
 browse_url_tool = tool(browse_url)
