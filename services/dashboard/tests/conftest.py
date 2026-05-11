@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("AIDLC_AUTH", "disabled")
-os.environ.setdefault("AIDLC_ENV", "test")
+os.environ.setdefault("AIDLC_ENV", "dev")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AIDLC_BUS_NAME", "ai-dlc-test-bus")

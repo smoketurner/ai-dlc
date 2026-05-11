@@ -106,7 +106,9 @@ jobs:
         # backend.tf is a partial config (no bucket, no profile). CI supplies
         # the bucket from a repo variable and leaves profile empty so the
         # S3 backend uses the OIDC-assumed env-var creds.
-        run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" -backend-config="profile="
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+        run: terraform init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="profile="
 
       - name: Terraform plan
         run: terraform plan -out=tfplan -no-color
