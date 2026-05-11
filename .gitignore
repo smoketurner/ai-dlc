@@ -39,7 +39,7 @@ lambdas/*/build/
 *.tfstate
 *.tfstate.*
 *.tfvars
-!terraform/envs/*/terraform.tfvars
+backend.hcl
 crash.log
 crash.*.log
 override.tf
