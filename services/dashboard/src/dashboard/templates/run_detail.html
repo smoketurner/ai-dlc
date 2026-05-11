@@ -1,7 +1,11 @@
 {% extends "base.html" %}
 {% block title %}{{ run_id }} · ai-dlc{% endblock %}
 {% block content %}
-<div x-data="runDetail($el.dataset.runId)" x-init="connect()" data-run-id="{{ run_id }}" class="space-y-4">
+<div x-data="runDetail($el.dataset.runId, $el.dataset.cursor)"
+     x-init="connect()"
+     data-run-id="{{ run_id }}"
+     data-cursor="{{ events[-1].timestamp if events else '' }}"
+     class="space-y-4">
   <div class="flex items-baseline justify-between">
     <div>
       <h1 class="text-xl font-semibold">Run {{ run_id }}</h1>
@@ -87,20 +91,34 @@
   </ul>
 </div>
 <script>
-function runDetail(runId) {
+function runDetail(runId, initialCursor) {
+  const POLL_MS = 2500;
   return {
     liveEvents: [],
     lastType: '',
+    cursor: initialCursor || '',
+    timer: null,
     connect() {
-      const es = new EventSource(`/v1/runs/${runId}/stream`);
-      es.onmessage = (m) => {
-        try {
-          const ev = JSON.parse(m.data);
-          this.liveEvents.push(ev);
-          this.lastType = ev.type;
-        } catch (_) {}
-      };
-      es.addEventListener('close', () => es.close());
+      this.poll();
+      this.timer = window.setInterval(() => this.poll(), POLL_MS);
+    },
+    async poll() {
+      const qs = this.cursor ? `?since=${encodeURIComponent(this.cursor)}` : '';
+      let resp;
+      try {
+        resp = await fetch(`/v1/runs/${encodeURIComponent(runId)}/events${qs}`);
+      } catch (_) { return; }
+      if (!resp.ok) return;
+      const body = await resp.json();
+      for (const ev of body.events || []) {
+        this.liveEvents.push(ev);
+        this.lastType = ev.type;
+        if (ev.timestamp && ev.timestamp > this.cursor) this.cursor = ev.timestamp;
+      }
+      if (body.terminal && this.timer !== null) {
+        window.clearInterval(this.timer);
+        this.timer = null;
+      }
     },
     async deleteRun() {
       if (!window.confirm(`Delete run ${runId}? This permanently removes its events.`)) return;

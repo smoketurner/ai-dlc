@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Dashboard — FastAPI + Jinja2 + Alpine.js. Runs uvicorn on :8080.
+# Dashboard — FastAPI + Jinja2 + Alpine.js packaged as a Lambda container image.
 
 ARG PYTHON_VERSION=3.14
 ARG TAILWIND_VERSION=v4.2.4
@@ -51,28 +51,20 @@ COPY services/dashboard/ services/dashboard/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --package dashboard
 
-FROM --platform=linux/arm64 python:${PYTHON_VERSION}-slim-trixie AS runtime
+# Build stage 3 — Lambda runtime. The AWS-provided base image bundles the
+# Lambda Runtime Interface Client; CMD names the handler the RIC invokes.
+# Mangum (registered as ``dashboard.app.handler``) translates the API
+# Gateway proxy event into ASGI calls for FastAPI.
+FROM --platform=linux/arm64 public.ecr.aws/lambda/python:${PYTHON_VERSION} AS runtime
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+# Site-packages from the uv-resolved venv land directly on PYTHONPATH; the
+# dashboard package itself is installed editable, so we copy its source
+# tree too. ``${LAMBDA_TASK_ROOT}`` is the Lambda working directory and is
+# already on sys.path by default.
+COPY --from=builder /app/.venv/lib/python${PYTHON_VERSION}/site-packages/ ${LAMBDA_TASK_ROOT}/
+COPY --from=builder /app/packages/common/src/common ${LAMBDA_TASK_ROOT}/common
+COPY --from=builder /app/services/dashboard/src/dashboard ${LAMBDA_TASK_ROOT}/dashboard
+COPY --from=assets /app/services/dashboard/src/dashboard/static/tailwind.css \
+                   ${LAMBDA_TASK_ROOT}/dashboard/static/tailwind.css
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 1000 web \
-    && useradd --system --uid 1000 --gid web --create-home web
-
-WORKDIR /app
-
-COPY --from=builder --chown=web:web /app /app
-# Only the generated CSS comes from the assets stage; alpine.min.js is
-# committed source and arrives in the builder layer above.
-COPY --from=assets --chown=web:web \
-     /app/services/dashboard/src/dashboard/static/tailwind.css \
-     /app/services/dashboard/src/dashboard/static/tailwind.css
-
-USER web
-EXPOSE 8080
-
-CMD ["uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--loop", "uvloop", "--http", "httptools"]
+CMD ["dashboard.app.handler"]
