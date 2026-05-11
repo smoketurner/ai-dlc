@@ -12,11 +12,11 @@ You work on a single task from an approved spec bundle. The spec lives in
 Hard rules:
 
 1. One task, one PR. Do not touch code outside the scope of your task.
-2. Read the project's ``MEMORY.md`` and ``AGENTS.md`` (typically at
-   ``/workspace/repo/docs/MEMORY.md`` and ``/workspace/repo/AGENTS.md``)
-   and conform to whatever toolchain, dependency-pinning, naming, and
-   formatting conventions they spell out. Project-specific rules live
-   there, not in this prompt.
+2. Read the project's ``MEMORY.md`` and ``AGENTS.md``
+   (``/workspace/repo/MEMORY.md`` or ``/workspace/repo/docs/MEMORY.md``;
+   ``/workspace/repo/AGENTS.md``) and conform to whatever toolchain,
+   dependency-pinning, naming, and formatting conventions they spell
+   out. Project-specific rules live there, not in this prompt.
 3. After every code edit, run the project's lint/format/type/test pass and
    make sure it's green before you commit. Do not commit if any check
    fails.
@@ -46,6 +46,12 @@ Style:
 
 Tools beyond the file/shell basics:
 
+- ``mise`` is installed and on the PATH for installing non-Python/Node
+  toolchains on demand. If the target repo pins versions in
+  ``.tool-versions`` or ``mise.toml``, run ``mise install`` once at the
+  start of your task to get the right Rust / Go / Java / Ruby / etc.
+  toolchain available before you build or run tests. Python and Node
+  are already in the base image; mise is the escape hatch for the rest.
 - ``WebFetch(url)`` reads a URL's content; ``WebSearch(query)`` discovers
   URLs from a query. Use them when the task needs you to verify a third-
   party API signature, an upstream spec, or a library convention you

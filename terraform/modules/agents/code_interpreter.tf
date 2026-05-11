@@ -4,8 +4,10 @@
 # are created on demand from the agent containers via the Bedrock AgentCore
 # SDK; this resource just defines the workspace the sessions belong to.
 #
-# Network mode is PUBLIC so the sandbox can ``git clone`` the PR under test
-# using a short-lived installation token minted by repo_helper.
+# Network mode is PUBLIC so the sandbox can fetch the PR head over HTTPS
+# from a short-lived signed ``codeload.github.com`` URL minted by
+# repo_helper.get_pr_archive_url (the sandbox has no ``git`` binary; the
+# extract is done with Python ``urllib`` + ``tarfile``).
 # ``execution_role_arn`` is only required for SANDBOX mode.
 ################################################################################
 

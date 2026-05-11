@@ -20,11 +20,18 @@ from common.events import EventEnvelope
 
 @dataclass(frozen=True, slots=True)
 class Noop:
-    """The router is waiting on an external event; do nothing.
+    """The router has no action to take for this beacon; ack and stop.
 
-    The SQS visibility timeout will expire and the beacon will be
-    re-delivered, at which point the next event projection may have
-    advanced state and the router will pick up the new action.
+    Emitted for wait states (run parked on an external event — human PR
+    review, async agent response, awaiting webhook) and for terminal
+    states. :func:`~.execute.execute_noop` logs the reason and returns;
+    :func:`~.handler.lambda_handler` then acks the SQS message.
+
+    The router wakes again only when the projector writes a fresh OUTBOX
+    row in response to a new event landing on the platform bus — never
+    from this beacon being re-delivered. Visibility-timeout redelivery
+    happens only on uncaught Lambda exceptions, which is pure error
+    retry, not a state-machine tick.
     """
 
     reason: str
@@ -138,6 +145,8 @@ class SeedTasks:
 
     run_id: str
     task_ids: tuple[str, ...]
+    project_slug: str
+    spec_slug: str
 
 
 @dataclass(frozen=True, slots=True)

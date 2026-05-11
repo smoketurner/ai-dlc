@@ -1,6 +1,8 @@
-# Tailwind CSS — generated at container build time, never committed.
-# (alpine.min.js is committed alongside the source — pinned + reproducible.)
-services/dashboard/src/dashboard/static/tailwind.css
+# Tailwind CLI binary cache (build-tailwind.sh downloads the pinned standalone
+# release on demand). The generated tailwind.css IS committed — `terraform plan`
+# regenerates it via build-tailwind.sh, but a committed copy keeps local
+# `uvicorn` dev working without the binary.
+services/dashboard/.bin/
 
 # Python / uv
 __pycache__/
@@ -39,7 +41,7 @@ lambdas/*/build/
 *.tfstate
 *.tfstate.*
 *.tfvars
-!terraform/envs/*/terraform.tfvars
+backend.hcl
 crash.log
 crash.*.log
 override.tf
@@ -62,6 +64,9 @@ terraform.rc
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Local-only workspace (private plans, scratch notes)
+.local/
 /terraform/envs/dev/builds
 terraform/envs/dev/tfplan
 terraform/envs/dev/secrets.auto.tfvars

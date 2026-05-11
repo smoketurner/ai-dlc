@@ -13,7 +13,7 @@ module "entry_adapter" {
   function_name = "${local.prefix}-entry-adapter"
   description   = "POST /v1/runs → write run row → emit REQUEST.RECEIVED → enqueue state-router beacon."
   handler       = "entry_adapter.handler.handler"
-  runtime       = "python3.13"
+  runtime       = "python3.14"
   architectures = ["arm64"]
   memory_size   = 256
   timeout       = 10
@@ -26,7 +26,7 @@ module "entry_adapter" {
     pip_requirements = "${local.source_dir}/entry_adapter/requirements.txt"
   }]
   build_in_docker = true
-  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_BUS_NAME               = var.bus_name
@@ -81,7 +81,7 @@ module "state_router" {
   function_name = "${local.prefix}-state-router"
   description   = "SQS beacon → DDB state read → action dispatch (replaces SFN orchestration)."
   handler       = "state_router.handler.handler"
-  runtime       = "python3.13"
+  runtime       = "python3.14"
   architectures = ["arm64"]
   memory_size   = 512
   # 60s lambda timeout matches the SQS visibility timeout. Most invokes
@@ -97,7 +97,7 @@ module "state_router" {
     pip_requirements = "${local.source_dir}/state_router/requirements.txt"
   }]
   build_in_docker = true
-  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_RUNS_TABLE                = var.runs_table
@@ -212,7 +212,7 @@ module "event_projector" {
   function_name = "${local.prefix}-event-projector"
   description   = "EventBridge → runs read-model + outbox row + AgentCore Memory CreateEvent."
   handler       = "event_projector.handler.handler"
-  runtime       = "python3.13"
+  runtime       = "python3.14"
   architectures = ["arm64"]
   memory_size   = 512
   timeout       = 30
@@ -225,7 +225,7 @@ module "event_projector" {
     pip_requirements = "${local.source_dir}/event_projector/requirements.txt"
   }]
   build_in_docker = true
-  docker_image    = "public.ecr.aws/sam/build-python3.13:latest-arm64"
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_RUNS_TABLE             = var.runs_table

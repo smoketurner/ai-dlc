@@ -224,6 +224,8 @@ async def test_pr_merged_task_emits_task_approved(
     assert out["decision"] == "task_approved"
     assert len(captured_events) == 1
     assert captured_events[0].type == "TASK.APPROVED"
+    assert captured_events[0].payload.project_slug == "demo"
+    assert captured_events[0].payload.spec_slug == "add-healthz"
 
 
 @pytest.mark.asyncio
@@ -239,6 +241,8 @@ async def test_pr_unmerged_task_emits_task_rejected(
     }
     await post_webhook(event_type="pull_request", payload=payload)
     assert captured_events[0].type == "TASK.REJECTED"
+    assert captured_events[0].payload.project_slug == "demo"
+    assert captured_events[0].payload.spec_slug == "add-healthz"
 
 
 @pytest.mark.asyncio
@@ -311,6 +315,8 @@ async def test_review_changes_requested_emits_iteration(
     }
     await post_webhook(event_type="pull_request_review", payload=payload)
     assert captured_events[0].type == "TASK.ITERATION_REQUESTED"
+    assert captured_events[0].payload.project_slug == "demo"
+    assert captured_events[0].payload.spec_slug == "add-healthz"
 
 
 # ---------------------------------------------------------------------------

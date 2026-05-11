@@ -27,6 +27,7 @@ from retrospector.tools import (
     list_pr_comments_tool,
     list_pr_review_comments_tool,
     read_memory_md_tool,
+    read_stack_profile_md_tool,
 )
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -57,6 +58,7 @@ def build_agent(run_id: str) -> Agent:
         system_prompt=load_system_prompt("retrospector", variant),
         tools=[
             read_memory_md_tool,
+            read_stack_profile_md_tool,
             get_pr_tool,
             list_pr_comments_tool,
             list_pr_review_comments_tool,
@@ -150,6 +152,6 @@ def compose_message(  # noqa: PLR0913
         "  2. If a PR is involved, get_pr + list_pr_comments + list_pr_review_comments.",
         "  3. If an issue is involved, get_issue + list_issue_comments.",
         "  4. Decide whether the trace contains a reusable lesson worth appending "
-        "to docs/MEMORY.md. Return a RetrospectiveDecision JSON.",
+        "to MEMORY.md. Return a RetrospectiveDecision JSON.",
     ]
     return "\n".join(parts)

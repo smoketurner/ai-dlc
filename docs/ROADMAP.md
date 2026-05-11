@@ -2,9 +2,9 @@
 
 Live tracker for the AI-DLC build.
 
-The platform's seven agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed.
+The platform's eight agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer, Retrospector), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed.
 
-**Current focus:** architect grounding + spec PR iteration. Detailed plan in [`ARCHITECT-GROUNDING-AND-SPEC-ITERATION.md`](ARCHITECT-GROUNDING-AND-SPEC-ITERATION.md). Triggered by run `019e0393` on issue smoketurner/ai-dlc#33: the architect produced a Next.js spec for a FastAPI project because both grounding sources (per-project MEMORY.md S3 snapshot + repo file-listing) returned empty. Two work streams: fix the architect's grounding so it stops inventing tech, then add a spec-iteration state so a human can comment on the spec PR and the architect regenerates.
+**Current focus:** architect grounding + spec PR iteration. Two work streams: fix the architect's grounding so it stops inventing tech choices when the canonical project context is unavailable, and add a spec-iteration state so a human can comment on the spec PR and the architect regenerates.
 
 Legend: ✅ done · 🟡 in progress · ⬜ todo
 
@@ -80,7 +80,7 @@ Audit findings from the SQS cutover. All shipped.
 
 ## Deferred (no concrete trigger yet)
 
-- **Implementer judgement — partial matches read as "done".** Same run: an existing `/healthz` handler in `pages.py` returning HTMLResponse satisfied the implementer that the spec was already implemented, even though the spec asked for a separate `routes/healthz.py` returning `JSONResponse({"status": "ok"})`. Likely a prompt tweak in `agents/implementer/src/implementer/prompts.py` — "a route already existing isn't proof the spec is satisfied; confirm response shape + module path against the design".
+- **Implementer judgement — partial matches read as "done".** Observed example: an existing `/healthz` handler in `pages.py` returning HTMLResponse satisfied the implementer that the spec was already implemented, even though the spec asked for a separate `routes/healthz.py` returning `JSONResponse({"status": "ok"})`. Likely a prompt tweak in `agents/implementer/src/implementer/prompts.py` — "a route already existing isn't proof the spec is satisfied; confirm response shape + module path against the design".
 - Switch AgentCore Runtime to VPC mode.
 - Migrate to AgentCore Harness when GA.
 - A2A protocol for cross-team or third-agent invocation.

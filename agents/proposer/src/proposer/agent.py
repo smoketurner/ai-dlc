@@ -21,6 +21,7 @@ from proposer.tools import (
     browse_url_tool,
     list_issue_comments_tool,
     read_memory_md_tool,
+    read_stack_profile_md_tool,
 )
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
@@ -49,6 +50,7 @@ def build_agent(run_id: str) -> Agent:
         system_prompt=load_system_prompt("proposer", variant),
         tools=[
             read_memory_md_tool,
+            read_stack_profile_md_tool,
             browse_url_tool,
             list_issue_comments_tool,
         ],

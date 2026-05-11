@@ -17,7 +17,7 @@ import boto3
 from strands import tool
 
 from common.agentcore_browser import browse_url
-from common.memory_md import read_memory_md
+from common.memory_md import read_memory_md, read_stack_profile_md
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -82,5 +82,6 @@ def critique_s3_key(run_id: str) -> str:
 
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
+read_stack_profile_md_tool = tool(read_stack_profile_md)
 read_spec_doc_tool = tool(read_spec_doc)
 browse_url_tool = tool(browse_url)

@@ -132,14 +132,14 @@ data "aws_iam_policy_document" "image_publisher_inline" {
     ]
   }
 
-  # Post-push deploys: dashboard-build calls ecs:UpdateService to roll the
-  # ECS service onto the new :latest digest; images-build looks up the
-  # AgentCore Runtime ID by name and calls update-agent-runtime.
+  # Post-push deploys: dashboard-build calls lambda:UpdateFunctionCode to
+  # point the dashboard Lambda at the freshly pushed image; images-build
+  # looks up the AgentCore Runtime ID by name and calls update-agent-runtime.
   statement {
-    sid     = "EcsRollDashboard"
-    actions = ["ecs:UpdateService", "ecs:DescribeServices"]
+    sid     = "LambdaUpdateDashboard"
+    actions = ["lambda:UpdateFunctionCode", "lambda:GetFunction"]
     resources = [
-      "arn:${local.aws_partition}:ecs:*:${local.aws_account_id}:service/${var.project}-*-dashboard/${var.project}-*-dashboard",
+      "arn:${local.aws_partition}:lambda:*:${local.aws_account_id}:function:${var.project}-*-dashboard",
     ]
   }
 

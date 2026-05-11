@@ -213,20 +213,34 @@ class ListIssueCommentsInput(BaseOp):
     per_page: int = Field(default=100, ge=1, le=100)
 
 
-class MintCloneTokenInput(BaseOp):
-    """Mint a short-lived authenticated clone URL for a PR head.
+class GetPrDiffInput(BaseOp):
+    """Fetch a PR's per-file diff metadata via the GitHub Files API.
 
-    Used by Tester/Reviewer to hand a Code Interpreter sandbox session a
-    URL it can ``git clone`` directly. The returned token is the same
-    bearer ``token_for_call`` produces for any other op — installation
-    token by default, user-OBO when ``requestor_sub`` resolves to a
-    linked user. The token is embedded as the userinfo component of the
-    URL (``https://x-access-token:<token>@github.com/<repo>.git``); the
-    response field carries it in plaintext, so callers MUST avoid
-    logging the result.
+    Used by Reviewer/Tester to read the diff text without needing a
+    sandbox. Backed by ``GET /repos/{repo}/pulls/{n}/files``, which
+    returns up to 100 files per page; this op follows pagination up to
+    ``GET_PR_DIFF_FILE_CAP`` files. Each file's ``patch`` is bounded by
+    ``GET_PR_DIFF_PATCH_TAIL_BYTES``.
     """
 
-    op: Literal["mint_clone_token"]
+    op: Literal["get_pr_diff"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+
+
+class GetPrArchiveUrlInput(BaseOp):
+    """Resolve a short-lived signed tarball URL for a PR head.
+
+    Used by Tester/Reviewer to hand a Code Interpreter sandbox session a
+    URL it can download (and extract via ``tarfile``) without needing
+    ``git`` installed. The handler resolves the PR's current ``head_sha``
+    and asks GitHub for ``/repos/{repo}/tarball/{sha}``; GitHub responds
+    with a 302 to a short-lived ``codeload.github.com`` URL that already
+    carries its own signed token in the query string, so the bearer
+    token never leaves this Lambda.
+    """
+
+    op: Literal["get_pr_archive_url"]
     repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
     pr_number: int = Field(ge=1)
 
@@ -331,7 +345,8 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "create_issue": CreateIssueInput,
     "list_issues": ListIssuesInput,
     "list_issue_comments": ListIssueCommentsInput,
-    "mint_clone_token": MintCloneTokenInput,
+    "get_pr_diff": GetPrDiffInput,
+    "get_pr_archive_url": GetPrArchiveUrlInput,
     "list_pr_comments": ListPrCommentsInput,
     "list_pr_review_comments": ListPrReviewCommentsInput,
     "reply_pr_review_comment": ReplyPrReviewCommentInput,
@@ -905,23 +920,89 @@ def list_check_runs(req: ListCheckRunsInput, client: httpx.Client) -> dict[str, 
     }
 
 
-def mint_clone_token(req: MintCloneTokenInput, client: httpx.Client) -> dict[str, Any]:
-    """Resolve a PR's head SHA and return an authenticated clone URL.
+GET_PR_DIFF_FILE_CAP = 300
+GET_PR_DIFF_PATCH_TAIL_BYTES = 4096
+GET_PR_DIFF_PER_PAGE = 100
 
-    The token embedded in the URL is the same bearer that authenticated
-    this Lambda call (cached by :func:`common.github_app.token_for_call`).
-    The response carries the token in plaintext so the calling agent can
-    hand it to a Code Interpreter sandbox; callers MUST treat the result
-    as a credential and avoid logging it.
+
+def get_pr_diff(req: GetPrDiffInput, client: httpx.Client) -> dict[str, Any]:
+    """Return per-file diff metadata for a pull request.
+
+    Pages through ``/repos/{repo}/pulls/{n}/files`` up to
+    :data:`GET_PR_DIFF_FILE_CAP` files. Each file's ``patch`` is
+    truncated to the last :data:`GET_PR_DIFF_PATCH_TAIL_BYTES` bytes
+    (the tail is what reviewers anchor comments against). Files
+    returned by the API without a ``patch`` (binary, or too large for
+    GitHub to inline) carry ``patch=None`` and ``truncated=True``.
     """
-    response = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
-    response.raise_for_status()
-    head_sha = str(response.json()["head"]["sha"])
-    token = token_for_call(repo=req.repo, requestor_sub=req.requestor_sub)
+    pr = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
+    pr.raise_for_status()
+    head_sha = str(pr.json()["head"]["sha"])
+    files: list[dict[str, Any]] = []
+    page = 1
+    while len(files) < GET_PR_DIFF_FILE_CAP:
+        response = client.get(
+            f"/repos/{req.repo}/pulls/{req.pr_number}/files",
+            params={"per_page": str(GET_PR_DIFF_PER_PAGE), "page": str(page)},
+        )
+        response.raise_for_status()
+        batch = response.json()
+        if not isinstance(batch, list) or not batch:
+            break
+        for entry in batch:
+            files.append(diff_file_entry(entry))
+            if len(files) >= GET_PR_DIFF_FILE_CAP:
+                break
+        if len(batch) < GET_PR_DIFF_PER_PAGE:
+            break
+        page += 1
     return {
-        "clone_url": f"https://x-access-token:{token}@github.com/{req.repo}.git",
         "head_sha": head_sha,
+        "files": files,
+        "files_truncated": len(files) >= GET_PR_DIFF_FILE_CAP,
     }
+
+
+def diff_file_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Project a GitHub Files-API entry into the agent-facing shape."""
+    patch = entry.get("patch")
+    truncated = patch is None
+    if isinstance(patch, str) and len(patch.encode("utf-8")) > GET_PR_DIFF_PATCH_TAIL_BYTES:
+        patch = patch.encode("utf-8")[-GET_PR_DIFF_PATCH_TAIL_BYTES:].decode(
+            "utf-8", errors="replace"
+        )
+        truncated = True
+    return {
+        "filename": entry.get("filename", ""),
+        "status": entry.get("status", ""),
+        "additions": int(entry.get("additions", 0)),
+        "deletions": int(entry.get("deletions", 0)),
+        "patch": patch,
+        "truncated": truncated,
+        "previous_filename": entry.get("previous_filename"),
+    }
+
+
+def get_pr_archive_url(req: GetPrArchiveUrlInput, client: httpx.Client) -> dict[str, Any]:
+    """Return a short-lived signed tarball URL pinned to the PR's head SHA.
+
+    GitHub's ``/repos/{repo}/tarball/{ref}`` endpoint responds with a
+    302 to ``codeload.github.com``; the redirect URL embeds its own
+    short-lived token, so the caller (typically a sandbox session) can
+    download without an ``Authorization`` header. The Lambda's bearer
+    token never leaves this function.
+    """
+    pr = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
+    pr.raise_for_status()
+    head_sha = str(pr.json()["head"]["sha"])
+    response = client.get(f"/repos/{req.repo}/tarball/{head_sha}")
+    if response.status_code not in (httpx.codes.FOUND, httpx.codes.SEE_OTHER):
+        response.raise_for_status()
+    archive_url = response.headers.get("location")
+    if not archive_url:
+        msg = "github tarball response missing Location header"
+        raise RuntimeError(msg)
+    return {"head_sha": head_sha, "archive_url": archive_url}
 
 
 def head_commit_sha(repo: str, branch: str, client: httpx.Client) -> str:
@@ -1020,7 +1101,7 @@ def safe_body(response: httpx.Response) -> str | dict[str, Any]:
     """
     try:
         return response.json()
-    except (ValueError, json.JSONDecodeError):
+    except ValueError, json.JSONDecodeError:
         return response.text[:1024]
 
 
@@ -1052,7 +1133,8 @@ OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     CreateIssueInput: ("create_issue", create_issue),
     ListIssuesInput: ("list_issues", list_issues),
     ListIssueCommentsInput: ("list_issue_comments", list_issue_comments),
-    MintCloneTokenInput: ("mint_clone_token", mint_clone_token),
+    GetPrDiffInput: ("get_pr_diff", get_pr_diff),
+    GetPrArchiveUrlInput: ("get_pr_archive_url", get_pr_archive_url),
     ListPrCommentsInput: ("list_pr_comments", list_pr_comments),
     ListPrReviewCommentsInput: ("list_pr_review_comments", list_pr_review_comments),
     ReplyPrReviewCommentInput: ("reply_pr_review_comment", reply_pr_review_comment),
