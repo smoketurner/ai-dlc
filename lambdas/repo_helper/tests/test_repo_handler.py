@@ -858,31 +858,40 @@ def test_list_issues_filters_out_pull_requests(
     assert issues[0]["issue_number"] == 7
 
 
-def test_mint_clone_token_returns_authenticated_url_with_install_token(
+def test_get_pr_diff_returns_per_file_patches(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
-    """Default path: no requestor_sub → installation token embedded in clone URL."""
+    """Happy path: one page of files, projected into the agent-facing shape."""
 
     def respond(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert request.url.path == "/repos/smoketurner/ai-dlc/pulls/42"
+        if request.url.path == "/repos/smoketurner/ai-dlc/pulls/42":
+            return httpx.Response(200, json={"head": {"sha": "deadbeef"}})
+        assert request.url.path == "/repos/smoketurner/ai-dlc/pulls/42/files"
         return httpx.Response(
             200,
-            json={
-                "number": 42,
-                "html_url": "https://github.com/smoketurner/ai-dlc/pull/42",
-                "state": "open",
-                "merged": False,
-                "title": "T",
-                "head": {"sha": "deadbeef"},
-            },
+            json=[
+                {
+                    "filename": "src/foo.py",
+                    "status": "modified",
+                    "additions": 3,
+                    "deletions": 1,
+                    "patch": "@@ -1 +1,3 @@\n-x\n+x\n+y\n+z",
+                },
+                {
+                    "filename": "tests/test_foo.py",
+                    "status": "added",
+                    "additions": 10,
+                    "deletions": 0,
+                    "patch": "@@ -0,0 +1,10 @@\n+def test_foo():\n+    ...",
+                },
+            ],
         )
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
             "input": {
-                "op": "mint_clone_token",
+                "op": "get_pr_diff",
                 "repo": "smoketurner/ai-dlc",
                 "pr_number": 42,
             },
@@ -890,58 +899,197 @@ def test_mint_clone_token_returns_authenticated_url_with_install_token(
         ctx(),
     )
     assert out["ok"] is True
-    assert out["op"] == "mint_clone_token"
-    assert out["result"] == {
-        "clone_url": "https://x-access-token:ghs_fake_install@github.com/smoketurner/ai-dlc.git",
-        "head_sha": "deadbeef",
-    }
+    assert out["op"] == "get_pr_diff"
+    result = out["result"]
+    assert result["head_sha"] == "deadbeef"
+    assert result["files_truncated"] is False
+    assert len(result["files"]) == 2
+    assert result["files"][0]["filename"] == "src/foo.py"
+    assert result["files"][0]["status"] == "modified"
+    assert result["files"][0]["additions"] == 3
+    assert result["files"][0]["deletions"] == 1
+    assert result["files"][0]["truncated"] is False
+    assert "+y" in result["files"][0]["patch"]
 
 
-def test_mint_clone_token_uses_user_obo_when_requestor_sub_set(
+def test_get_pr_diff_truncates_oversized_patch(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
-    """When requestor_sub is supplied, the embedded token is the user-OBO bearer."""
+    """A patch larger than GET_PR_DIFF_PATCH_TAIL_BYTES is tail-truncated."""
+    big_patch = "@@ header @@\n" + ("x" * (h.GET_PR_DIFF_PATCH_TAIL_BYTES + 500))
 
-    def respond(_request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
         return httpx.Response(
             200,
-            json={
-                "number": 7,
-                "state": "open",
-                "merged": False,
-                "title": "T",
-                "head": {"sha": "abc123"},
-            },
+            json=[
+                {
+                    "filename": "big.py",
+                    "status": "modified",
+                    "additions": 500,
+                    "deletions": 0,
+                    "patch": big_patch,
+                }
+            ],
         )
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {
-            "input": {
-                "op": "mint_clone_token",
-                "repo": "o/r",
-                "pr_number": 7,
-                "requestor_sub": "cognito-sub-xyz",
-            },
-        },
+        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
         ctx(),
     )
     assert out["ok"] is True
-    assert out["result"]["clone_url"] == "https://x-access-token:ghs_fake_user@github.com/o/r.git"
-    assert out["result"]["head_sha"] == "abc123"
+    file_entry = out["result"]["files"][0]
+    assert file_entry["truncated"] is True
+    assert len(file_entry["patch"].encode("utf-8")) <= h.GET_PR_DIFF_PATCH_TAIL_BYTES
 
 
-def test_mint_clone_token_missing_pr_returns_error_envelope(
+def test_get_pr_diff_marks_binary_file_with_no_patch(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
-    """A 404 from GitHub propagates as a github_http_error envelope, not an exception."""
+    """A file the API returns without a patch (binary, too large) is flagged truncated."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "filename": "logo.png",
+                    "status": "added",
+                    "additions": 0,
+                    "deletions": 0,
+                }
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    file_entry = out["result"]["files"][0]
+    assert file_entry["patch"] is None
+    assert file_entry["truncated"] is True
+
+
+def test_get_pr_diff_paginates_and_caps_files(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Pages through results and stops at GET_PR_DIFF_FILE_CAP files."""
+    pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        page = int(request.url.params["page"])
+        pages_seen.append(page)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "filename": f"page{page}-file{i}.py",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 0,
+                    "patch": "@@ -1 +1 @@\n-a\n+b",
+                }
+                for i in range(h.GET_PR_DIFF_PER_PAGE)
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    result = out["result"]
+    assert len(result["files"]) == h.GET_PR_DIFF_FILE_CAP
+    assert result["files_truncated"] is True
+    assert pages_seen == [1, 2, 3]
+
+
+def test_get_pr_diff_stops_when_short_page_returned(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A page shorter than per_page signals end-of-results — no further fetches."""
+    pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        page = int(request.url.params["page"])
+        pages_seen.append(page)
+        # Return a single file (well under per_page=100), so the loop should stop.
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "filename": "one.py",
+                    "status": "added",
+                    "additions": 1,
+                    "deletions": 0,
+                    "patch": "@@ +1 @@\n+x",
+                }
+            ],
+        )
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert pages_seen == [1]
+    assert out["result"]["files_truncated"] is False
+
+
+def test_get_pr_diff_validates_repo_format() -> None:
+    out = h.handler(
+        {"input": {"op": "get_pr_diff", "repo": "no-slash", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"
+
+
+def test_get_pr_archive_url_returns_signed_codeload_url(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Happy path: GitHub 302s to codeload; we surface the Location header."""
+    signed = "https://codeload.github.com/o/r/legacy.tar.gz/abc?token=SIGNED"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/o/r/pulls/7":
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        assert request.url.path == "/repos/o/r/tarball/abc"
+        return httpx.Response(302, headers={"location": signed})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 7}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["op"] == "get_pr_archive_url"
+    assert out["result"] == {"head_sha": "abc", "archive_url": signed}
+
+
+def test_get_pr_archive_url_missing_pr_returns_error_envelope(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A 404 on the PR lookup propagates as a github_http_error envelope."""
 
     def respond(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"message": "Not Found"})
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "mint_clone_token", "repo": "o/r", "pr_number": 999}},
+        {"input": {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 999}},
         ctx(),
     )
     assert out["ok"] is False
@@ -949,18 +1097,9 @@ def test_mint_clone_token_missing_pr_returns_error_envelope(
     assert out["error"]["detail"]["status_code"] == 404
 
 
-def test_mint_clone_token_validates_repo_format() -> None:
+def test_get_pr_archive_url_validates_pr_number() -> None:
     out = h.handler(
-        {"input": {"op": "mint_clone_token", "repo": "no-slash", "pr_number": 1}},
-        ctx(),
-    )
-    assert out["ok"] is False
-    assert out["error"]["kind"] == "validation_error"
-
-
-def test_mint_clone_token_requires_positive_pr_number() -> None:
-    out = h.handler(
-        {"input": {"op": "mint_clone_token", "repo": "o/r", "pr_number": 0}},
+        {"input": {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 0}},
         ctx(),
     )
     assert out["ok"] is False

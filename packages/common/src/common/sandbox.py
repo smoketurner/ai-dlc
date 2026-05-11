@@ -1,17 +1,17 @@
 """Shared Code Interpreter sandbox helpers used by Tester + Reviewer.
 
-Both agents need the same flow: parse a GitHub PR URL, mint an
-authenticated clone URL via ``repo_helper.mint_clone_token``, start a CI
-session, clone + checkout the PR head, run a series of shell commands,
-and clean up. This module owns that flow so each agent's ``tools.py``
-just wraps :func:`run_pr_in_sandbox` with Strands' ``@tool``.
+Both agents need the same flow: parse a GitHub PR URL, ask
+``repo_helper`` for a short-lived signed tarball URL pinned to the PR
+head, start a CI session, download + extract the tarball into the
+sandbox via Python ``urllib`` + ``tarfile`` (no ``git`` binary required),
+run a series of shell commands, and clean up. This module owns that
+flow so each agent's ``tools.py`` just wraps :func:`run_pr_in_sandbox`
+with Strands' ``@tool``.
 
-The clone URL embeds a short-lived GitHub installation token. To avoid
-leaking it into CloudWatch:
-  * we never include the command in error context (see
-    :mod:`common.agentcore_code_interpreter`),
-  * we redact the token portion of any sandbox stderr we surface, and
-  * we never log the token directly here.
+The tarball URL is a ``codeload.github.com`` URL whose query string
+carries a short-lived signed token. We still redact the ``?token=``
+parameter out of any sandbox stderr we surface, and we never log the
+URL directly.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pull/(?P<num>\d+)$")
-TOKEN_REDACT_PATTERN = re.compile(r"x-access-token:[^@\s]+@")
+ARCHIVE_TOKEN_REDACT_PATTERN = re.compile(r"([?&]token=)[^&\s]+")
 SANDBOX_OUTPUT_TAIL_BYTES = 4096
-SANDBOX_CLONE_STDERR_TAIL_BYTES = 2048
+SANDBOX_EXTRACT_STDERR_TAIL_BYTES = 2048
 
 
 @cache
@@ -70,9 +70,9 @@ def parse_pr_url(pr_url: str) -> tuple[str, int] | None:
     return match.group("repo"), int(match.group("num"))
 
 
-def redact_clone_token(text: str) -> str:
-    """Redact any ``x-access-token:<token>@`` occurrence from log-bound text."""
-    return TOKEN_REDACT_PATTERN.sub("x-access-token:<redacted>@", text)
+def redact_archive_token(text: str) -> str:
+    """Redact any ``?token=<token>`` query parameter from log-bound text."""
+    return ARCHIVE_TOKEN_REDACT_PATTERN.sub(r"\1<redacted>", text)
 
 
 def invoke_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
@@ -109,21 +109,21 @@ def run_pr_in_sandbox(
     commands: list[str],
     working_dir: str = "repo",
 ) -> dict[str, Any]:
-    """Clone the PR head into an AgentCore Code Interpreter sandbox and run shell commands.
+    """Extract the PR head into an AgentCore Code Interpreter sandbox and run shell commands.
 
     Use this to actually execute the diff's tests against a clean checkout.
-    The clone uses a short-lived installation token from ``repo_helper``;
-    the token is never returned and stderr is redacted before reporting.
-    Each command runs from the cloned repo's root, in order, stopping at
-    the first non-zero exit.
+    The PR head is downloaded as a GitHub tarball via a short-lived signed
+    URL (no ``git`` binary required inside the sandbox); the URL's token
+    is redacted before any stderr is reported. Each command runs from the
+    extracted repo's root, in order, stopping at the first non-zero exit.
 
     Args:
         pr_url: GitHub PR URL — ``https://github.com/owner/name/pull/123``.
         commands: Shell commands to run from the repo root, in order.
-        working_dir: Sandbox-relative directory the repo is cloned into.
+        working_dir: Sandbox-relative directory the repo is extracted into.
 
     Returns:
-        ``{"head_sha": str, "clone": {...}, "results": [{...}]}`` on
+        ``{"head_sha": str, "extract": {...}, "results": [{...}]}`` on
         success; ``{"error": str}`` on configuration failure.
     """
     parsed = parse_pr_url(pr_url)
@@ -134,15 +134,19 @@ def run_pr_in_sandbox(
     if ci_id is None:
         return {"error": "AIDLC_CODE_INTERPRETER_ID is not set"}
     try:
-        token = invoke_repo_helper(op="mint_clone_token", repo=repo, pr_number=pr_number)
+        archive = invoke_repo_helper(
+            op="get_pr_archive_url",
+            repo=repo,
+            pr_number=pr_number,
+        )
     except (RuntimeError, TypeError) as exc:
         return {"error": str(exc)}
     sdk_client = CodeInterpreter(region=aws_region())
     return execute_in_sandbox(
         sdk_client,
         ci_id=ci_id,
-        clone_url=str(token["clone_url"]),
-        head_sha=str(token["head_sha"]),
+        archive_url=str(archive["archive_url"]),
+        head_sha=str(archive["head_sha"]),
         commands=commands,
         working_dir=working_dir,
     )
@@ -153,29 +157,28 @@ def execute_in_sandbox(
     /,
     *,
     ci_id: str,
-    clone_url: str,
+    archive_url: str,
     head_sha: str,
     commands: list[str],
     working_dir: str,
 ) -> dict[str, Any]:
-    """Run the clone-and-execute flow on an existing CI SDK client.
+    """Run the extract-and-execute flow on an existing CI SDK client.
 
     Split out from :func:`run_pr_in_sandbox` so tests can drive it without
     monkeypatching ``boto3.client``. The session is started here and
     always stopped in ``finally``.
     """
     results: list[dict[str, Any]] = []
-    clone_summary: dict[str, Any] | None = None
+    extract_summary: dict[str, Any] | None = None
     try:
         ci.start_session(sdk_client, code_interpreter_id=ci_id)
-        clone_summary, ok = run_clone_step(
+        extract_summary, ok = run_extract_step(
             sdk_client,
-            clone_url=clone_url,
-            head_sha=head_sha,
+            archive_url=archive_url,
             working_dir=working_dir,
         )
         if not ok:
-            return {"head_sha": head_sha, "clone": clone_summary, "results": []}
+            return {"head_sha": head_sha, "extract": extract_summary, "results": []}
         results = run_command_sequence(
             sdk_client,
             commands=commands,
@@ -185,7 +188,7 @@ def execute_in_sandbox(
         logger.warning("sandbox session failed", extra={"err": str(exc)})
         return {
             "head_sha": head_sha,
-            "clone": clone_summary,
+            "extract": extract_summary,
             "results": results,
             "error": str(exc),
         }
@@ -194,33 +197,72 @@ def execute_in_sandbox(
             ci.stop_session(sdk_client)
         except AgentCoreCodeInterpreterError as exc:
             logger.warning("stop_session failed", extra={"err": str(exc)})
-    return {"head_sha": head_sha, "clone": clone_summary, "results": results}
+    return {"head_sha": head_sha, "extract": extract_summary, "results": results}
 
 
-def run_clone_step(
+EXTRACT_SCRIPT_TEMPLATE = """\
+import io, os, tarfile, urllib.request
+url = {archive_url!r}
+working_dir = {working_dir!r}
+os.makedirs(working_dir, exist_ok=True)
+with urllib.request.urlopen(url) as resp:
+    raw = resp.read()
+with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
+    members = tf.getmembers()
+    if not members:
+        raise SystemExit("empty archive")
+    prefix = members[0].name.split("/", 1)[0] + "/"
+    for m in members:
+        if m.name.startswith(prefix):
+            m.name = m.name[len(prefix):]
+        if m.name:
+            tf.extract(m, path=working_dir, filter="data")
+print("ok")
+"""
+
+
+def run_extract_step(
     sdk_client: CodeInterpreter,
     /,
     *,
-    clone_url: str,
-    head_sha: str,
+    archive_url: str,
     working_dir: str,
 ) -> tuple[dict[str, Any], bool]:
-    """Execute ``git clone && git checkout`` in the sandbox.
+    """Download + extract the PR tarball into ``working_dir`` inside the sandbox.
 
-    Returns the redacted summary plus a success flag.
+    Uses Python's ``urllib`` + ``tarfile`` via ``execute_code`` rather
+    than shelling out, since the managed Code Interpreter does not ship
+    ``git``. Returns the redacted summary plus a success flag.
     """
-    cmd = (
-        f"git clone {shlex.quote(clone_url)} {shlex.quote(working_dir)} && "
-        f"git -C {shlex.quote(working_dir)} checkout {shlex.quote(head_sha)}"
-    )
-    result = ci.execute_command(sdk_client, command=cmd)
+    code = EXTRACT_SCRIPT_TEMPLATE.format(archive_url=archive_url, working_dir=working_dir)
+    result = ci.execute_code(sdk_client, code=code, language="python")
     summary = {
         "exit_code": result.exit_code,
-        "stderr": redact_clone_token(result.stderr)[-SANDBOX_CLONE_STDERR_TAIL_BYTES:],
+        "stderr": redact_archive_token(result.stderr)[-SANDBOX_EXTRACT_STDERR_TAIL_BYTES:],
         "is_error": result.is_error,
     }
     ok = not result.is_error and (result.exit_code == 0 or result.exit_code is None)
     return summary, ok
+
+
+def get_pr_diff(pr_url: str) -> dict[str, Any]:
+    """Fetch a PR's per-file diff metadata via ``repo_helper.get_pr_diff``.
+
+    Returns the structured result on success (``{"head_sha", "files",
+    "files_truncated"}``) or ``{"error": str}`` on a URL parse or
+    Lambda invocation failure.
+
+    Args:
+        pr_url: GitHub PR URL — ``https://github.com/owner/name/pull/123``.
+    """
+    parsed = parse_pr_url(pr_url)
+    if parsed is None:
+        return {"error": f"could not parse pr_url: {pr_url!r}"}
+    repo, pr_number = parsed
+    try:
+        return invoke_repo_helper(op="get_pr_diff", repo=repo, pr_number=pr_number)
+    except (RuntimeError, TypeError) as exc:
+        return {"error": str(exc)}
 
 
 def run_command_sequence(

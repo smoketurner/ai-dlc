@@ -18,9 +18,11 @@ from common import sandbox as sandbox_mod
 from common.agentcore_code_interpreter import CommandResult
 from common.errors import AgentCoreCodeInterpreterError
 from common.sandbox import (
+    EXTRACT_SCRIPT_TEMPLATE,
     execute_in_sandbox,
+    get_pr_diff,
     parse_pr_url,
-    redact_clone_token,
+    redact_archive_token,
     run_pr_in_sandbox,
 )
 
@@ -69,115 +71,101 @@ def test_parse_pr_url_returns_none_for_unknown_shape() -> None:
     assert parse_pr_url("not a url") is None
 
 
-def test_redact_clone_token_strips_token_in_user_info() -> None:
-    raw = "fatal: could not read https://x-access-token:ghs_secret@github.com/o/r.git"
-    redacted = redact_clone_token(raw)
-    assert "ghs_secret" not in redacted
+def test_redact_archive_token_strips_token_query_param() -> None:
+    raw = "urlopen failed: https://codeload.github.com/o/r/legacy.tar.gz/abc?token=AABBCC"
+    redacted = redact_archive_token(raw)
+    assert "AABBCC" not in redacted
     assert "<redacted>" in redacted
 
 
-def test_redact_clone_token_no_op_when_absent() -> None:
-    assert redact_clone_token("plain text") == "plain text"
+def test_redact_archive_token_handles_token_after_other_params() -> None:
+    raw = "url=https://codeload.example/x?ref=abc&token=SECRETXYZ&extra=1"
+    redacted = redact_archive_token(raw)
+    assert "SECRETXYZ" not in redacted
+    assert "extra=1" in redacted
 
 
-def test_execute_in_sandbox_runs_clone_then_commands_and_stops_session() -> None:
+def test_redact_archive_token_no_op_when_absent() -> None:
+    assert redact_archive_token("plain text") == "plain text"
+
+
+def test_execute_in_sandbox_extracts_then_runs_commands_and_stops_session() -> None:
     sdk = MagicMock()
     sdk.start.return_value = "sess-1"
-    sdk.execute_command.side_effect = [
-        # Clone step succeeds
-        {
-            "stream": [
-                {
-                    "result": {
-                        "content": [],
-                        "structuredContent": {
-                            "stdout": "",
-                            "stderr": "",
-                            "exitCode": 0,
-                            "executionTime": 0.1,
-                        },
-                        "isError": False,
-                    },
-                },
-            ],
-        },
-        # First command succeeds
-        {
-            "stream": [
-                {
-                    "result": {
-                        "content": [],
-                        "structuredContent": {
-                            "stdout": "5 passed",
-                            "stderr": "",
-                            "exitCode": 0,
-                            "executionTime": 1.2,
-                        },
-                        "isError": False,
-                    },
-                },
-            ],
-        },
-    ]
+    sdk.execute_code.return_value = stream_event({"exitCode": 0})
+    sdk.execute_command.return_value = stream_event(
+        {"stdout": "5 passed", "exitCode": 0, "executionTime": 1.2},
+    )
     result = execute_in_sandbox(
         sdk,
         ci_id="ci-1",
-        clone_url="https://x-access-token:ghs_test@github.com/o/r.git",
+        archive_url="https://codeload.github.com/o/r/legacy.tar.gz/abc?token=tok",
         head_sha="abc123",
         commands=["uv run pytest -q"],
         working_dir="repo",
     )
     assert result["head_sha"] == "abc123"
-    assert result["clone"]["exit_code"] == 0
+    assert result["extract"]["exit_code"] == 0
     assert len(result["results"]) == 1
     assert result["results"][0]["exit_code"] == 0
     assert "5 passed" in result["results"][0]["stdout"]
     sdk.stop.assert_called_once_with()
 
 
-def test_execute_in_sandbox_stops_on_clone_failure() -> None:
+def test_execute_in_sandbox_passes_archive_url_and_working_dir_into_extract_script() -> None:
     sdk = MagicMock()
-    sdk.execute_command.return_value = {
-        "stream": [
-            {
-                "result": {
-                    "content": [],
-                    "structuredContent": {
-                        "stdout": "",
-                        "stderr": (
-                            "fatal: unable to access https://x-access-token:ghs_test@"
-                            "github.com/o/r.git/: 404"
-                        ),
-                        "exitCode": 128,
-                        "executionTime": 0.5,
-                    },
-                    "isError": True,
-                },
-            },
-        ],
-    }
+    sdk.execute_code.return_value = stream_event({"exitCode": 0})
+    sdk.execute_command.return_value = stream_event({"exitCode": 0})
+    execute_in_sandbox(
+        sdk,
+        ci_id="ci-1",
+        archive_url="https://codeload.example/o/r.tar.gz?token=t",
+        head_sha="abc",
+        commands=["true"],
+        working_dir="checkout",
+    )
+    sdk.execute_code.assert_called_once()
+    code_arg = sdk.execute_code.call_args.kwargs.get("code") or sdk.execute_code.call_args.args[0]
+    assert "checkout" in code_arg
+    assert "https://codeload.example/o/r.tar.gz?token=t" in code_arg
+
+
+def test_execute_in_sandbox_stops_on_extract_failure_and_redacts_token() -> None:
+    sdk = MagicMock()
+    sdk.execute_code.return_value = stream_event(
+        {
+            "stdout": "",
+            "stderr": (
+                "urllib.error.HTTPError: 404 Not Found "
+                "https://codeload.github.com/o/r/legacy.tar.gz/abc?token=SECRETTOKEN"
+            ),
+            "exitCode": 1,
+        },
+        is_error=True,
+    )
     result = execute_in_sandbox(
         sdk,
         ci_id="ci-1",
-        clone_url="https://x-access-token:ghs_test@github.com/o/r.git",
-        head_sha="abc123",
+        archive_url="https://codeload.github.com/o/r/legacy.tar.gz/abc?token=SECRETTOKEN",
+        head_sha="abc",
         commands=["uv run pytest"],
         working_dir="repo",
     )
-    assert result["clone"]["is_error"] is True
-    assert "ghs_test" not in json.dumps(result)
+    assert result["extract"]["is_error"] is True
+    assert "SECRETTOKEN" not in json.dumps(result)
     assert result["results"] == []
+    sdk.execute_command.assert_not_called()
     sdk.stop.assert_called_once_with()
 
 
-def test_execute_in_sandbox_stops_session_even_when_execute_raises() -> None:
-    """A botocore-level failure inside execute_command must not skip stop()."""
+def test_execute_in_sandbox_stops_session_even_when_extract_raises() -> None:
+    """A botocore-level failure inside execute_code must not skip stop()."""
     sdk = MagicMock()
-    sdk.execute_command.side_effect = ClientError({"Error": {"Code": "X"}}, "Invoke")
+    sdk.execute_code.side_effect = ClientError({"Error": {"Code": "X"}}, "Invoke")
     result = execute_in_sandbox(
         sdk,
         ci_id="ci-1",
-        clone_url="https://x-access-token:ghs@github.com/o/r.git",
+        archive_url="https://codeload.example/x?token=t",
         head_sha="abc",
         commands=["true"],
         working_dir="repo",
@@ -188,15 +176,15 @@ def test_execute_in_sandbox_stops_session_even_when_execute_raises() -> None:
 
 def test_execute_in_sandbox_stops_first_failing_command() -> None:
     sdk = MagicMock()
+    sdk.execute_code.return_value = stream_event({"exitCode": 0})
     sdk.execute_command.side_effect = [
-        stream_event({"exitCode": 0}),  # clone ok
         stream_event({"exitCode": 0}),  # cmd 1 ok
         stream_event({"exitCode": 1}, is_error=True),  # cmd 2 fails
     ]
     result = execute_in_sandbox(
         sdk,
         ci_id="ci-1",
-        clone_url="https://x-access-token:ghs@github.com/o/r.git",
+        archive_url="https://codeload.example/x?token=t",
         head_sha="abc",
         commands=["echo 1", "echo 2", "echo 3"],
         working_dir="repo",
@@ -237,9 +225,9 @@ def test_run_pr_in_sandbox_full_path_with_mocked_lambda_and_sdk(
     fake_payload.read.return_value = json.dumps(
         {
             "ok": True,
-            "op": "mint_clone_token",
+            "op": "get_pr_archive_url",
             "result": {
-                "clone_url": "https://x-access-token:ghs_test@github.com/o/r.git",
+                "archive_url": "https://codeload.github.com/o/r/legacy.tar.gz/abc?token=t",
                 "head_sha": "deadbeef",
             },
         }
@@ -247,10 +235,10 @@ def test_run_pr_in_sandbox_full_path_with_mocked_lambda_and_sdk(
     fake_lambda.invoke.return_value = {"Payload": fake_payload}
 
     fake_sdk = MagicMock()
-    fake_sdk.execute_command.side_effect = [
-        stream_event({"exitCode": 0}),  # clone
-        stream_event({"stdout": "ok\n", "exitCode": 0}),  # cmd
-    ]
+    fake_sdk.execute_code.return_value = stream_event({"exitCode": 0})
+    fake_sdk.execute_command.return_value = stream_event(
+        {"stdout": "ok\n", "exitCode": 0},
+    )
 
     monkeypatch.setattr(sandbox_mod, "lambda_client", lambda: fake_lambda)
 
@@ -269,9 +257,66 @@ def test_run_pr_in_sandbox_full_path_with_mocked_lambda_and_sdk(
     fake_lambda.invoke.assert_called_once()
     invoke_kwargs = fake_lambda.invoke.call_args.kwargs
     payload = json.loads(invoke_kwargs["Payload"])
-    assert payload["input"]["op"] == "mint_clone_token"
+    assert payload["input"]["op"] == "get_pr_archive_url"
     assert payload["input"]["repo"] == "o/r"
     assert payload["input"]["pr_number"] == 7
+
+
+def test_get_pr_diff_invokes_repo_helper_and_returns_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The agent-facing helper rounds-trips through repo_helper.get_pr_diff."""
+    monkeypatch.setenv("AIDLC_REPO_HELPER_FUNCTION_NAME", "ai-dlc-dev-repo_helper")
+
+    fake_lambda = MagicMock()
+    fake_payload = MagicMock()
+    diff_result = {
+        "head_sha": "abc",
+        "files_truncated": False,
+        "files": [
+            {
+                "filename": "src/foo.py",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+                "patch": "@@ +1 @@\n+x",
+                "truncated": False,
+                "previous_filename": None,
+            }
+        ],
+    }
+    fake_payload.read.return_value = json.dumps(
+        {"ok": True, "op": "get_pr_diff", "result": diff_result}
+    ).encode()
+    fake_lambda.invoke.return_value = {"Payload": fake_payload}
+    monkeypatch.setattr(sandbox_mod, "lambda_client", lambda: fake_lambda)
+
+    out = get_pr_diff("https://github.com/o/r/pull/7")
+    assert out == diff_result
+    invoke_payload = json.loads(fake_lambda.invoke.call_args.kwargs["Payload"])
+    assert invoke_payload["input"] == {"op": "get_pr_diff", "repo": "o/r", "pr_number": 7}
+
+
+def test_get_pr_diff_returns_error_for_unparseable_url() -> None:
+    out = get_pr_diff("not a url")
+    assert out["error"].startswith("could not parse pr_url")
+
+
+def test_get_pr_diff_returns_error_when_repo_helper_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AIDLC_REPO_HELPER_FUNCTION_NAME", raising=False)
+    out = get_pr_diff("https://github.com/o/r/pull/7")
+    assert "AIDLC_REPO_HELPER_FUNCTION_NAME" in out["error"]
+
+
+def test_extract_script_template_compiles_with_repr_safe_substitutions() -> None:
+    """The template uses ``!r`` so URLs containing quotes can't break the script."""
+    rendered = EXTRACT_SCRIPT_TEMPLATE.format(
+        archive_url="https://codeload.example/x?token=t'\"hostile",
+        working_dir="repo",
+    )
+    compile(rendered, "<test>", "exec")
 
 
 def test_command_result_unused_helper(monkeypatch: pytest.MonkeyPatch) -> None:
