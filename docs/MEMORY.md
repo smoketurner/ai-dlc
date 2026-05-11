@@ -6,7 +6,7 @@ Six sections, in order. Agents fail-fast on unknown headers.
 
 ## Overview
 
-ai-dlc is the agentic SDLC platform itself. Seven agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer) drive a spec-driven pipeline gated by GitHub PR reviews. The Architect writes a spec (requirements + design + tasks); the Critic advises on it; the spec PR is reviewed and merged as a bundle; the Implementer then works through `tasks.md` opening one PR per task with the Reviewer and Tester acting as advisors. Triage classifies issue-driven runs; Proposer drives memory and prompt updates. Orchestration is an SQS-beacon + DDB-state machine driven by a single `state_router` Lambda.
+ai-dlc is the agentic SDLC platform itself. Eight agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer, Retrospector) drive a spec-driven pipeline gated by GitHub PR reviews. The Architect writes a spec (requirements + design + tasks); the Critic advises on it; the spec PR is reviewed and merged as a bundle; the Implementer then works through `tasks.md` opening one PR per task with the Reviewer and Tester acting as advisors. Triage classifies issue-driven runs; Proposer drives memory and prompt updates; Retrospector fires on terminal events to extract lessons into `docs/MEMORY.md`. Orchestration is an SQS-beacon + DDB-state machine driven by a single `state_router` Lambda.
 
 ## Conventions
 

@@ -6,7 +6,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 - **Python 3.14** with the Astral toolchain (`uv` workspace, `ruff`, `ty`).
 - **Agents**: Strands Agents (Architect, Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
-- **Models**: Architect / Critic → Claude Opus 4.7. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
+- **Models**: Architect / Critic → Claude Opus 4.7. Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
 - **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run/task state.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
@@ -37,7 +37,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | `lambdas/retrospector_dispatcher/` | EventBridge → AgentCore Runtime invocation for the Retrospector on every terminal event. |
 | `services/dashboard/` | FastAPI submission/tracking UI. |
 | `terraform/modules/` | Reusable Terraform modules (one per concern). |
-| `terraform/envs/{dev,prod}/` | Environment compositions. |
+| `terraform/envs/dev/` | Environment composition (prod TBD). |
 | `terraform/bootstrap/` | One-time S3 + DDB state backend. |
 | `docs/ADRs/` | Architectural Decision Records (written by the Architect agent). |
 | `docs/MEMORY.md` | Canonical human-reviewed project memory. |
@@ -56,6 +56,36 @@ One request → many state transitions, all coordinated through DynamoDB + SQS +
 4. **Projection**: `event_projector` consumes the event, advances `current_state` per `state_transitions.py`, calls AgentCore Memory `CreateEvent`, and enqueues the next SQS beacon if the new state needs dispatch.
 5. **HITL**: GitHub PR review/comment → webhook → EventBridge event → same `event_projector` path. Humans gate state advance the same way agents do.
 6. **Terminal events** (PR merged/closed, issue closed) fan out via `retrospector_dispatcher` to the Retrospector agent for the lesson-extraction pass.
+
+The run-level state cursor (`RunState` in `packages/common/src/common/state.py`) walks one path of this diagram. Exact event→state transitions are encoded in `RUN_TRANSITIONS` (`state_transitions.py`):
+
+```mermaid
+stateDiagram-v2
+    [*] --> received: REQUEST.RECEIVED
+    received --> triaging
+    triaging --> triage_decided: ISSUE.TRIAGED
+
+    triage_decided --> spec_pending: action=proceed
+    triage_decided --> proposer_running: action=research
+    triage_decided --> done: action=defer / decline
+
+    spec_pending --> architect_running
+    architect_running --> spec_drafted: SPEC.READY
+    spec_drafted --> critic_running
+    critic_running --> spec_critiqued: CRITIQUE.READY
+    spec_critiqued --> spec_pr_open
+    spec_pr_open --> spec_approved: SPEC.APPROVED
+    spec_pr_open --> spec_pending: SPEC.ITERATION_REQUESTED
+    spec_pr_open --> failed: SPEC.REJECTED
+
+    spec_approved --> tasks_in_progress
+    tasks_in_progress --> tasks_complete
+    tasks_complete --> done: RUN.COMPLETED
+
+    proposer_running --> done: RUN.COMPLETED
+```
+
+`RUN.FAILED` and `RUN.CANCEL_REQUESTED` are wildcard transitions: they advance any non-terminal state to `failed` or `cancelled` respectively. `TaskState` is the per-task cursor (`pending → implementer_running → pr_open → reviewer_running → tester_running → iterating → pending_approval → merged / closed / failed / blocked`) that the run-level `tasks_in_progress` state iterates over.
 
 ## Adding a new agent
 
@@ -80,7 +110,7 @@ uv run pytest -m live_aws tests/integration/...       # full end-to-end against 
 Image build and Terraform apply are GitHub Actions workflows. Production applies require manual approval via GitHub Environments.
 
 ```bash
-gh workflow run images-build.yml --ref main           # all seven agents → ECR
+gh workflow run images-build.yml --ref main           # all eight agents → ECR
 gh workflow run dashboard-build.yml --ref main         # dashboard container → ECR + ECS update-service
 gh workflow run terraform-apply.yml --ref main         # apply (dev auto, prod gated)
 ```

@@ -2,7 +2,7 @@
 
 Live tracker for the AI-DLC build.
 
-The platform's seven agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed.
+The platform's eight agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer, Retrospector), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed.
 
 **Current focus:** architect grounding + spec PR iteration. Two work streams: fix the architect's grounding so it stops inventing tech choices when the canonical project context is unavailable, and add a spec-iteration state so a human can comment on the spec PR and the architect regenerates.
 
