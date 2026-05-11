@@ -19,7 +19,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 | Path | Role |
 |------|------|
-| `packages/common/` | Pydantic event envelopes, hybrid-memory utility, OTEL setup, shared boto3 wrappers. |
+| `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), boto3 helpers (`ddb.py`, `s3.py`, `runs.py`), `MEMORY.md` utility (`memory_md.py`), settings (`settings.py`). |
 | `agents/architect/` | Strands agent — writes the three-doc spec bundle (requirements + design + tasks). |
 | `agents/critic/` | Strands agent — adversarially reviews the spec (advisory). |
 | `agents/implementer/` | Claude Agent SDK agent — opens code PRs. |
@@ -45,6 +45,17 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 ## Memory model
 
 `MEMORY.md` carries repository-scoped context (conventions, ADR bullets, constraints) and is reviewed in PRs. AgentCore Memory carries cross-session facts (user preferences, learned signals) and session events (≤60 days). Sync is one-way: MEMORY.md → AgentCore Memory on every successful session via `CreateEvent`. The reverse only happens through agent-proposed PR edits — humans gate writes to MEMORY.md.
+
+## Request lifecycle
+
+One request → many state transitions, all coordinated through DynamoDB + SQS + EventBridge. The two-Lambda split is load-bearing: `state_router` only reads DDB and triggers side-effects; `event_projector` is the sole writer of `current_state`. This keeps state machine logic in one place and makes every transition observable as an EventBridge event.
+
+1. **Entry**: API Gateway or GitHub webhook → `entry_adapter` writes the run row to DDB, emits `REQUEST.RECEIVED` on EventBridge, sends an SQS beacon.
+2. **Dispatch**: `state_router` consumes the beacon, reads `current_state` from DDB, looks up the handler in `dispatch.py` / `dispatch_run.py` / `dispatch_task.py`, and executes the side-effect (invoke AgentCore Runtime, call a repo op, emit an event). Never writes state.
+3. **Agent work**: the invoked agent emits one or more domain events (e.g. `SPEC.PROPOSED`, `TASK.IMPLEMENTED`) back to EventBridge.
+4. **Projection**: `event_projector` consumes the event, advances `current_state` per `state_transitions.py`, calls AgentCore Memory `CreateEvent`, and enqueues the next SQS beacon if the new state needs dispatch.
+5. **HITL**: GitHub PR review/comment → webhook → EventBridge event → same `event_projector` path. Humans gate state advance the same way agents do.
+6. **Terminal events** (PR merged/closed, issue closed) fan out via `retrospector_dispatcher` to the Retrospector agent for the lesson-extraction pass.
 
 ## Adding a new agent
 
@@ -84,6 +95,20 @@ cd agents/architect && uv sync && AIDLC_ENV=dev uv run python -m architect.app
 ```
 
 The dashboard runs locally with `uv run uvicorn dashboard.app:app --reload --port 8080` from `services/dashboard/`. Cognito OIDC is bypassed in dev mode (set `AIDLC_AUTH=disabled`).
+
+## Terraform (local)
+
+`terraform.tfvars` and `backend.hcl` are gitignored. On first checkout, copy the `.example` template and supply the partial backend config:
+
+```bash
+cd terraform/envs/dev
+cp terraform.tfvars.example terraform.tfvars        # then fill in real values
+terraform init -reconfigure \
+  -backend-config="bucket=<state-bucket-name>" \
+  -backend-config="profile=aidlc-admin"
+```
+
+`-reconfigure` is required the first time after `backend.tf` was converted to a partial config. The state bucket name and AWS profile can also live in a gitignored `terraform/envs/dev/backend.hcl` invoked via `-backend-config=backend.hcl`. CI supplies `bucket` from the `TF_STATE_BUCKET` repo variable and leaves `profile` empty so the S3 backend falls through to OIDC env-var creds.
 
 ## Lint, type, test policy
 
