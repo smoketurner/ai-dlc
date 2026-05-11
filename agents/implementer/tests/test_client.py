@@ -10,7 +10,26 @@ import pytest
 from common.runtime import ImplementerInput
 from implementer import client
 from implementer.finish import FinishReport
+from implementer.lint_gate import CommandResult, LintGateResult
 from implementer.repo_ops import RepoSession
+
+
+def _passing_gate(retry_count: int = 0) -> LintGateResult:
+    cmds = [
+        CommandResult(command=f"make {t}", exit_code=0, output="")
+        for t in ("lint", "format", "type", "test")
+    ]
+    return LintGateResult(passed=True, commands=cmds, retry_count=retry_count)
+
+
+def _failing_gate(retry_count: int = 0) -> LintGateResult:
+    cmds = [
+        CommandResult(command="make lint", exit_code=1, output="E501 line too long"),
+        CommandResult(command="make format", exit_code=0, output=""),
+        CommandResult(command="make type", exit_code=0, output=""),
+        CommandResult(command="make test", exit_code=0, output=""),
+    ]
+    return LintGateResult(passed=False, commands=cmds, retry_count=retry_count)
 
 
 @pytest.fixture
@@ -58,11 +77,15 @@ def install_common_mocks(
     drive_agent_report: FinishReport | None,
     agent_made_real_changes: bool,
     has_uncommitted_changes: bool,
+    lint_gate_results: list[LintGateResult] | None = None,
 ) -> dict[str, list[Any]]:
     """Wire all the side-effecting helpers in ``execute_task`` to fakes.
 
     Returns a dict mapping each side-effect helper name to a list that
     records the call args. Tests assert against these lists.
+
+    ``lint_gate_results`` is popped in call order (first call returns first
+    entry). When ``None`` (default) every call returns a passing gate.
     """
     calls: dict[str, list[Any]] = {
         "clone_repo": [],
@@ -75,7 +98,12 @@ def install_common_mocks(
         "commit_changes": [],
         "push_branch": [],
         "open_pr": [],
+        "run_lint_gate": [],
     }
+
+    gate_queue: list[LintGateResult] = (
+        list(lint_gate_results) if lint_gate_results is not None else []
+    )
 
     def fake_commit_changes(msg: str) -> str:
         calls["commit_changes"].append(msg)
@@ -91,8 +119,14 @@ def install_common_mocks(
     def fake_write_blocked_md(**kw: Any) -> None:
         calls["write_blocked_md"].append(kw)
 
+    def fake_run_lint_gate(_path: Any, *, retry_count: int = 0) -> LintGateResult:
+        gate = gate_queue.pop(0) if gate_queue else _passing_gate(retry_count)
+        calls["run_lint_gate"].append(gate)
+        return gate
+
     monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
     monkeypatch.setattr(client, "spec_path", lambda: spec_dir)
+    monkeypatch.setattr(client, "repo_path", lambda: Path("/fake/repo"))
     monkeypatch.setattr(client, "clone_repo", calls["clone_repo"].append)
     monkeypatch.setattr(client, "fetch_spec", calls["fetch_spec"].append)
     monkeypatch.setattr(client, "create_branch", calls["create_branch"].append)
@@ -108,6 +142,7 @@ def install_common_mocks(
     monkeypatch.setattr(client, "short_diff_summary", lambda: "diff stat")
     monkeypatch.setattr(client, "agent_made_real_changes", lambda _slug: agent_made_real_changes)
     monkeypatch.setattr(client, "has_uncommitted_changes", lambda: has_uncommitted_changes)
+    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
 
     usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
 
@@ -246,3 +281,131 @@ async def test_execute_task_skips_commit_when_tree_clean_after_materialize(
     assert calls["commit_changes"] == []  # skipped
     assert calls["push_branch"] == ["aidlc/add-healthz/01999999-9999/t-001"]
     assert len(calls["open_pr"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_pass_through_attaches_result(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Gate passes on first try — lint_gate field on result is populated with passed=True."""
+    report = FinishReport(summary="Done.", status="done")
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+        lint_gate_results=[_passing_gate(0)],
+    )
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is None
+    assert result.lint_gate is not None
+    assert result.lint_gate.passed is True
+    assert result.lint_gate.retry_count == 0
+    assert len(calls["run_lint_gate"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_failure_retries_then_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Gate fails first, agent is fed error feedback, second pass succeeds."""
+    report = FinishReport(summary="Done.", status="done")
+
+    drive_calls: list[str] = []
+    usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
+
+    async def fake_drive_agent(
+        prompt: str,
+        *,
+        run_id: str,
+    ) -> tuple[FinishReport | None, dict[str, Any]]:
+        del run_id
+        drive_calls.append(prompt)
+        return report, usage
+
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+        lint_gate_results=[_failing_gate(0), _passing_gate(1)],
+    )
+    # Override drive_agent after install_common_mocks so we can track prompts.
+    monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is None
+    assert result.lint_gate is not None
+    assert result.lint_gate.passed is True
+    assert result.lint_gate.retry_count == 1
+    # drive_agent called twice: initial prompt + lint feedback
+    assert len(drive_calls) == 2
+    assert "lint" in drive_calls[1].lower()
+    assert len(calls["run_lint_gate"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_double_failure_proceeds_with_passed_false(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Gate fails on both passes — commit still happens, lint_gate.passed=False."""
+    report = FinishReport(summary="Done.", status="done")
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+        lint_gate_results=[_failing_gate(0), _failing_gate(1)],
+    )
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is None
+    assert result.lint_gate is not None
+    assert result.lint_gate.passed is False
+    assert result.lint_gate.retry_count == 1
+    # commit still happens despite the failed gate
+    assert calls["commit_changes"] == ["T-001: Add /healthz route"]
+    assert len(calls["run_lint_gate"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_skipped_when_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Blocked path (no real diff) — lint gate is never called, lint_gate=None."""
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=None,
+        agent_made_real_changes=False,
+        has_uncommitted_changes=True,
+    )
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason == "agent produced no diff"
+    assert result.lint_gate is None
+    assert calls["run_lint_gate"] == []

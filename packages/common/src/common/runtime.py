@@ -260,6 +260,10 @@ class ImplementerResult(_UsageMixin):
     set when the agent could not produce a real implementation; the
     runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY`` in that
     case.
+
+    ``lint_gate`` carries the lint/format/type/test gate result when the
+    agent reported ``status='done'`` and made real changes. ``None`` when
+    the agent was blocked (no gate was run).
     """
 
     task_id: str
@@ -267,6 +271,7 @@ class ImplementerResult(_UsageMixin):
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
     blocked_reason: Annotated[str, Field(max_length=2048)] | None = None
+    lint_gate: Any | None = None  # LintGateResult | None — Any avoids circular import
 
 
 class ReviewerInput(_Frozen):
