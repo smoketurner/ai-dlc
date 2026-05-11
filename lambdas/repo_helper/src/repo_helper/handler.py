@@ -1101,7 +1101,7 @@ def safe_body(response: httpx.Response) -> str | dict[str, Any]:
     """
     try:
         return response.json()
-    except (ValueError, json.JSONDecodeError):
+    except ValueError, json.JSONDecodeError:
         return response.text[:1024]
 
 

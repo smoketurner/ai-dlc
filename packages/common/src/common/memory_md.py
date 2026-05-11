@@ -240,7 +240,7 @@ def read_stack_profile(project_slug: str) -> StackProfile | None:
     key = stack_profile_key(project_slug)
     try:
         obj = memory_md_s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
-    except (BotoCoreError, ClientError):
+    except BotoCoreError, ClientError:
         return None
     raw = obj["Body"].read().decode("utf-8")
     try:
@@ -278,7 +278,7 @@ def stack_profile_unchanged(client: S3Client, bucket: str, key: str, body: str) 
     """Return True when the stored object's body equals ``body`` byte-for-byte."""
     try:
         existing = client.get_object(Bucket=bucket, Key=key)["Body"].read().decode("utf-8")
-    except (BotoCoreError, ClientError):
+    except BotoCoreError, ClientError:
         return False
     return existing == body
 
