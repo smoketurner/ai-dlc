@@ -18,6 +18,7 @@ from state_router.execute import (
     execute_guarded_advance,
     execute_invoke_repo_helper,
     pick_advance_to,
+    record_repo_helper_failure,
 )
 from state_router.model import Run
 
@@ -328,3 +329,76 @@ def test_execute_invoke_repo_helper_records_pr_url_on_normal_path() -> None:
     advance.assert_called_once()
     assert advance.call_args.kwargs["advance_to"] == RunState.spec_pr_open.value
     assert advance.call_args.kwargs["extra_attrs"] == {"pr_url": "https://github.com/o/r/pull/9"}
+
+
+def test_execute_invoke_repo_helper_failure_bumps_counter_and_enqueues_retry() -> None:
+    """A failed repo_helper response bumps dispatch_failure_count + writes an OUTBOX row.
+
+    Without this, a transient GitHub failure (rate limit, 5xx, branch
+    naming collision) wedges the run in its current state forever:
+    ``execute_invoke_repo_helper`` used to log WARNING and return,
+    leaving no beacon for the next router cycle to pick up.
+    """
+    action = make_open_spec_pr_action()
+    response = make_lambda_response(
+        {
+            "ok": False,
+            "error": {"kind": "github_http_error", "detail": {"status_code": 422}},
+        },
+    )
+    fake_lambda = MagicMock()
+    fake_lambda.invoke.return_value = response
+    with (
+        patch("state_router.execute.lambda_client", return_value=fake_lambda),
+        patch("state_router.execute.repo_helper_function_name", return_value="repo-helper-fn"),
+        patch("state_router.execute.transactional_advance", return_value=True) as advance,
+    ):
+        execute_invoke_repo_helper(make_run(), action)
+    advance.assert_called_once()
+    # No-op SET on state (advance_from == advance_to) — the call is the
+    # race guard + counter bump + OUTBOX put, not a state move.
+    kwargs = advance.call_args.kwargs
+    assert kwargs["advance_from"] == RunState.spec_critiqued.value
+    assert kwargs["advance_to"] == RunState.spec_critiqued.value
+    assert kwargs["extra_increments"] == {"dispatch_failure_count": 1}
+    assert "last_dispatch_failure_at" in kwargs["extra_attrs"]
+
+
+def test_execute_invoke_repo_helper_failure_skipped_when_no_advance_fields() -> None:
+    """Informational ops (``comment_issue`` / ``label_issue``) skip the retry path.
+
+    They have no ``advance_from`` to use as a race guard, and they're
+    chained with a follow-up action (e.g., ``RUN.CANCEL_REQUESTED``)
+    that runs regardless of whether the GitHub call succeeded.
+    """
+    action = InvokeRepoHelper(
+        op="label_issue",
+        args={"repo": "o/r", "issue_number": 1, "labels": ["aidlc:declined"]},
+    )
+    response = make_lambda_response({"ok": False, "error": {"kind": "github_http_error"}})
+    fake_lambda = MagicMock()
+    fake_lambda.invoke.return_value = response
+    with (
+        patch("state_router.execute.lambda_client", return_value=fake_lambda),
+        patch("state_router.execute.repo_helper_function_name", return_value="repo-helper-fn"),
+        patch("state_router.execute.transactional_advance") as advance,
+    ):
+        execute_invoke_repo_helper(make_run(), action)
+    advance.assert_not_called()
+
+
+def test_record_repo_helper_failure_no_op_when_state_already_moved() -> None:
+    """If the projector already moved the row forward, the bump conditional fails.
+
+    ``transactional_advance`` returning ``False`` means the conditional
+    update lost the race — the metric is not emitted because no counter
+    actually bumped.
+    """
+    action = make_open_spec_pr_action()
+    with (
+        patch("state_router.execute.transactional_advance", return_value=False) as advance,
+        patch("state_router.execute.metrics") as metrics_mock,
+    ):
+        record_repo_helper_failure(make_run(), action)
+    advance.assert_called_once()
+    metrics_mock.add_metric.assert_not_called()

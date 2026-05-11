@@ -28,14 +28,14 @@ from common.ids import CorrelationId, RunId, new_event_id
 from state_router.config import MAX_DISPATCH_FAILURES
 
 if TYPE_CHECKING:
-    from state_router.actions import InvokeAgent
+    from state_router.actions import InvokeAgent, InvokeRepoHelper
     from state_router.model import Run, Task
 
 logger = Logger(service="state_router")
 metrics = Metrics(namespace="ai-dlc", service="state_router")
 
 
-def is_open(run: Run, action: InvokeAgent) -> bool:
+def is_open(run: Run, action: InvokeAgent | InvokeRepoHelper) -> bool:
     """Return ``True`` when the per-row dispatch breaker should suppress the dispatch.
 
     Reads ``dispatch_failure_count`` from the addressed row (already
@@ -45,8 +45,9 @@ def is_open(run: Run, action: InvokeAgent) -> bool:
     a task with a PR; ``RUN.FAILED`` otherwise) and returns ``True``.
 
     Actions without an addressable row (``target_pk``/``target_sk``
-    ``None`` — advisors gated by an outer :class:`~.actions.GuardedAdvance`)
-    are not subject to the per-row breaker.
+    ``None`` — advisors gated by an outer :class:`~.actions.GuardedAdvance`,
+    or informational repo_helper ops like ``comment_issue``) are not
+    subject to the per-row breaker.
     """
     if action.target_pk is None or action.target_sk is None:
         return False
@@ -78,7 +79,7 @@ def failure_count(run: Run, target_sk: str) -> int:
     return 0
 
 
-def emit_tripped(run: Run, action: InvokeAgent, count: int) -> None:
+def emit_tripped(run: Run, action: InvokeAgent | InvokeRepoHelper, count: int) -> None:
     """Emit ``TASK.BLOCKED`` (task with PR) or ``RUN.FAILED`` (otherwise).
 
     ``TaskBlocked`` requires a ``pr_url`` because the human-recovery
@@ -92,7 +93,8 @@ def emit_tripped(run: Run, action: InvokeAgent, count: int) -> None:
         task_id = target_sk.removeprefix("TASK#")
         task = next((t for t in run.tasks if t.task_id == task_id), None)
         if task is not None and task.pr_url:
-            emit_task_blocked(run, task, count, action.runtime_session_id)
+            session_id = getattr(action, "runtime_session_id", "")
+            emit_task_blocked(run, task, count, session_id)
             return
     emit_run_failed(run, action, count)
 
@@ -127,7 +129,7 @@ def emit_task_blocked(
     publish(envelope)
 
 
-def emit_run_failed(run: Run, action: InvokeAgent, count: int) -> None:
+def emit_run_failed(run: Run, action: InvokeAgent | InvokeRepoHelper, count: int) -> None:
     """Emit ``RUN.FAILED`` on circuit-trip when no PR exists to comment on."""
     failed_state = str(run.current_state) if run.current_state is not None else "unknown"
     envelope = EventEnvelope[RunFailed](
@@ -141,7 +143,7 @@ def emit_run_failed(run: Run, action: InvokeAgent, count: int) -> None:
             failed_state=failed_state,
             error_class="dispatch_circuit_open",
             error_message=(
-                f"agent dispatch failed {count} times for "
+                f"dispatch failed {count} times for "
                 f"{action.target_sk or 'unknown'}; "
                 "see state_router CloudWatch logs"
             ),

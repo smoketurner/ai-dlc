@@ -1378,7 +1378,7 @@ def test_open_spec_pr_reads_s3_branches_commits_and_opens(
     monkeypatch.setattr(h, "s3_client", lambda: fake_s3)
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz/run-xyz",
+        branch="aidlc/spec/add-healthz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1400,7 +1400,7 @@ def test_open_spec_pr_reads_s3_branches_commits_and_opens(
     assert out["op"] == "open_spec_pr"
     assert out["result"]["pr_url"] == "https://github.com/o/r/pull/5"
     assert out["result"]["pr_number"] == 5
-    assert out["result"]["branch"] == "aidlc/spec/add-healthz/run-xyz"
+    assert out["result"]["branch"] == "aidlc/spec/add-healthz"
     assert {key for _, key in fake_s3.requested} == set(SPEC_DOCS_S3)
 
 
@@ -1426,7 +1426,7 @@ def test_open_spec_pr_includes_source_issue_url_in_body(
         )
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz/run-xyz",
+        branch="aidlc/spec/add-healthz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1458,7 +1458,7 @@ def _existing_branch_routes() -> dict[
     Callable[[httpx.Request], httpx.Response],
 ]:
     """Routes for the ``branch already exists`` happy path."""
-    branch_ref = "/repos/o/r/git/refs/heads/aidlc/spec/x/rid"
+    branch_ref = "/repos/o/r/git/refs/heads/aidlc/spec/x"
     return {
         ("GET", branch_ref): lambda _: httpx.Response(
             200,
@@ -1510,7 +1510,7 @@ def test_open_spec_pr_short_circuits_when_tree_unchanged(
         return httpx.Response(201, json={"sha": "basetree"})
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz/run-xyz",
+        branch="aidlc/spec/add-healthz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1522,7 +1522,7 @@ def test_open_spec_pr_short_circuits_when_tree_unchanged(
         raise AssertionError(msg)
 
     routes[("POST", "/repos/o/r/git/commits")] = fail_if_called
-    routes[("PATCH", "/repos/o/r/git/refs/heads/aidlc/spec/add-healthz/run-xyz")] = fail_if_called
+    routes[("PATCH", "/repos/o/r/git/refs/heads/aidlc/spec/add-healthz")] = fail_if_called
     routes[("POST", "/repos/o/r/pulls")] = fail_if_called
 
     patch_client(httpx.MockTransport(_route_with(routes)))
@@ -1542,7 +1542,7 @@ def test_open_spec_pr_short_circuits_when_tree_unchanged(
     assert out["result"] == {
         "no_change": True,
         "spec_slug": "add-healthz",
-        "branch": "aidlc/spec/add-healthz/run-xyz",
+        "branch": "aidlc/spec/add-healthz",
         "base_commit_sha": "mainsha",
     }
 
@@ -1553,7 +1553,7 @@ def test_open_spec_pr_reuses_existing_open_pr(
 ) -> None:
     """Iteration: an open PR for ``head:branch`` already exists.
 
-    The architect re-ran on the same branch + force-pushed; the
+    The architect re-ran on the same branch and added a new commit; the
     existing PR auto-updates. ``open_spec_pr`` must NOT POST /pulls
     again — that would 422 with ``A pull request already exists for ...``.
     """
@@ -1561,7 +1561,7 @@ def test_open_spec_pr_reuses_existing_open_pr(
     monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
 
     routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz/run-xyz",
+        branch="aidlc/spec/add-healthz",
         base="main",
         slug="add-healthz",
         run_id="run-xyz",
@@ -1573,7 +1573,7 @@ def test_open_spec_pr_reuses_existing_open_pr(
                 "number": 53,
                 "html_url": "https://github.com/o/r/pull/53",
                 "state": "open",
-                "head": {"ref": "aidlc/spec/add-healthz/run-xyz"},
+                "head": {"ref": "aidlc/spec/add-healthz"},
             },
         ],
     )

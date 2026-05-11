@@ -64,12 +64,13 @@ def new_approval_id() -> ApprovalId:
 def short_run_id(run_id: str) -> str:
     """Return the leading time-prefix of a UUID7 — branch-name-safe.
 
-    Used to scope repo branches per run (e.g.
-    ``aidlc/spec/{slug}/{short}`` and
-    ``aidlc/{slug}/{short}/{task_id}``) so concurrent or successive
-    runs on the same issue don't share branches. UUID7's first 13
-    characters (``019e0e69-198d``) carry the millisecond timestamp,
-    which is unique-enough across runs minted seconds apart and stays
-    stable for the lifetime of one run.
+    Used to scope task branches per run (``aidlc/{slug}/{short}/{task_id}``)
+    so concurrent or successive runs on the same spec don't share task
+    branches. Spec branches use ``aidlc/spec/{slug}`` directly — only
+    one in-flight spec per slug, so iteration commits land on the same
+    branch and the existing PR auto-updates. UUID7's first 13 characters
+    (``019e0e69-198d``) carry the millisecond timestamp, which is
+    unique-enough across runs minted seconds apart and stays stable for
+    the lifetime of one run.
     """
     return run_id.lower()[:13]

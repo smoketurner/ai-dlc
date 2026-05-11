@@ -7,12 +7,15 @@ for state moves, ``dispatch_to_runtime`` for AgentCore invokes,
 ``ddb`` for direct writes, ``s3`` for synthetic-spec uploads,
 ``lambda_client`` for repo_helper invokes).
 
-The :class:`~.actions.InvokeAgent` flow is the involved one — it
-checks the per-row circuit breaker first, runs an optional
-conditional advance as the dispatch race guard, fires the runtime,
-and rolls back the advance (atomically bumping
-``dispatch_failure_count``) if the runtime call failed
-synchronously. See :func:`execute_invoke_agent` for the sequence.
+Both :class:`~.actions.InvokeAgent` and :class:`~.actions.InvokeRepoHelper`
+participate in the per-row circuit breaker + retry loop. The agent
+flow advances state *before* the runtime call (race guard) and
+rolls back on failure; the repo_helper flow advances *after* a
+successful response and bumps ``dispatch_failure_count`` + enqueues
+a retry beacon on failure (no state to revert). Both paths trip the
+breaker after :data:`~.config.MAX_DISPATCH_FAILURES` consecutive
+failures so a deterministically-failing op surfaces as ``RUN.FAILED``
+instead of wedging.
 """
 
 from __future__ import annotations
@@ -254,7 +257,21 @@ def execute_guarded_advance(run: Run, action: Action) -> None:
 
 
 def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
-    """Synchronous Lambda invoke; advance state on success."""
+    """Synchronous Lambda invoke; advance state on success, retry on failure.
+
+    The breaker check at the top suppresses dispatch on rows whose
+    ``dispatch_failure_count`` has crossed
+    :data:`~.config.MAX_DISPATCH_FAILURES` — same gate as the agent path.
+
+    On a failed response (``ok: false``) for an action carrying advance
+    fields, :func:`record_repo_helper_failure` bumps the counter and
+    writes an OUTBOX row in one transaction so the EventBridge Pipe
+    enqueues a fresh retry beacon. Informational ops without advance
+    fields (``comment_issue`` / ``label_issue``) just log and return —
+    they're chained with a follow-up action that runs regardless.
+    """
+    if circuit_breaker.is_open(run, action):
+        return
     fn = repo_helper_function_name()
     if not fn:
         logger.warning("repo_helper not wired", extra={"op": action.op})
@@ -267,6 +284,7 @@ def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
     body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
     if not body.get("ok"):
         logger.warning("repo_helper failed", extra={"op": action.op, "body": body})
+        record_repo_helper_failure(run, action)
         return
     if not action.target_pk or not action.advance_from:
         return
@@ -283,6 +301,48 @@ def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
         advance_to=advance_to,
         extra_attrs=extra_attrs,
     )
+
+
+def record_repo_helper_failure(run: Run, action: InvokeRepoHelper) -> None:
+    """Bump ``dispatch_failure_count`` + enqueue a retry beacon.
+
+    Mirrors the agent path's :func:`rollback_after_failure` but skips the
+    state revert — the repo_helper executor advances state *after* a
+    successful response, so on failure there's nothing to reverse.
+    Reuses :func:`transactional_advance` with ``advance_from`` ==
+    ``advance_to``: the SET is a no-op, the conditional check still
+    acts as the race guard (only bump if the projector hasn't moved us
+    forward via a stale event), and the OUTBOX row commits in the same
+    transaction so the EventBridge Pipe enqueues the next beacon.
+
+    Informational ops without ``target_pk`` / ``advance_from``
+    (``comment_issue`` / ``label_issue``) skip entirely — there's no
+    race guard to use as a conditional check, and they're chained with
+    a follow-up action that fires regardless.
+    """
+    if not action.target_pk or not action.target_sk or not action.advance_from:
+        return
+    bumped = transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
+        target_pk=action.target_pk,
+        target_sk=action.target_sk,
+        advance_from=action.advance_from,
+        advance_to=action.advance_from,
+        extra_attrs={"last_dispatch_failure_at": now_iso()},
+        extra_increments={"dispatch_failure_count": 1},
+    )
+    if bumped:
+        metrics.add_metric(name="DispatchFailureCount", unit=MetricUnit.Count, value=1)
+        logger.info(
+            "recorded repo_helper failure; retry beacon enqueued",
+            extra={"target_sk": action.target_sk, "op": action.op},
+        )
+    else:
+        logger.info(
+            "skipped repo_helper failure record — state already moved",
+            extra={"target_sk": action.target_sk, "op": action.op},
+        )
 
 
 def pick_advance_to(action: InvokeRepoHelper, body: dict[str, Any]) -> str | None:

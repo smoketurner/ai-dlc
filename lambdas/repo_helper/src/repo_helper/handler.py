@@ -39,7 +39,6 @@ from common.github_app import (
     USER_AGENT,
     token_for_call,
 )
-from common.ids import short_run_id
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -430,7 +429,7 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
     so the state-router can advance straight to ``spec_approved``.
     """
     docs = read_spec_docs(req.spec_s3_prefix)
-    branch = f"aidlc/spec/{req.spec_slug}/{short_run_id(req.run_id)}"
+    branch = f"aidlc/spec/{req.spec_slug}"
     files = [
         CommitFile(
             path=f"docs/specs/{req.spec_slug}/{name}.md",
@@ -462,7 +461,7 @@ def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
     existing_pr = find_open_pr(req.repo, branch=branch, base=req.base, client=client)
     if existing_pr is not None:
         # Spec-PR iteration: the architect re-ran on the same branch.
-        # The force-update above already pushed the new commit; the PR
+        # The fast-forward above already added the new commit; the PR
         # is now showing the new content automatically. Skip POST /pulls
         # (would 422 with "A pull request already exists for ...").
         return {

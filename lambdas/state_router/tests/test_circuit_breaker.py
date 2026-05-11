@@ -21,11 +21,12 @@ from unittest.mock import patch
 
 from common.events import EventEnvelope, RunFailed, TaskBlocked
 from common.state import RunState, TaskState
-from state_router.actions import InvokeAgent
+from state_router.actions import InvokeAgent, InvokeRepoHelper
 from state_router.circuit_breaker import is_open
 from state_router.config import MAX_DISPATCH_FAILURES
 from state_router.execute import (
     execute_invoke_agent,
+    execute_invoke_repo_helper,
     rollback_after_failure,
 )
 from state_router.model import Run, Task
@@ -103,6 +104,20 @@ def advisor_invoke() -> InvokeAgent:
     )
 
 
+def open_spec_pr_invoke() -> InvokeRepoHelper:
+    """InvokeRepoHelper shape ``handle_spec_critiqued`` returns (run-level)."""
+    return InvokeRepoHelper(
+        op="open_spec_pr",
+        args={"repo": "o/r", "spec_slug": "demo", "spec_s3_prefix": "specs/demo/"},
+        target_pk="RUN#r-1",
+        target_sk="STATE",
+        advance_from=RunState.spec_critiqued.value,
+        advance_to=RunState.spec_pr_open.value,
+        advance_on_no_change_to=RunState.spec_approved.value,
+        record_pr_url_attr="pr_url",
+    )
+
+
 # ---------------------------------------------------------------------------
 # is_open: gating logic
 # ---------------------------------------------------------------------------
@@ -145,6 +160,15 @@ class TestCircuitBreakerOpen:
         )
         with patch("state_router.circuit_breaker.publish"):
             assert is_open(run, architect_invoke()) is True
+
+    def test_repo_helper_invoke_at_threshold_trips(self) -> None:
+        """``open_spec_pr`` dispatch reads the same per-row counter as the agent path."""
+        run = make_run(
+            state=RunState.spec_critiqued,
+            dispatch_failure_count=MAX_DISPATCH_FAILURES,
+        )
+        with patch("state_router.circuit_breaker.publish"):
+            assert is_open(run, open_spec_pr_invoke()) is True
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +256,28 @@ class TestExecuteInvokeAgentWithBreaker:
             execute_invoke_agent(run, implementer_invoke())
         advance.assert_called_once()
         dispatch.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# execute_invoke_repo_helper: integration with the breaker
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteInvokeRepoHelperWithBreaker:
+    def test_open_breaker_skips_repo_helper_invoke(self) -> None:
+        """When the breaker is tripped, neither the Lambda invoke nor advance fires."""
+        run = make_run(
+            state=RunState.spec_critiqued,
+            dispatch_failure_count=MAX_DISPATCH_FAILURES,
+        )
+        with (
+            patch("state_router.circuit_breaker.publish"),
+            patch("state_router.execute.lambda_client") as lambda_client_mock,
+            patch("state_router.execute.transactional_advance") as advance,
+        ):
+            execute_invoke_repo_helper(run, open_spec_pr_invoke())
+        lambda_client_mock.assert_not_called()
+        advance.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
