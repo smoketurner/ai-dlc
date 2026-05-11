@@ -56,6 +56,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Mangum (registered as ``dashboard.app.handler``) translates the API
 # Gateway proxy event into ASGI calls for FastAPI.
 FROM --platform=linux/arm64 public.ecr.aws/lambda/python:${PYTHON_VERSION} AS runtime
+ARG PYTHON_VERSION
 
 # Site-packages from the uv-resolved venv land directly on PYTHONPATH; the
 # dashboard package itself is installed editable, so we copy its source
