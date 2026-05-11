@@ -200,10 +200,13 @@ def execute_in_sandbox(
     return {"head_sha": head_sha, "extract": extract_summary, "results": results}
 
 
+SANDBOX_BOOTSTRAP_RELPATH = ".aidlc/sandbox-bootstrap.sh"
+
 EXTRACT_SCRIPT_TEMPLATE = """\
-import io, os, tarfile, urllib.request
+import io, os, subprocess, sys, tarfile, urllib.request
 url = {archive_url!r}
 working_dir = {working_dir!r}
+bootstrap_relpath = {bootstrap_relpath!r}
 os.makedirs(working_dir, exist_ok=True)
 with urllib.request.urlopen(url) as resp:
     raw = resp.read()
@@ -217,6 +220,26 @@ with tarfile.open(fileobj=io.BytesIO(raw)) as tf:
             m.name = m.name[len(prefix):]
         if m.name:
             tf.extract(m, path=working_dir, filter="data")
+# Per-project sandbox bootstrap: each project owns its own setup recipe at
+# ``.aidlc/sandbox-bootstrap.sh`` (install package managers, sync deps, etc.).
+# Absent → no-op. Non-zero exit → fail the extract step so the agent doesn't
+# run commands against a half-set-up workspace.
+bootstrap = os.path.join(working_dir, bootstrap_relpath)
+if os.path.exists(bootstrap):
+    print(f"running {{bootstrap}}", flush=True)
+    proc = subprocess.run(
+        ["bash", bootstrap],
+        cwd=working_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    if proc.returncode != 0:
+        raise SystemExit(f"bootstrap exited with {{proc.returncode}}")
+else:
+    print(f"no {{bootstrap_relpath}} — skipping setup", flush=True)
 print("ok")
 """
 
@@ -234,7 +257,11 @@ def run_extract_step(
     than shelling out, since the managed Code Interpreter does not ship
     ``git``. Returns the redacted summary plus a success flag.
     """
-    code = EXTRACT_SCRIPT_TEMPLATE.format(archive_url=archive_url, working_dir=working_dir)
+    code = EXTRACT_SCRIPT_TEMPLATE.format(
+        archive_url=archive_url,
+        working_dir=working_dir,
+        bootstrap_relpath=SANDBOX_BOOTSTRAP_RELPATH,
+    )
     result = ci.execute_code(sdk_client, code=code, language="python")
     summary = {
         "exit_code": result.exit_code,

@@ -19,6 +19,7 @@ from common.agentcore_code_interpreter import CommandResult
 from common.errors import AgentCoreCodeInterpreterError
 from common.sandbox import (
     EXTRACT_SCRIPT_TEMPLATE,
+    SANDBOX_BOOTSTRAP_RELPATH,
     execute_in_sandbox,
     get_pr_diff,
     parse_pr_url,
@@ -315,8 +316,21 @@ def test_extract_script_template_compiles_with_repr_safe_substitutions() -> None
     rendered = EXTRACT_SCRIPT_TEMPLATE.format(
         archive_url="https://codeload.example/x?token=t'\"hostile",
         working_dir="repo",
+        bootstrap_relpath=SANDBOX_BOOTSTRAP_RELPATH,
     )
     compile(rendered, "<test>", "exec")
+
+
+def test_extract_script_template_runs_per_project_bootstrap() -> None:
+    """The script looks for ``.aidlc/sandbox-bootstrap.sh`` and runs it via bash."""
+    rendered = EXTRACT_SCRIPT_TEMPLATE.format(
+        archive_url="https://codeload.example/x?token=t",
+        working_dir="repo",
+        bootstrap_relpath=SANDBOX_BOOTSTRAP_RELPATH,
+    )
+    assert "'.aidlc/sandbox-bootstrap.sh'" in rendered
+    assert '["bash", bootstrap]' in rendered
+    assert 'raise SystemExit(f"bootstrap exited with' in rendered
 
 
 def test_command_result_unused_helper(monkeypatch: pytest.MonkeyPatch) -> None:
