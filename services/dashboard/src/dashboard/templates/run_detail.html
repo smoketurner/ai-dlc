@@ -139,23 +139,29 @@
     <li class="px-4 py-3 text-sm flex items-baseline gap-3 flex-wrap">
       <span class="text-slate-400 font-mono text-xs">{{ ev.timestamp }}</span>
       <span class="font-semibold">{{ ev.type }}</span>
-      {% for link in ev.links %}
-      <a href="{{ link.url }}" target="_blank" rel="noopener"
-         class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono">{{ link.label }}</a>
-      {% endfor %}
-      <span class="text-slate-600 truncate" title="{{ ev.payload }}">{{ ev.payload | tojson }}</span>
+      <span class="text-slate-600 truncate flex-1 min-w-0" title="{{ ev.payload }}">{{ ev.payload | tojson }}</span>
+      {% if ev.links %}
+      <span class="ml-auto flex items-baseline gap-2">
+        {% for link in ev.links %}
+        <a href="{{ link.url }}" target="_blank" rel="noopener"
+           class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono">{{ link.label }}</a>
+        {% endfor %}
+      </span>
+      {% endif %}
     </li>
     {% endfor %}
     <template x-for="ev in liveEvents" :key="ev.event_id">
       <li class="px-4 py-3 text-sm flex items-baseline gap-3 bg-emerald-50 flex-wrap">
         <span class="text-slate-400 font-mono text-xs" x-text="ev.timestamp"></span>
         <span class="font-semibold" x-text="ev.type"></span>
-        <template x-for="link in ev.links" :key="link.url">
-          <a :href="link.url" target="_blank" rel="noopener"
-             x-text="link.label"
-             class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono"></a>
-        </template>
-        <span class="text-slate-600 truncate" x-text="JSON.stringify(ev.payload)"></span>
+        <span class="text-slate-600 truncate flex-1 min-w-0" x-text="JSON.stringify(ev.payload)"></span>
+        <span class="ml-auto flex items-baseline gap-2" x-show="ev.links && ev.links.length">
+          <template x-for="link in ev.links" :key="link.url">
+            <a :href="link.url" target="_blank" rel="noopener"
+               x-text="link.label"
+               class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono"></a>
+          </template>
+        </span>
       </li>
     </template>
   </ul>
