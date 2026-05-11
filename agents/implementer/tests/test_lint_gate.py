@@ -77,6 +77,16 @@ class TestRunLintGatePass:
             args = call.args[0]
             assert args[0] == "make", f"expected 'make', got {args[0]!r}"
 
+    def test_subprocess_params(self, tmp_path: Path) -> None:
+        """subprocess.run must use capture_output=True, text=True, check=False."""
+        with patch("subprocess.run", return_value=_make_proc(0)) as mock_run:
+            run_lint_gate(tmp_path)
+
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("capture_output") is True
+            assert call.kwargs.get("text") is True
+            assert call.kwargs.get("check") is False
+
     def test_retry_count_default_zero(self, tmp_path: Path) -> None:
         with patch("subprocess.run", return_value=_make_proc(0)):
             result = run_lint_gate(tmp_path)
