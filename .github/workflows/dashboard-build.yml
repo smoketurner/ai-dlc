@@ -21,6 +21,7 @@ concurrency:
 jobs:
   test:
     name: lint + type + test
+    if: github.repository_owner == 'smoketurner'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -53,6 +54,7 @@ jobs:
   build:
     name: build + push
     needs: test
+    if: github.repository_owner == 'smoketurner'
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read

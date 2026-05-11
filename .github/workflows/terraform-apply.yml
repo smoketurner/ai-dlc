@@ -36,6 +36,7 @@ concurrency:
 jobs:
   apply:
     name: terraform apply (dev)
+    if: github.repository_owner == 'smoketurner'
     runs-on: ubuntu-24.04-arm
     permissions:
       id-token: write
