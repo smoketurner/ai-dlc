@@ -21,11 +21,11 @@ async def list_events(
 ) -> dict[str, object]:
     """Return events newer than ``since`` plus a terminal flag.
 
-    Clients poll this endpoint with the latest event timestamp as the
-    cursor; when ``terminal`` is true the run is in a terminal state
-    and the caller can stop polling.
+    ``since`` is an event UUID (the last event the client has seen);
+    when ``terminal`` is true the run is in a terminal state and the
+    caller can stop polling.
     """
-    events: list[RunEvent] = get_run_events(run_id, since_sk=since)
+    events: list[RunEvent] = get_run_events(run_id, since_event_id=since)
     return {
         "events": [ev.model_dump() for ev in events],
         "terminal": is_run_terminal(run_id),

@@ -55,10 +55,10 @@ def seed_state(run_id: str, *, current_state: str) -> None:
     )
 
 
-def seed_event(run_id: str, *, sk: str, event_type: str, timestamp: str) -> None:
+def seed_event(run_id: str, *, event_id: str, event_type: str, timestamp: str) -> None:
     envelope = json.dumps(
         {
-            "event_id": f"evt-{sk}",
+            "event_id": event_id,
             "type": event_type,
             "timestamp": timestamp,
             "payload": {"k": "v"},
@@ -68,7 +68,7 @@ def seed_event(run_id: str, *, sk: str, event_type: str, timestamp: str) -> None
         TableName=RUNS,
         Item={
             "pk": {"S": f"RUN#{run_id}"},
-            "sk": {"S": sk},
+            "sk": {"S": f"EVENT#{event_id}"},
             "type": {"S": event_type},
             "envelope": {"S": envelope},
         },
@@ -77,8 +77,8 @@ def seed_event(run_id: str, *, sk: str, event_type: str, timestamp: str) -> None
 
 def test_returns_all_events_without_cursor() -> None:
     seed_state("r1", current_state="received")
-    seed_event("r1", sk="EVENT#0001", event_type="REQUEST.RECEIVED", timestamp="t1")
-    seed_event("r1", sk="EVENT#0002", event_type="ISSUE.TRIAGED", timestamp="t2")
+    seed_event("r1", event_id="0001", event_type="REQUEST.RECEIVED", timestamp="t1")
+    seed_event("r1", event_id="0002", event_type="ISSUE.TRIAGED", timestamp="t2")
 
     with TestClient(app) as client:
         resp = client.get("/v1/runs/r1/events")
@@ -91,11 +91,11 @@ def test_returns_all_events_without_cursor() -> None:
 
 def test_filters_events_after_cursor() -> None:
     seed_state("r2", current_state="received")
-    seed_event("r2", sk="EVENT#0001", event_type="REQUEST.RECEIVED", timestamp="t1")
-    seed_event("r2", sk="EVENT#0002", event_type="ISSUE.TRIAGED", timestamp="t2")
+    seed_event("r2", event_id="0001", event_type="REQUEST.RECEIVED", timestamp="t1")
+    seed_event("r2", event_id="0002", event_type="ISSUE.TRIAGED", timestamp="t2")
 
     with TestClient(app) as client:
-        resp = client.get("/v1/runs/r2/events", params={"since": "EVENT#0001"})
+        resp = client.get("/v1/runs/r2/events", params={"since": "0001"})
 
     assert resp.status_code == 200
     body = resp.json()
@@ -104,7 +104,7 @@ def test_filters_events_after_cursor() -> None:
 
 def test_signals_terminal_for_done_runs() -> None:
     seed_state("r3", current_state="done")
-    seed_event("r3", sk="EVENT#0001", event_type="RUN.COMPLETED", timestamp="t1")
+    seed_event("r3", event_id="0001", event_type="RUN.COMPLETED", timestamp="t1")
 
     with TestClient(app) as client:
         resp = client.get("/v1/runs/r3/events")

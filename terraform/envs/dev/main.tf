@@ -217,8 +217,8 @@ module "pipeline" {
 module "dashboard" {
   source = "../../modules/dashboard"
 
-  env                = var.env
-  ecr_repository_url = module.registry.repository_urls["dashboard"]
+  env              = var.env
+  common_layer_arn = module.common_layer.lambda_layer_arn
 
   dashboard_fqdn  = local.dashboard_fqdn
   route53_zone_id = data.aws_route53_zone.bootstrap.zone_id

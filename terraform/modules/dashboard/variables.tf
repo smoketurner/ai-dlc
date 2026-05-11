@@ -9,8 +9,8 @@ variable "env" {
   type        = string
 }
 
-variable "ecr_repository_url" {
-  description = "ECR repository URL for the dashboard container image."
+variable "common_layer_arn" {
+  description = "Shared Lambda layer ARN (common package + powertools + boto3 + pydantic + ...)."
   type        = string
 }
 

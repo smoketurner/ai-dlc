@@ -15,7 +15,6 @@ variable "repositories" {
     "tester",
     "proposer",
     "triage",
-    "dashboard",
   ]
 }
 

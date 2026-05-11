@@ -4,7 +4,7 @@
 <div x-data="runDetail($el.dataset.runId, $el.dataset.cursor)"
      x-init="connect()"
      data-run-id="{{ run_id }}"
-     data-cursor="{{ events[-1].timestamp if events else '' }}"
+     data-cursor="{{ events[-1].event_id if events else '' }}"
      class="space-y-4">
   <div class="flex items-baseline justify-between">
     <div>
@@ -113,7 +113,7 @@ function runDetail(runId, initialCursor) {
       for (const ev of body.events || []) {
         this.liveEvents.push(ev);
         this.lastType = ev.type;
-        if (ev.timestamp && ev.timestamp > this.cursor) this.cursor = ev.timestamp;
+        if (ev.event_id > this.cursor) this.cursor = ev.event_id;
       }
       if (body.terminal && this.timer !== null) {
         window.clearInterval(this.timer);

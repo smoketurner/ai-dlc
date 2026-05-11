@@ -27,7 +27,7 @@ ZIZMOR ?= uvx zizmor
 # terraform-aws-modules/lambda v8 tries to build the docker_image locally
 # when it isn't present, instead of pulling it. Pulling once up-front
 # satisfies its `docker images` lookup and avoids the build path entirely.
-LAMBDA_BUILD_IMAGE := public.ecr.aws/sam/build-python3.13:latest-arm64
+LAMBDA_BUILD_IMAGE := public.ecr.aws/sam/build-python3.14:latest-arm64
 
 help:                            ## Show this help.
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)

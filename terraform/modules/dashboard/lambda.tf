@@ -1,27 +1,45 @@
 ################################################################################
-# Dashboard Lambda — container image, ARM64.
+# Dashboard Lambda — zip package, ARM64, python3.14.
 #
-# Image deploys are handled out-of-band by the dashboard-build workflow:
-# after pushing a new image to ECR it calls `aws lambda update-function-code`
-# with the same `:latest` tag. The `aws_ecr_image` data source above
-# resolves `:latest` to a digest at plan time so this resource's `image_uri`
-# stays stable between the CI-driven update and the next terraform apply.
+# Built end-to-end by terraform-aws-modules/lambda: pip-installs dashboard-only
+# deps from requirements.txt (overlapping deps come from the shared common
+# layer), regenerates tailwind.css via build-tailwind.sh, then zips the source.
+# `make plan && make apply` is the one-shot deploy — no separate image build.
 ################################################################################
 
 module "function" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
-  function_name  = local.function_name
-  description    = "ai-dlc dashboard (FastAPI + Mangum) behind HTTP API Gateway."
-  create_package = false
-  package_type   = "Image"
-  image_uri      = "${var.ecr_repository_url}@${data.aws_ecr_image.dashboard.image_digest}"
-  architectures  = ["arm64"]
-  memory_size    = var.memory_size_mb
-  timeout        = var.lambda_timeout_seconds
-  publish        = true
-  tracing_mode   = "Active"
+  function_name = local.function_name
+  description   = "ai-dlc dashboard (FastAPI + Mangum) behind HTTP API Gateway."
+  handler       = "dashboard.app.handler"
+  runtime       = "python3.14"
+  architectures = ["arm64"]
+  memory_size   = var.memory_size_mb
+  timeout       = var.lambda_timeout_seconds
+  publish       = true
+  tracing_mode  = "Active"
+  layers        = [var.common_layer_arn]
+
+  source_path = [
+    {
+      path = "${path.module}/../../../services/dashboard/src"
+      commands = [
+        "../scripts/build-tailwind.sh",
+        ":zip",
+      ]
+      patterns = [
+        "!.*/__pycache__/.*",
+        "!dashboard/static/tailwind\\.input\\.css",
+      ]
+    },
+    {
+      pip_requirements = "${path.module}/../../../services/dashboard/requirements.txt"
+    },
+  ]
+  build_in_docker = true
+  docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_ENV                         = var.env

@@ -24,12 +24,8 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-# The lambdas deploy on AWS Lambda's ``python3.13`` runtime. Don't bump
-# this above 3.13 unless every deploy target also moves — ruff applies
-# version-targeted formatter transformations (e.g. PEP 758
-# unparenthesised ``except`` tuples in 3.14+) that would silently
-# break the runtime.
-target-version = "py313"
+# The lambdas deploy on AWS Lambda's ``python3.14`` runtime.
+target-version = "py314"
 src = ["packages", "agents", "lambdas", "services", "tests"]
 extend-exclude = ["**/.venv", "**/dist", "**/build"]
 

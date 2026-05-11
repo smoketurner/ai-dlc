@@ -36,29 +36,31 @@ def list_recent_runs(*, limit: int = 50) -> list[RunSummary]:
     return [run_summary_from_item(item) for item in resp.get("Items", [])]
 
 
-def get_run_events(run_id: str, *, since_sk: str | None = None) -> list[RunEvent]:
-    """Fetch events for ``run_id`` ordered by sk; exclude sks <= ``since_sk`` if given.
+def get_run_events(run_id: str, *, since_event_id: str | None = None) -> list[RunEvent]:
+    """Fetch events for ``run_id`` ordered by sk; exclude events <= ``since_event_id``.
 
-    A DDB ``KeyConditionExpression`` may only carry a single sort-key
-    condition, so we cannot mix ``begins_with(sk, "EVENT#")`` with
-    ``sk > :since``. We bound to the ``EVENT#`` prefix via ``BETWEEN``
-    and post-filter inclusively when a cursor is provided.
+    Callers pass plain event UUIDs; the ``EVENT#`` sort-key prefix is a
+    storage detail kept inside this module. A DDB ``KeyConditionExpression``
+    may only carry a single sort-key condition, so we cannot mix
+    ``begins_with(sk, "EVENT#")`` with ``sk > :since``. We bound to the
+    ``EVENT#`` prefix via ``BETWEEN`` and post-filter inclusively when a
+    cursor is provided.
     """
     cfg = settings()
-    lower = since_sk if since_sk is not None else "EVENT#"
+    lower_sk = f"EVENT#{since_event_id}" if since_event_id is not None else "EVENT#"
     upper = "EVENT$"  # one byte past every possible "EVENT#..." sk
     resp = ddb().query(
         TableName=cfg.runs_table,
         KeyConditionExpression="pk = :p AND sk BETWEEN :lo AND :hi",
         ExpressionAttributeValues={
             ":p": {"S": f"RUN#{run_id}"},
-            ":lo": {"S": lower},
+            ":lo": {"S": lower_sk},
             ":hi": {"S": upper},
         },
     )
     items = resp.get("Items", [])
-    if since_sk is not None:
-        items = [item for item in items if item["sk"]["S"] > since_sk]
+    if since_event_id is not None:
+        items = [item for item in items if item["sk"]["S"] > lower_sk]
     return [event_from_item(item) for item in items]
 
 
