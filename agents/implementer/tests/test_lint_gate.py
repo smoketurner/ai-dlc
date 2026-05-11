@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
-from implementer.lint_gate import CommandResult, LintGateResult, run_lint_gate
+from implementer.lint_gate import (
+    _TIMEOUT_SECS,
+    CommandResult,
+    LintGateResult,
+    run_lint_gate,
+)
 
 _COMMANDS = ("make lint", "make format", "make type", "make test")
 
@@ -55,6 +60,14 @@ class TestRunLintGatePass:
 
         for call in mock_run.call_args_list:
             assert call.kwargs.get("shell") is not True
+
+    def test_timeout_param_passed(self, tmp_path: Path) -> None:
+        """subprocess.run must be called with the 60-second timeout."""
+        with patch("subprocess.run", return_value=_make_proc(0)) as mock_run:
+            run_lint_gate(tmp_path)
+
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("timeout") == _TIMEOUT_SECS
 
     def test_uses_make_not_uv(self, tmp_path: Path) -> None:
         with patch("subprocess.run", return_value=_make_proc(0)) as mock_run:
@@ -216,7 +229,7 @@ class TestLintGateResultModel:
     def test_retry_count_must_be_0_or_1(self, tmp_path: Path) -> None:
         with (
             patch("subprocess.run", return_value=_make_proc(0)),
-            pytest.raises(ValueError),
+            pytest.raises(ValidationError),
         ):
             run_lint_gate(tmp_path, retry_count=2)
 
