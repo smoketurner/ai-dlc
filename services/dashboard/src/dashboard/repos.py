@@ -37,19 +37,29 @@ def list_recent_runs(*, limit: int = 50) -> list[RunSummary]:
 
 
 def get_run_events(run_id: str, *, since_sk: str | None = None) -> list[RunEvent]:
-    """Fetch events for ``run_id`` ordered by sk; filter sks <= ``since_sk`` if given."""
+    """Fetch events for ``run_id`` ordered by sk; exclude sks <= ``since_sk`` if given.
+
+    A DDB ``KeyConditionExpression`` may only carry a single sort-key
+    condition, so we cannot mix ``begins_with(sk, "EVENT#")`` with
+    ``sk > :since``. We bound to the ``EVENT#`` prefix via ``BETWEEN``
+    and post-filter inclusively when a cursor is provided.
+    """
     cfg = settings()
-    expr = "pk = :p AND begins_with(sk, :prefix)"
-    values: dict[str, Any] = {":p": {"S": f"RUN#{run_id}"}, ":prefix": {"S": "EVENT#"}}
-    if since_sk is not None:
-        expr += " AND sk > :since"
-        values[":since"] = {"S": since_sk}
+    lower = since_sk if since_sk is not None else "EVENT#"
+    upper = "EVENT$"  # one byte past every possible "EVENT#..." sk
     resp = ddb().query(
         TableName=cfg.runs_table,
-        KeyConditionExpression=expr,
-        ExpressionAttributeValues=values,
+        KeyConditionExpression="pk = :p AND sk BETWEEN :lo AND :hi",
+        ExpressionAttributeValues={
+            ":p": {"S": f"RUN#{run_id}"},
+            ":lo": {"S": lower},
+            ":hi": {"S": upper},
+        },
     )
-    return [event_from_item(item) for item in resp.get("Items", [])]
+    items = resp.get("Items", [])
+    if since_sk is not None:
+        items = [item for item in items if item["sk"]["S"] > since_sk]
+    return [event_from_item(item) for item in items]
 
 
 def run_summary_from_item(item: dict[str, Any]) -> RunSummary:

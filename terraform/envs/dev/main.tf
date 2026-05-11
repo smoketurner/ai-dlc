@@ -28,8 +28,8 @@ locals {
   dashboard_fqdn = "dashboard-${var.env}.${var.dns_zone_name}"
   dashboard_url  = "https://${local.dashboard_fqdn}"
 
-  dashboard_callback_urls = coalesce(var.dashboard_callback_urls, ["${local.dashboard_url}/oauth2/idpresponse"])
-  dashboard_logout_urls   = coalesce(var.dashboard_logout_urls, ["${local.dashboard_url}/logout"])
+  dashboard_callback_urls = coalesce(var.dashboard_callback_urls, ["${local.dashboard_url}/auth/callback"])
+  dashboard_logout_urls   = coalesce(var.dashboard_logout_urls, [local.dashboard_url])
 
   # Agents whose ECR image has been pushed at least once. AgentCore Runtimes
   # are only created for these — agents missing an image get IAM / gateway /
@@ -226,11 +226,6 @@ module "dashboard" {
   env                = var.env
   ecr_repository_url = module.registry.repository_urls["dashboard"]
 
-  vpc_id             = module.network.vpc_id
-  public_subnet_ids  = module.network.public_subnet_ids
-  private_subnet_ids = module.network.private_subnet_ids
-
-  alb_log_bucket  = module.state.artifacts_bucket
   dashboard_fqdn  = local.dashboard_fqdn
   route53_zone_id = data.aws_route53_zone.bootstrap.zone_id
 
@@ -252,10 +247,12 @@ module "dashboard" {
   github_webhook_secret_arn = aws_secretsmanager_secret.github_webhook.arn
   github_app_secret_arn     = module.agents.github_app_secret_arn
 
-  cognito_user_pool_arn       = module.auth.user_pool_arn
   cognito_user_pool_id        = module.auth.user_pool_id
   cognito_user_pool_client_id = module.auth.client_id
   cognito_user_pool_domain    = module.auth.domain
+  cognito_client_secret_id    = module.auth.client_secret_id
+  cognito_client_secret_arn   = module.auth.client_secret_arn
+  cognito_discovery_url       = module.auth.discovery_url
 
   dashboard_workload_name    = module.agents.dashboard_workload_name
   github_oauth_provider_name = module.agents.github_oauth_provider_name

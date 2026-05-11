@@ -15,6 +15,16 @@ output "client_secret" {
   sensitive = true
 }
 
+output "client_secret_id" {
+  description = "Secrets Manager secret id holding the Cognito app-client secret."
+  value       = aws_secretsmanager_secret.cognito_client.id
+}
+
+output "client_secret_arn" {
+  description = "Secrets Manager secret ARN holding the Cognito app-client secret."
+  value       = aws_secretsmanager_secret.cognito_client.arn
+}
+
 output "domain" {
   value = aws_cognito_user_pool_domain.this.domain
 }

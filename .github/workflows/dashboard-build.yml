@@ -94,14 +94,16 @@ jobs:
           cache-from: type=gha,scope=dashboard-arm64
           cache-to: type=gha,mode=max,scope=dashboard-arm64
 
-      - name: Roll dashboard ECS service to the new image
-        # ECS task definition references `:latest` (terraform-managed). After
-        # a fresh push, force a new deployment so ECS pulls the current
-        # `:latest` digest and replaces tasks.
+      - name: Update dashboard Lambda to the new image
+        # The Lambda's image_uri is resolved at terraform plan time from the
+        # ECR `:latest` tag's digest. We push the SHA-tagged digest above; this
+        # call resolves the same tag to the new digest and points the Lambda
+        # at it without waiting for the next terraform apply.
         run: |
-          aws ecs update-service \
-            --cluster ai-dlc-dev-dashboard \
-            --service ai-dlc-dev-dashboard \
-            --force-new-deployment \
+          aws lambda update-function-code \
+            --function-name ai-dlc-dev-dashboard \
+            --image-uri "${ECR_REPOSITORY}:latest" \
             --no-cli-pager
-          echo "::notice::Triggered rolling deploy on ai-dlc-dev-dashboard"
+          aws lambda wait function-updated \
+            --function-name ai-dlc-dev-dashboard
+          echo "::notice::Updated ai-dlc-dev-dashboard Lambda image"

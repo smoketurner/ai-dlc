@@ -10,32 +10,12 @@ variable "env" {
 }
 
 variable "ecr_repository_url" {
-  description = "ECR repository URL for the dashboard image."
-  type        = string
-}
-
-variable "vpc_id" {
-  description = "VPC ID."
-  type        = string
-}
-
-variable "public_subnet_ids" {
-  description = "Public subnet IDs for the ALB."
-  type        = list(string)
-}
-
-variable "private_subnet_ids" {
-  description = "Private subnet IDs for the ECS tasks."
-  type        = list(string)
-}
-
-variable "alb_log_bucket" {
-  description = "S3 bucket for ALB access logs (existing artifacts bucket reuses fine in dev)."
+  description = "ECR repository URL for the dashboard container image."
   type        = string
 }
 
 variable "dashboard_fqdn" {
-  description = "Public FQDN for the dashboard (e.g., dashboard-dev.aidlc.smoketurner.com). When set together with route53_zone_id, the module manages the ACM cert + DNS A-alias automatically. When null, the ALB stays HTTP-only with no friendly hostname."
+  description = "Public FQDN for the dashboard (e.g., dashboard-dev.aidlc.smoketurner.com). When set together with route53_zone_id, the module manages the ACM cert + DNS A-alias automatically. When null, the API Gateway execution URL is used."
   type        = string
   default     = null
 }
@@ -116,11 +96,6 @@ variable "github_webhook_secret_arn" {
   type        = string
 }
 
-variable "cognito_user_pool_arn" {
-  description = "Cognito user pool ARN — used by the ALB authenticate-cognito action."
-  type        = string
-}
-
 variable "cognito_user_pool_id" {
   description = "Cognito user pool ID."
   type        = string
@@ -136,38 +111,35 @@ variable "cognito_user_pool_domain" {
   type        = string
 }
 
-variable "task_cpu" {
-  description = "Fargate task CPU units."
-  type        = number
-  default     = 512
+variable "cognito_client_secret_id" {
+  description = "Secrets Manager secret id holding the Cognito user-pool app-client secret."
+  type        = string
 }
 
-variable "task_memory_mb" {
-  description = "Fargate task memory."
+variable "cognito_client_secret_arn" {
+  description = "Secrets Manager secret ARN holding the Cognito user-pool app-client secret."
+  type        = string
+}
+
+variable "cognito_discovery_url" {
+  description = "Cognito OIDC discovery URL (.well-known/openid-configuration)."
+  type        = string
+}
+
+variable "memory_size_mb" {
+  description = "Lambda memory size in MB."
   type        = number
   default     = 1024
 }
 
-variable "desired_count" {
-  description = "Initial desired ECS task count."
+variable "lambda_timeout_seconds" {
+  description = "Lambda timeout. Must be ≤ 30 (API Gateway HTTP API hard limit)."
   type        = number
-  default     = 1
-}
-
-variable "min_capacity" {
-  description = "Autoscaling min."
-  type        = number
-  default     = 1
-}
-
-variable "max_capacity" {
-  description = "Autoscaling max."
-  type        = number
-  default     = 4
+  default     = 29
 }
 
 variable "log_retention_days" {
-  description = "CloudWatch Logs retention for the dashboard."
+  description = "CloudWatch Logs retention for the Lambda + API Gateway."
   type        = number
   default     = 30
 }
