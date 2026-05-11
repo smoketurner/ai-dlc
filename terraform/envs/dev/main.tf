@@ -54,12 +54,6 @@ locals {
   }
 }
 
-module "network" {
-  source = "../../modules/network"
-
-  env = var.env
-}
-
 module "registry" {
   source = "../../modules/registry"
 }

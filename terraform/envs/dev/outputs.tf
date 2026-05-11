@@ -3,28 +3,6 @@
 # via `terraform output -json`.
 ################################################################################
 
-# network ----------------------------------------------------------------------
-
-output "vpc_id" {
-  description = "VPC ID for the env."
-  value       = module.network.vpc_id
-}
-
-output "private_subnet_ids" {
-  description = "Private subnet IDs (Lambdas, Fargate, optional AgentCore VPC mode)."
-  value       = module.network.private_subnet_ids
-}
-
-output "public_subnet_ids" {
-  description = "Public subnet IDs (ALB)."
-  value       = module.network.public_subnet_ids
-}
-
-output "lambda_security_group_id" {
-  description = "SG attached to platform Lambdas in private subnets."
-  value       = module.network.lambda_security_group_id
-}
-
 # state ------------------------------------------------------------------------
 
 output "artifacts_bucket" {
