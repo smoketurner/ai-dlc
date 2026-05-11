@@ -4,7 +4,7 @@
 
 Ordered, atomic units. Each task is one PR.
 
-- [ ] **T-001** — Add implementer.lint_gate module with run_lint_gate using Makefile targets
+- [x] **T-001** — Add implementer.lint_gate module with run_lint_gate using Makefile targets
   - **Implements:** AC-001, AC-004
   - **Touches:** `agents/implementer/src/implementer/lint_gate.py`, `agents/implementer/tests/test_lint_gate.py`
   - **Done when:** run_lint_gate(path) executes `make lint`, `make format`, `make type`, and `make test` via subprocess.run with a 60s timeout per command and cwd set to the repo root, returns a LintGateResult with per-command exit codes and truncated output (max 4096 chars per command), and unit tests cover pass, single-failure, all-failure, and timeout scenarios. `make lint` passes, `make format-check` passes, `make type` passes, `uv run pytest -q agents/implementer/tests/test_lint_gate.py` passes.
