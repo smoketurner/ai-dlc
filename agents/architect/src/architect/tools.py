@@ -21,7 +21,7 @@ from strands import tool
 
 from architect.repo_grounding import list_repo_paths, read_repo_file
 from common.agentcore_browser import browse_url
-from common.memory_md import read_memory_md
+from common.memory_md import read_memory_md, read_stack_profile_md
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -68,6 +68,7 @@ def write_spec_doc(spec_slug: str, doc: str, content: str) -> str:
 # Strands wrappers — added to the agent's tool list. Each wraps the plain
 # function above so the agent can call it through the LLM tool-use protocol.
 read_memory_md_tool = tool(read_memory_md)
+read_stack_profile_md_tool = tool(read_stack_profile_md)
 write_spec_doc_tool = tool(write_spec_doc)
 list_repo_paths_tool = tool(list_repo_paths)
 read_repo_file_tool = tool(read_repo_file)

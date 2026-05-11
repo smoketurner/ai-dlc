@@ -250,8 +250,8 @@ class TaskBlocked(UsagePayload):
 class TaskApproved(Payload):
     """A reviewer approved the task PR. The next task may start."""
 
-    project_slug: str
-    spec_slug: str
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    spec_slug: Annotated[str, Field(min_length=1, max_length=64)]
     task_id: str
     pr_url: str
     reviewer: str
@@ -260,8 +260,8 @@ class TaskApproved(Payload):
 class TaskRejected(Payload):
     """A reviewer rejected the task PR. The implementer may retry with feedback."""
 
-    project_slug: str
-    spec_slug: str
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    spec_slug: Annotated[str, Field(min_length=1, max_length=64)]
     task_id: str
     pr_url: str
     reviewer: str
@@ -282,8 +282,8 @@ class TaskIterationRequested(Payload):
     do not stack triggers.
     """
 
-    project_slug: str
-    spec_slug: str
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    spec_slug: Annotated[str, Field(min_length=1, max_length=64)]
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
     delivery_id: Annotated[str, Field(min_length=1, max_length=128)]

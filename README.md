@@ -8,6 +8,8 @@ Eight AgentCore-hosted specialist agents (Triage → Architect → Critic → Im
 
 Initial scaffold. The project manifest lives in [`AGENTS.md`](AGENTS.md).
 
+Adopting on your own repo? See [`ADOPTING.md`](ADOPTING.md).
+
 ## Quick start
 
 ```bash

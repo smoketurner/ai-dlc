@@ -23,6 +23,7 @@ from architect.tools import (
     list_repo_paths_tool,
     read_memory_md_tool,
     read_repo_file_tool,
+    read_stack_profile_md_tool,
     write_spec_doc_tool,
 )
 from common.memory import agent_memory_preamble
@@ -56,6 +57,7 @@ def build_agent(run_id: str) -> Agent:
         system_prompt=load_system_prompt("architect", variant),
         tools=[
             read_memory_md_tool,
+            read_stack_profile_md_tool,
             write_spec_doc_tool,
             list_repo_paths_tool,
             read_repo_file_tool,

@@ -89,7 +89,7 @@ class RetrospectiveDecision(BaseModel):
         default="",
         description=(
             "The exact text to append under ``section`` in "
-            "docs/MEMORY.md — typically a single bullet, optionally "
+            "``MEMORY.md`` — typically a single bullet, optionally "
             "with a short Why-line below it. Empty when has_lesson "
             "is False."
         ),

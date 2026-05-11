@@ -228,7 +228,12 @@ def handle_triage_proceed(run: Run) -> Action:
                 ),
                 # Synthetic specs always have one task; seed its row before
                 # tasks_in_progress walks the (otherwise empty) task list.
-                SeedTasks(run_id=run.run_id, task_ids=(SYNTHETIC_TASK_ID,)),
+                SeedTasks(
+                    run_id=run.run_id,
+                    task_ids=(SYNTHETIC_TASK_ID,),
+                    project_slug=run.project_slug,
+                    spec_slug=run.synthetic_spec_slug or run.run_id,
+                ),
             ),
         )
     return Noop(f"unknown workflow_kind: {run.workflow_kind}")
@@ -383,7 +388,12 @@ def handle_spec_approved(run: Run) -> Action:
         return Noop("spec_approved with no task_ids — projector hasn't seeded them")
     return CompoundAction(
         actions=(
-            SeedTasks(run_id=run.run_id, task_ids=run.task_ids),
+            SeedTasks(
+                run_id=run.run_id,
+                task_ids=run.task_ids,
+                project_slug=run.project_slug,
+                spec_slug=run.spec_slug or run.run_id,
+            ),
             AdvanceState(
                 target_pk=f"RUN#{run.run_id}",
                 target_sk="STATE",

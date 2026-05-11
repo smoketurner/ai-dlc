@@ -203,6 +203,8 @@ class TestRunTriageDecided:
         assert synthetics[0].advance_to == RunState.tasks_in_progress.value
         assert len(seeds) == 1
         assert seeds[0].task_ids == ("T-001",)
+        assert seeds[0].project_slug == "demo"
+        assert seeds[0].spec_slug == "r-1"
 
     @pytest.mark.parametrize("kind", ["upgrade", "docs"])
     def test_other_synthetic_kinds_write_spec(self, kind: str) -> None:
@@ -210,7 +212,10 @@ class TestRunTriageDecided:
         action = decide(run)
         assert isinstance(action, CompoundAction)
         assert any(isinstance(a, WriteSyntheticSpec) for a in action.actions)
-        assert any(isinstance(a, SeedTasks) for a in action.actions)
+        seeds = [a for a in action.actions if isinstance(a, SeedTasks)]
+        assert len(seeds) == 1
+        assert seeds[0].project_slug == "demo"
+        assert seeds[0].spec_slug == "r-1"
 
     def test_research_invokes_proposer(self) -> None:
         run = make_run(
@@ -269,6 +274,8 @@ class TestRunSpecFlow:
         advances = [a for a in action.actions if isinstance(a, AdvanceState)]
         assert len(seeds) == 1
         assert seeds[0].task_ids == ("T-001", "T-002")
+        assert seeds[0].project_slug == "demo"
+        assert seeds[0].spec_slug == "demo"
         assert len(advances) == 1
         assert advances[0].advance_to == RunState.tasks_in_progress.value
 

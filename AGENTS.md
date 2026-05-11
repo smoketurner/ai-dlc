@@ -10,7 +10,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 - **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run/task state.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
-- **Dashboard**: FastAPI + Jinja2 + Alpine.js (CDN, no JS build) on ECS Fargate behind an ALB with Cognito OIDC auth.
+- **Dashboard**: FastAPI + Jinja2 + Alpine.js (CDN, no JS build) on API Gateway + Lambda with Cognito OIDC auth.
 - **Auth**: Amazon Cognito (single user pool covers ALB + API Gateway).
 - **HITL**: GitHub PR reviews/comments → webhook → EventBridge event → `event_projector` advances DDB state → `state_router` dispatches the next side-effect.
 - **IaC**: Terraform only (`hashicorp/aws ~> 6`).
@@ -27,7 +27,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | `agents/tester/` | Strands agent — flags test gaps in each task PR (advisory). |
 | `agents/triage/` | Strands agent — classifies issue-driven runs (`proceed` / `ask` / `defer` / `decline`). |
 | `agents/proposer/` | Strands agent — research-driven (issue → triage classifies as `research`); opens PRs proposing prompt or MEMORY.md edits. |
-| `agents/retrospector/` | Strands agent — fires on every terminal event (PR merge, PR close, issue close); appends lessons to `docs/MEMORY.md` via PR. |
+| `agents/retrospector/` | Strands agent — fires on every terminal event (PR merge, PR close, issue close); appends lessons to `MEMORY.md` via PR. |
 | `lambdas/entry_adapter/` | API Gateway → DDB run row + EventBridge `REQUEST.RECEIVED` + SQS beacon. |
 | `lambdas/state_router/` | SQS beacon consumer; reads DDB state and dispatches the next side-effect (agent invoke, repo op, event emit). Never writes state. |
 | `lambdas/event_projector/` | EventBridge events → DDB state advance (sole writer of `current_state`) + AgentCore Memory `CreateEvent`. |
@@ -40,7 +40,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | `terraform/envs/dev/` | Environment composition (prod TBD). |
 | `terraform/bootstrap/` | One-time S3 + DDB state backend. |
 | `docs/ADRs/` | Architectural Decision Records (written by the Architect agent). |
-| `docs/MEMORY.md` | Canonical human-reviewed project memory. |
+| `MEMORY.md` | Canonical human-reviewed project memory. |
 
 ## Memory model
 

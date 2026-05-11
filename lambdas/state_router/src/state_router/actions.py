@@ -145,6 +145,8 @@ class SeedTasks:
 
     run_id: str
     task_ids: tuple[str, ...]
+    project_slug: str
+    spec_slug: str
 
 
 @dataclass(frozen=True, slots=True)

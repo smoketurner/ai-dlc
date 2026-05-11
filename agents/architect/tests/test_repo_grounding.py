@@ -159,10 +159,9 @@ def test_sync_writes_combined_object_with_both_sources(
     memory_bucket: None,
     tmp_path: Path,
 ) -> None:
-    """Both files present — body has one section per source, in declared order."""
+    """Both files present at the root — body has one section per source."""
     del memory_bucket
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "MEMORY.md").write_text("memory body\n", encoding="utf-8")
+    (tmp_path / "MEMORY.md").write_text("memory body\n", encoding="utf-8")
     (tmp_path / "AGENTS.md").write_text("agents body\n", encoding="utf-8")
 
     repo_grounding.sync_memory_md_from_clone(
@@ -176,15 +175,60 @@ def test_sync_writes_combined_object_with_both_sources(
         .read()
         .decode("utf-8")
     )
-    assert "## docs/MEMORY.md" in body
+    assert "## MEMORY.md" in body
     assert "memory body" in body
     assert "## AGENTS.md" in body
     assert "agents body" in body
-    # docs/MEMORY.md section appears before AGENTS.md (declared source order).
-    assert body.index("## docs/MEMORY.md") < body.index("## AGENTS.md")
+    # MEMORY.md section appears before AGENTS.md (declared group order).
+    assert body.index("## MEMORY.md") < body.index("## AGENTS.md")
     assert "Source repo: owner/repo" in body
     # No body-level timestamp — keeps idempotency stable across runs.
     assert "Synced at" not in body
+
+
+def test_sync_falls_back_to_docs_subdir(
+    memory_bucket: None,
+    tmp_path: Path,
+) -> None:
+    """``docs/MEMORY.md`` is used when no root ``MEMORY.md`` exists."""
+    del memory_bucket
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "MEMORY.md").write_text("legacy docs body\n", encoding="utf-8")
+
+    repo_grounding.sync_memory_md_from_clone(project_slug=PROJECT_SLUG)
+
+    body = (
+        boto3.client("s3", region_name="us-east-1")
+        .get_object(Bucket=MEMORY_BUCKET, Key=PROJECT_KEY)["Body"]
+        .read()
+        .decode("utf-8")
+    )
+    assert "## docs/MEMORY.md" in body
+    assert "legacy docs body" in body
+
+
+def test_sync_prefers_root_over_docs_when_both_exist(
+    memory_bucket: None,
+    tmp_path: Path,
+) -> None:
+    """When both ``MEMORY.md`` and ``docs/MEMORY.md`` exist, root wins (no dup)."""
+    del memory_bucket
+    (tmp_path / "MEMORY.md").write_text("root body\n", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "MEMORY.md").write_text("docs body\n", encoding="utf-8")
+
+    repo_grounding.sync_memory_md_from_clone(project_slug=PROJECT_SLUG)
+
+    body = (
+        boto3.client("s3", region_name="us-east-1")
+        .get_object(Bucket=MEMORY_BUCKET, Key=PROJECT_KEY)["Body"]
+        .read()
+        .decode("utf-8")
+    )
+    assert "## MEMORY.md" in body
+    assert "root body" in body
+    assert "## docs/MEMORY.md" not in body
+    assert "docs body" not in body
 
 
 def test_sync_writes_partial_object_when_only_one_source_exists(
@@ -267,3 +311,75 @@ def test_sync_no_op_when_bucket_env_unset(
 
     # Should not raise even though no bucket is configured.
     repo_grounding.sync_memory_md_from_clone(project_slug=PROJECT_SLUG)
+
+
+# ---------------------------------------------------------------------------
+# sync_stack_profile_from_clone — Task #4
+# ---------------------------------------------------------------------------
+
+
+def test_sync_stack_profile_writes_json_to_s3(
+    memory_bucket: None,
+    tmp_path: Path,
+) -> None:
+    """A clone with manifests produces a stored stack_profile.json."""
+    del memory_bucket
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nrequires-python = ">=3.14"\n[tool.uv]\n',
+        encoding="utf-8",
+    )
+
+    repo_grounding.sync_stack_profile_from_clone(project_slug=PROJECT_SLUG)
+
+    obj = boto3.client("s3", region_name="us-east-1").get_object(
+        Bucket=MEMORY_BUCKET,
+        Key=f"projects/{PROJECT_SLUG}/stack_profile.json",
+    )
+    body = obj["Body"].read().decode("utf-8")
+    assert '"primary_language": "python"' in body
+    assert '"package_manager": "uv"' in body
+
+
+def test_sync_stack_profile_skips_when_no_clone(
+    memory_bucket: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """No clone (no target_repo for this run) — write is skipped silently."""
+    del memory_bucket
+    monkeypatch.setattr(repo_grounding, "REPO_PATH", tmp_path / "missing")
+
+    repo_grounding.sync_stack_profile_from_clone(project_slug=PROJECT_SLUG)
+
+    listed = boto3.client("s3", region_name="us-east-1").list_objects_v2(
+        Bucket=MEMORY_BUCKET,
+        Prefix=f"projects/{PROJECT_SLUG}/",
+    )
+    assert listed.get("KeyCount", 0) == 0
+
+
+def test_sync_stack_profile_is_idempotent(
+    memory_bucket: None,
+    tmp_path: Path,
+) -> None:
+    """Second sync with identical manifests skips the put."""
+    del memory_bucket
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nrequires-python = ">=3.14"\n[tool.uv]\n',
+        encoding="utf-8",
+    )
+    client = boto3.client("s3", region_name="us-east-1")
+
+    repo_grounding.sync_stack_profile_from_clone(project_slug=PROJECT_SLUG)
+    first = client.head_object(
+        Bucket=MEMORY_BUCKET,
+        Key=f"projects/{PROJECT_SLUG}/stack_profile.json",
+    )["ETag"]
+
+    repo_grounding.sync_stack_profile_from_clone(project_slug=PROJECT_SLUG)
+    second = client.head_object(
+        Bucket=MEMORY_BUCKET,
+        Key=f"projects/{PROJECT_SLUG}/stack_profile.json",
+    )["ETag"]
+
+    assert first == second

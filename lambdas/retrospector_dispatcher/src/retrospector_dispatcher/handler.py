@@ -12,7 +12,7 @@ For each event we extract a normalised :class:`RetrospectorPayload`
 and asynchronously invoke the Retrospector AgentCore Runtime. The
 Lambda returns immediately; the agent runs as a daemon thread inside
 its container and emits no follow-up event (lessons land as PRs
-opened against ``docs/MEMORY.md``, not as platform events).
+opened against ``MEMORY.md``, not as platform events).
 
 Events that don't carry the fields the agent needs (project_slug,
 target_repo, etc.) are logged and dropped — the dispatcher is

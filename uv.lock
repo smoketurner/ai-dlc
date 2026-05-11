@@ -581,6 +581,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyyaml" },
     { name = "uuid-utils" },
 ]
 
@@ -593,6 +594,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pydantic-settings", specifier = "==2.14.0" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "uuid-utils", specifier = "==0.14.1" },
 ]
 

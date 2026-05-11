@@ -29,6 +29,27 @@ class RunSummary(_Frozen):
     total_token_out: int = 0
     total_cost_usd: float = 0.0
     total_duration_ms: int = 0
+    target_repo: str | None = None
+    source_issue_url: str | None = None
+    issue_number: int | None = None
+    issue_title: str | None = None
+    pr_url: str | None = None
+
+
+class TaskSummary(_Frozen):
+    """One TASK row, used to render per-task PR links on the run-detail page."""
+
+    task_id: str
+    status: str
+    pr_url: str | None = None
+    last_event_at: str | None = None
+
+
+class EventLink(_Frozen):
+    """A clickable GitHub artifact extracted from an event payload."""
+
+    label: str
+    url: str
 
 
 class RunEvent(_Frozen):
@@ -38,6 +59,7 @@ class RunEvent(_Frozen):
     type: str
     timestamp: str
     payload: dict[str, Any]
+    links: list[EventLink] = []
 
 
 class Critique(_Frozen):

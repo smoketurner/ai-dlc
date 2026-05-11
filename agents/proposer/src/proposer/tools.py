@@ -17,7 +17,7 @@ import boto3
 from strands import tool
 
 from common.agentcore_browser import browse_url
-from common.memory_md import read_memory_md
+from common.memory_md import read_memory_md, read_stack_profile_md
 
 if TYPE_CHECKING:
     from mypy_boto3_lambda.client import LambdaClient
@@ -78,5 +78,6 @@ def list_issue_comments(repo: str, issue_number: int) -> dict[str, Any]:
 
 # Strands wrappers — exposed to the agent.
 read_memory_md_tool = tool(read_memory_md)
+read_stack_profile_md_tool = tool(read_stack_profile_md)
 browse_url_tool = tool(browse_url)
 list_issue_comments_tool = tool(list_issue_comments)

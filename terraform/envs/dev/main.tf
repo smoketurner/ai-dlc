@@ -148,7 +148,7 @@ module "agents" {
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
     retrospector = {
-      description      = "Retrospector agent — fires on every terminal event; appends lessons to docs/MEMORY.md via PR."
+      description      = "Retrospector agent — fires on every terminal event; appends lessons to MEMORY.md via PR."
       targets          = ["artifact_tool", "repo_helper"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }

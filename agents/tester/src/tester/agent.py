@@ -24,6 +24,7 @@ from tester.tools import (
     get_pr_diff_tool,
     read_memory_md_tool,
     read_spec_doc_tool,
+    read_stack_profile_md_tool,
     run_pr_in_sandbox_tool,
 )
 
@@ -53,6 +54,7 @@ def build_agent(run_id: str) -> Agent:
         system_prompt=load_system_prompt("tester", variant),
         tools=[
             read_memory_md_tool,
+            read_stack_profile_md_tool,
             read_spec_doc_tool,
             get_pr_diff_tool,
             run_pr_in_sandbox_tool,
