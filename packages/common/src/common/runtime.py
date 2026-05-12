@@ -477,6 +477,13 @@ class RetrospectorInput(_Frozen):
     agent reads the closed PR / issue + comments, looks at the
     project's ``MEMORY.md``, and decides whether the trace contains
     a reusable lesson worth persisting.
+
+    On a cap-hit failure (``event_type="RUN.FAILED"`` with
+    ``revision_count >= 3``), the dispatcher populates
+    ``validation_artifact_keys`` with the S3 keys of every validator
+    artifact written across the revision rounds so the retrospector
+    can read them and propose prompt / ``MEMORY.md`` updates that
+    would have prevented the failure.
     """
 
     event_type: Literal[
@@ -489,6 +496,11 @@ class RetrospectorInput(_Frozen):
     pr_url: Annotated[str, Field(max_length=512)] = ""
     issue_url: Annotated[str, Field(max_length=512)] = ""
     reason: Annotated[str, Field(max_length=2048)] = ""
+    revision_count: Annotated[int, Field(ge=0, le=16)] = 0
+    validation_artifact_keys: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=512)]],
+        Field(max_length=64),
+    ] = Field(default_factory=list)
     run_id: str
     correlation_id: str
     actor_id: str = "system"

@@ -96,6 +96,8 @@ def run_retrospective(payload: RetrospectorInput, async_task_id: int) -> None:
             pr_url=payload.pr_url or None,
             issue_url=payload.issue_url or None,
             reason=payload.reason or None,
+            revision_count=payload.revision_count,
+            validation_artifact_keys=tuple(payload.validation_artifact_keys),
         )
         if not decision.has_lesson:
             logger.info(

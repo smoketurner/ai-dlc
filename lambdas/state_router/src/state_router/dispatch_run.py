@@ -616,7 +616,14 @@ def build_revision_invoke(run: Run, arn: str, *, next_revision: int) -> InvokeAg
 
 
 def emit_run_failed(run: Run, *, reason: str) -> EmitEvent:
-    """Emit ``RUN.FAILED`` so the projector advances to ``failed``."""
+    """Emit ``RUN.FAILED`` so the projector advances to ``failed``.
+
+    The payload carries ``pr_url``, ``source_issue_url``, and
+    ``revision_count`` so the retrospector dispatcher can route the
+    failure to the agent with full context — on cap-hit, the agent
+    reads every revision's validator artifacts and proposes a
+    prompt / ``MEMORY.md`` update that would have prevented the failure.
+    """
     return EmitEvent(
         envelope=EventEnvelope[RunFailed](
             event_id=new_event_id(),
@@ -630,6 +637,9 @@ def emit_run_failed(run: Run, *, reason: str) -> EmitEvent:
                 error_class="RevisionCapReached",
                 error_message=reason,
                 retryable=False,
+                pr_url=run.pr_url or "",
+                source_issue_url=run.source_issue_url or "",
+                revision_count=run.revision_count,
             ),
         ),
     )

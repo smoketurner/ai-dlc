@@ -385,13 +385,24 @@ class RunCompleted(Payload):
 
 
 class RunFailed(Payload):
-    """The run reached a terminal failure state."""
+    """The run reached a terminal failure state.
+
+    ``revision_count`` is populated when the failure is the validator
+    revision cap (``error_class="RevisionCapReached"``). The retrospector
+    dispatcher uses it to reconstruct the per-round validator artifact
+    S3 keys (``runs/{run_id}/validation/{reviewer,tester,code_critic}-r{N}.md``)
+    so the retrospector can read every revision's findings and propose
+    prompt / ``MEMORY.md`` updates that would have prevented the failure.
+    """
 
     project_slug: str
     failed_state: str
     error_class: str
     error_message: str
     retryable: bool
+    pr_url: Annotated[str, Field(max_length=512)] = ""
+    source_issue_url: Annotated[str, Field(max_length=512)] = ""
+    revision_count: Annotated[int, Field(ge=0, le=16)] = 0
 
 
 type AnyPayload = (

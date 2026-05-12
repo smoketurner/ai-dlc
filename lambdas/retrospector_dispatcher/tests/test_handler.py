@@ -230,6 +230,36 @@ def test_build_retrospector_input_extracts_target_repo_from_pr_url() -> None:
     assert "reviewer" not in payload
 
 
+def test_build_retrospector_input_enumerates_validation_artifacts_on_cap_hit() -> None:
+    """``RUN.FAILED`` with ``revision_count`` enumerates per-round validator artifacts."""
+    fake = SimpleNamespace(
+        type="RUN.FAILED",
+        run_id="01HJABCDEFGHIJKLMNOPQRSTUV",
+        correlation_id="c-1",
+        payload={
+            "project_slug": "demo",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "failed_state": "validation_complete",
+            "error_class": "RevisionCapReached",
+            "error_message": "revision cap (3) hit",
+            "retryable": False,
+            "revision_count": 3,
+        },
+    )
+    payload = build_retrospector_input(cast("Any", fake))
+    assert payload is not None
+    assert payload["revision_count"] == 3
+    keys = payload["validation_artifact_keys"]
+    # Four rounds (initial + 3 revisions) by 3 validator kinds = 12 keys.
+    expected_round_count = 4
+    expected_kind_count = 3
+    assert len(keys) == expected_round_count * expected_kind_count
+    run_id = "01HJABCDEFGHIJKLMNOPQRSTUV"
+    assert f"runs/{run_id}/validation/reviewer-r0.md" in keys
+    assert f"runs/{run_id}/validation/tester-r3.md" in keys
+    assert f"runs/{run_id}/validation/code_critic-r2.md" in keys
+
+
 def test_build_retrospector_input_keeps_only_documented_keys() -> None:
     """Pre-refactor payload fields should not leak through to the agent input."""
     fake = SimpleNamespace(
@@ -254,6 +284,8 @@ def test_build_retrospector_input_keeps_only_documented_keys() -> None:
         "pr_url",
         "issue_url",
         "reason",
+        "revision_count",
+        "validation_artifact_keys",
         "run_id",
         "correlation_id",
         "actor_id",

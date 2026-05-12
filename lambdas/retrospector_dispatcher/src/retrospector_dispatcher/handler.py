@@ -111,6 +111,10 @@ def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None
 
     Returns ``None`` when the envelope is missing fields the agent
     needs (target_repo, project_slug, or both PR + issue identifiers).
+
+    On ``RUN.FAILED`` with ``revision_count > 0`` (cap-hit), enumerates
+    the validator artifact S3 keys across every revision round so the
+    retrospector can read each round's findings.
     """
     payload = envelope.payload or {}
     project_slug = payload.get("project_slug")
@@ -123,6 +127,8 @@ def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None
     target_repo = derive_target_repo(pr_url=pr_url, issue_url=issue_url)
     if not target_repo:
         return None
+    revision_count = int(payload.get("revision_count") or 0)
+    run_id = str(envelope.run_id)
     return {
         "event_type": envelope.type,
         "project_slug": project_slug,
@@ -130,10 +136,27 @@ def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None
         "pr_url": pr_url,
         "issue_url": issue_url,
         "reason": payload.get("reason") or "",
-        "run_id": str(envelope.run_id),
+        "revision_count": revision_count,
+        "validation_artifact_keys": validation_artifact_keys(run_id, revision_count),
+        "run_id": run_id,
         "correlation_id": str(envelope.correlation_id),
         "actor_id": "retrospector_dispatcher",
     }
+
+
+VALIDATOR_KINDS = ("reviewer", "tester", "code_critic")
+
+
+def validation_artifact_keys(run_id: str, revision_count: int) -> list[str]:
+    """Enumerate S3 keys for every validator artifact across revisions.
+
+    The state-router runs the three validators ``revision_count + 1``
+    times (round 0 against the initial PR, then once after each
+    implementer revision). Each validator writes
+    ``runs/{run_id}/validation/{kind}-r{N}.md`` per round.
+    """
+    rounds = range(revision_count + 1)
+    return [f"runs/{run_id}/validation/{kind}-r{n}.md" for n in rounds for kind in VALIDATOR_KINDS]
 
 
 def derive_target_repo(*, pr_url: str, issue_url: str) -> str:

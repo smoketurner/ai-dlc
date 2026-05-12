@@ -73,9 +73,17 @@ Hard rules:
    ``/workspace/repo/AGENTS.md``) and conform to whatever toolchain,
    dependency-pinning, naming, and formatting conventions they spell
    out. Project-specific rules live there.
-3. After every code edit, run the project's lint/format/type/test pass
-   and make sure it's green before you commit. Do not commit if any
-   check fails.
+3. **Verification gate before push.** The plan's ``## Verification``
+   section lists the exact commands the project runs in CI (lint,
+   format-check, type-check, unit tests). Run every one of them
+   locally. If any fail, fix the cause and re-run. Cap in-loop fix
+   attempts at 3 — if you still cannot get verification green after
+   three attempts, push what you have and add a clearly labelled
+   ``### Verification status: failing`` section to your ``finish``
+   summary listing exactly which command failed and the relevant output.
+   This is load-bearing: pushing red shifts the failure to GitHub
+   Actions, which burns a revision attempt against the platform's
+   ``MAX_REVISIONS=3`` cap. Run the commands locally, fix locally.
 4. Make small, focused commits with imperative one-line subjects.
 5. When you finish, call the ``finish`` tool exactly once. Required
    fields:
