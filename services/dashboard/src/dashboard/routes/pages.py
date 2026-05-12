@@ -15,7 +15,6 @@ from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
     TERMINAL_STATES,
     get_run_events,
-    get_run_tasks,
     list_recent_runs,
     run_summary_from_item,
 )
@@ -44,7 +43,6 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
     summary = first_known_run(run_id, events)
     critique = read_critique(run_id)
     failure = run_failure_details(events) if summary.get("current_state") == "failed" else None
-    tasks = get_run_tasks(run_id)
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -54,7 +52,6 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "summary": summary,
             "critique": critique,
             "failure": failure,
-            "tasks": tasks,
             "user": user,
             "terminal_states": TERMINAL_STATES,
         },

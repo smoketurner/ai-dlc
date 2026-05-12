@@ -38,8 +38,8 @@
   {% if summary.total_cost_usd or summary.total_token_in %}
   <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white shadow-sm rounded p-4 text-sm">
     <div>
-      <dt class="text-slate-500 text-xs uppercase tracking-wide">tasks</dt>
-      <dd class="font-mono">{{ summary.tasks_completed }}/{{ summary.tasks_total }}</dd>
+      <dt class="text-slate-500 text-xs uppercase tracking-wide">revisions</dt>
+      <dd class="font-mono">{{ summary.revision_count }}</dd>
     </div>
     <div>
       <dt class="text-slate-500 text-xs uppercase tracking-wide">tokens in</dt>
@@ -89,49 +89,55 @@
     </article>
   </section>
   {% endif %}
-  {% if summary.pr_url or tasks %}
-  {# Server-rendered from the STATE row + TASK rows. Live-arriving task
-     PRs land in the timeline immediately but this section only refreshes
-     on full page reload, which is fine — the PR audit doesn't need to be
-     real-time. #}
+  {% if summary.pr_url %}
+  {# Single impl PR — one PR per issue under the unified pipeline. The
+     reviewer verdict, check state, and revision count surface from the
+     STATE row and refresh on full page reload. #}
   <section class="bg-white shadow-sm rounded p-4 space-y-3">
     <header class="flex items-baseline gap-3">
-      <h2 class="text-base font-semibold">Pull requests</h2>
-      <span class="text-xs text-slate-500">{{ (tasks|length) + (1 if summary.pr_url else 0) }}</span>
+      <h2 class="text-base font-semibold">Implementation PR</h2>
     </header>
-    <ul class="divide-y text-sm">
-      {% if summary.pr_url %}
-      <li class="py-2 flex items-baseline gap-3">
-        <span class="px-2 py-0.5 rounded text-xs bg-indigo-100 text-indigo-800 font-mono">spec</span>
-        <a href="{{ summary.pr_url }}" target="_blank" rel="noopener"
-           class="text-sky-700 hover:underline truncate font-mono">{{ summary.pr_url }}</a>
-        {% if summary.current_state %}
-        <span class="ml-auto px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ summary.current_state }}</span>
-        {% endif %}
-      </li>
+    <div class="flex items-baseline gap-3 text-sm">
+      <a href="{{ summary.pr_url }}" target="_blank" rel="noopener"
+         class="text-sky-700 hover:underline truncate font-mono flex-1 min-w-0">{{ summary.pr_url }}</a>
+      {% if summary.current_state %}
+      <span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ summary.current_state }}</span>
       {% endif %}
-      {% for task in tasks %}
-      <li class="py-2 flex items-baseline gap-3">
-        <span class="px-2 py-0.5 rounded text-xs bg-slate-200 text-slate-700 font-mono">{{ task.task_id[:8] }}</span>
-        <a href="{{ task.pr_url }}" target="_blank" rel="noopener"
-           class="text-sky-700 hover:underline truncate font-mono">{{ task.pr_url }}</a>
-        <span class="ml-auto flex items-baseline gap-2">
-          {% if task.status in ("merged", "approved", "completed") %}
-          <span class="px-2 py-0.5 rounded text-xs bg-emerald-100 text-emerald-800 font-mono">{{ task.status }}</span>
-          {% elif task.status in ("rejected", "blocked", "failed") %}
-          <span class="px-2 py-0.5 rounded text-xs bg-rose-100 text-rose-800 font-mono">{{ task.status }}</span>
-          {% elif task.status in ("iterating", "pending_approval") %}
-          <span class="px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-800 font-mono">{{ task.status }}</span>
-          {% else %}
-          <span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ task.status }}</span>
-          {% endif %}
-          {% if task.last_event_at %}
-          <span class="text-xs text-slate-400 font-mono">{{ task.last_event_at }}</span>
-          {% endif %}
-        </span>
-      </li>
-      {% endfor %}
-    </ul>
+    </div>
+    <div class="flex flex-wrap items-baseline gap-2 text-xs">
+      {% if summary.reviewer_verdict %}
+      {% if summary.reviewer_verdict == "approve" %}
+      <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">reviewer: approve</span>
+      {% elif summary.reviewer_verdict == "request_changes" %}
+      <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">reviewer: request_changes</span>
+      {% else %}
+      <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">reviewer: {{ summary.reviewer_verdict }}</span>
+      {% endif %}
+      {% endif %}
+      {% if summary.check_state %}
+      {% if summary.check_state == "passed" %}
+      <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">checks: passed</span>
+      {% elif summary.check_state == "failed" %}
+      <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">checks: failed</span>
+      {% else %}
+      <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono">checks: {{ summary.check_state }}</span>
+      {% endif %}
+      {% endif %}
+      {% if summary.revision_count %}
+      <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">revisions: {{ summary.revision_count }}</span>
+      {% endif %}
+      {% if summary.review_high_severity_count or summary.review_medium_severity_count or summary.review_low_severity_count %}
+      <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">{{ summary.review_high_severity_count }} high</span>
+      <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono">{{ summary.review_medium_severity_count }} med</span>
+      <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">{{ summary.review_low_severity_count }} low</span>
+      {% endif %}
+    </div>
+    {% if summary.plan_s3_key or summary.critique_s3_key %}
+    <p class="text-xs text-slate-500 font-mono space-x-3">
+      {% if summary.plan_s3_key %}<span title="plan">plan: {{ summary.plan_s3_key }}</span>{% endif %}
+      {% if summary.critique_s3_key %}<span title="critique">critique: {{ summary.critique_s3_key }}</span>{% endif %}
+    </p>
+    {% endif %}
   </section>
   {% endif %}
   <ul class="bg-white shadow-sm rounded divide-y">

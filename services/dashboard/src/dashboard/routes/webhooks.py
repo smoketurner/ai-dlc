@@ -6,43 +6,31 @@ signature against the webhook secret stored in Secrets Manager, then
 translate the GitHub event into a platform event on the EventBridge
 bus. The state-router and event-projector handle the rest.
 
-PR-derived events resolve the run/task by querying the runs table's
+PR-derived events resolve the run by querying the runs table's
 ``gsi_pr`` index — the state-router writes ``pr_url`` onto the STATE
-row when it opens the spec PR, and the projector writes ``pr_url``
-onto the TASK row when it applies ``TASK.READY``. No PR-body marker
-parsing.
+row once the impl PR is opened. Issue-derived events look up the run
+via the ``gsi1`` index (``ISSUE#{url}``).
 
-Issue-derived events look up the run via the ``gsi1`` index
-(``ISSUE#{url}``) when needed — the projector populated it on the
-matching ``REQUEST.RECEIVED``.
+Trigger convention under the single-PR-per-issue pipeline:
 
-Trigger convention:
+* ``@aidlc-bot <natural language>`` on the impl PR (issue comment,
+  review, or inline review comment) → emit ``IMPL.ITERATION_REQUESTED``.
+* ``@aidlc-bot`` on a non-PR issue → emit ``REQUEST.RECEIVED``.
+* ``pull_request_review`` ``changes_requested`` with bot mention →
+  ``IMPL.ITERATION_REQUESTED`` (source=``review_changes_requested``).
+* ``pull_request.closed`` with ``merged=true`` → ``RUN.COMPLETED``.
+* ``pull_request.closed`` with ``merged=false`` → ``RUN.CANCEL_REQUESTED``
+  (``source="pr_closed"``).
+* ``issues.opened/labeled/assigned`` (triage triggers) →
+  ``REQUEST.RECEIVED``.
+* ``issues.unassigned`` (bot unassigned) / ``issues.closed`` →
+  ``RUN.CANCEL_REQUESTED``.
+* ``workflow_run.completed`` / ``check_run.completed`` /
+  ``check_suite.completed`` → aggregate via
+  ``repo_helper.get_check_state`` and emit ``CHECKS.PASSED`` or
+  ``CHECKS.FAILED``. ``pending`` results in no event.
 
-* ``@aidlc-bot <natural language>`` — the only comment-driven trigger.
-  On a PR / PR-review comment the body becomes feedback for the
-  implementer (iteration). On a non-PR issue comment it triggers a
-  fresh triage run.
-
-Everything else is GitHub-native: merge a PR to approve, close a PR
-to reject, close an issue to cancel its in-flight run, unassign the
-bot from an issue to cancel.
-
-Every accepted trigger posts a 👀 reaction on the source object — the
-issue itself for assignment-driven triggers, the comment id for any
-comment-driven trigger.
-
-Event mapping:
-
-* ``pull_request.closed`` (merged)        → ``SPEC.APPROVED`` / ``TASK.APPROVED``
-* ``pull_request.closed`` (unmerged)      → ``SPEC.REJECTED`` / ``TASK.REJECTED``
-* ``pull_request_review`` approved        → ``TASK.APPROVED``
-* ``pull_request_review`` changes_requested → ``TASK.ITERATION_REQUESTED``
-* ``pull_request_review_comment`` w/ ``@aidlc-bot``       → ``TASK.ITERATION_REQUESTED``
-* ``issue_comment`` on a PR w/ ``@aidlc-bot``             → ``TASK.ITERATION_REQUESTED``
-* ``workflow_run.completed`` failure                      → ``TASK.ITERATION_REQUESTED``
-* ``issues`` opened/labeled/assigned (triage)             → ``REQUEST.RECEIVED``
-* ``issues`` unassigned (bot) / closed                    → ``RUN.CANCEL_REQUESTED``
-* ``issue_comment`` w/ ``@aidlc-bot`` / awaiting-response → ``REQUEST.RECEIVED``
+Every accepted trigger posts a 👀 reaction on the source object.
 """
 
 from __future__ import annotations
@@ -52,7 +40,7 @@ import hmac
 import json
 import os
 from functools import cache
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import structlog
@@ -66,15 +54,12 @@ from fastapi import APIRouter, HTTPException, Request, status
 from common import github_app as common_github
 from common.event_emit import publish
 from common.events import (
+    ChecksFailed,
+    ChecksPassed,
     EventEnvelope,
+    ImplIterationRequested,
     RunCancelRequested,
     RunCompleted,
-    SpecApproved,
-    SpecIterationRequested,
-    SpecRejected,
-    TaskApproved,
-    TaskIterationRequested,
-    TaskRejected,
 )
 from common.github_mentions import has_bot_mention
 from common.ids import (
@@ -83,15 +68,8 @@ from common.ids import (
     new_event_id,
 )
 from common.runs import IssueContext, start_run
-from common.runtime import (
-    CiFailureFeedback,
-    FeedbackItem,
-    IssueCommentMentionFeedback,
-    ReviewChangesRequestedFeedback,
-    ReviewCommentMentionFeedback,
-)
 from common.slug import slug_from_repo
-from dashboard.deps import ddb, secrets, settings
+from dashboard.deps import ddb, lambda_client, secrets, settings
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -149,7 +127,7 @@ async def receive_github_webhook(request: Request) -> dict[str, Any]:
     event_type = request.headers.get("x-github-event", "")
     delivery_id = request.headers.get("x-github-delivery", "")
     payload: dict[str, Any] = json.loads(body) if body else {}
-    handler = HANDLERS.get(event_type)
+    handler = EVENT_HANDLERS.get(event_type)
     if handler is None:
         return {"ok": True, "ignored": True, "event": event_type}
     return handler(payload, delivery_id)
@@ -160,38 +138,21 @@ async def receive_github_webhook(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def lookup_pr(pr_url: str) -> list[dict[str, Any]]:
-    """Resolve a PR URL → every row sharing it via the ``gsi_pr`` index.
+def lookup_pr(pr_url: str) -> dict[str, Any] | None:
+    """Resolve a PR URL → the STATE row that owns it (via the ``gsi_pr`` index).
 
-    Under the one-PR-per-spec design, the impl PR URL is written to the
-    STATE row and every TASK row of a run, so one URL maps to N+1 rows.
-    Callers inspect each row's ``sk`` to decide whether it's the run's
-    STATE row or a TASK row.
-
-    Spec PRs (which auto-delete on merge under the new repo settings)
-    still map to a single STATE row for their pre-merge lifetime.
+    Under the one-PR-per-issue design exactly one STATE row carries the
+    impl PR URL, so this returns at most one row.
     """
     resp = ddb().query(
         TableName=settings().runs_table,
         IndexName="gsi_pr",
         KeyConditionExpression="pr_url = :p",
         ExpressionAttributeValues={":p": {"S": pr_url}},
+        Limit=1,
     )
-    return resp.get("Items") or []
-
-
-def partition_rows(
-    rows: list[dict[str, Any]],
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """Split ``lookup_pr`` results into ``(state_row, task_rows)``."""
-    state_row: dict[str, Any] | None = None
-    task_rows: list[dict[str, Any]] = []
-    for row in rows:
-        if attr(row, "sk") == "STATE":
-            state_row = row
-        elif attr(row, "sk").startswith("TASK#"):
-            task_rows.append(row)
-    return state_row, task_rows
+    items = resp.get("Items") or []
+    return items[0] if items else None
 
 
 def lookup_run_by_issue(issue_url: str) -> dict[str, Any] | None:
@@ -230,34 +191,6 @@ def run_id_of(item: dict[str, Any]) -> str:
     return attr(item, "pk").removeprefix("RUN#")
 
 
-def task_id_of(item: dict[str, Any]) -> str:
-    """Extract the task_id from a TASK row's ``sk = TASK#{id}``."""
-    return attr(item, "sk").removeprefix("TASK#")
-
-
-ITERATION_ACTIONABLE_STATES = frozenset(
-    {"pr_open", "iterating", "pending_approval", "blocked"},
-)
-"""Task states where a fresh iteration request makes sense."""
-
-TASK_TERMINAL_STATES = frozenset({"merged", "closed", "failed"})
-
-
-def actionable_task_rows(task_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Filter ``task_rows`` to those an iteration / approval / rejection can target.
-
-    Excludes terminal rows (``merged`` / ``closed`` / ``failed``) — those
-    don't accept further transitions, so emitting events for them just
-    wastes projector work.
-    """
-    return [row for row in task_rows if attr(row, "status") in ITERATION_ACTIONABLE_STATES]
-
-
-def non_terminal_task_rows(task_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Filter ``task_rows`` to non-terminal rows (for merge/close fan-out)."""
-    return [row for row in task_rows if attr(row, "status") not in TASK_TERMINAL_STATES]
-
-
 # ---------------------------------------------------------------------------
 # Event emission
 # ---------------------------------------------------------------------------
@@ -288,243 +221,105 @@ def envelope_for(
 
 
 # ---------------------------------------------------------------------------
-# pull_request → SPEC.APPROVED/REJECTED + TASK.APPROVED/REJECTED
+# pull_request → RUN.COMPLETED / RUN.CANCEL_REQUESTED
 # ---------------------------------------------------------------------------
 
 
 def handle_pull_request(payload: dict[str, Any], _delivery_id: str) -> dict[str, Any]:
-    """``pull_request.closed`` → approve/reject the corresponding gate."""
+    """``pull_request.closed`` on the impl PR drives run completion or cancel.
+
+    Merge → ``RUN.COMPLETED`` (project_slug + pr_url). Close without
+    merge → ``RUN.CANCEL_REQUESTED`` (``source="pr_closed"``). Spec PRs
+    no longer exist under the single-PR-per-issue contract.
+    """
     if payload.get("action") != "closed":
         return {"ok": True, "ignored": True}
     pr = payload.get("pull_request") or {}
     pr_url = pr.get("html_url") or ""
     if not pr_url:
         return {"ok": True, "ignored": "no pr url"}
-    rows = lookup_pr(pr_url)
-    if not rows:
+    row = lookup_pr(pr_url)
+    if row is None:
         return {"ok": True, "ignored": "pr not tracked"}
     merged = bool(pr.get("merged"))
-    reviewer = (pr.get("merged_by") or pr.get("user") or {}).get("login", "unknown")
-    if not merged:
-        reviewer = (payload.get("sender") or {}).get("login", "unknown")
-    return emit_pr_close(rows, pr_url=pr_url, merged=merged, reviewer=reviewer)
-
-
-def emit_pr_close(
-    rows: list[dict[str, Any]],
-    *,
-    pr_url: str,
-    merged: bool,
-    reviewer: str,
-) -> dict[str, Any]:
-    """Branch on spec-only rows (STATE alone) vs impl-PR rows (STATE + TASKs).
-
-    Spec PRs map to a single STATE row → SPEC.APPROVED / SPEC.REJECTED.
-    Impl PRs map to STATE + every TASK row → on merge, fan out
-    TASK.APPROVED across all non-terminal TASK rows (the run-level
-    cursor advances naturally once every task reaches ``merged``);
-    on close-without-merge, emit a single RUN.CANCEL_REQUESTED.
-    """
-    state_row, task_rows = partition_rows(rows)
-    if task_rows:
-        return emit_impl_pr_close(
-            state_row=state_row,
-            task_rows=task_rows,
-            pr_url=pr_url,
-            merged=merged,
-            reviewer=reviewer,
-        )
-    if state_row is None:
-        return {"ok": True, "ignored": "no matching rows"}
-    return emit_spec_pr_close(state_row, merged=merged, reviewer=reviewer)
-
-
-def emit_spec_pr_close(
-    state_row: dict[str, Any],
-    *,
-    merged: bool,
-    reviewer: str,
-) -> dict[str, Any]:
-    """Emit SPEC.APPROVED / SPEC.REJECTED for a closed spec PR."""
-    run_id = run_id_of(state_row)
-    correlation_id = attr(state_row, "correlation_id")
-    project_slug = attr(state_row, "project_slug")
-    spec_slug = attr(state_row, "spec_slug")
-    spec_s3_prefix = attr(state_row, "spec_s3_prefix") or f"specs/{spec_slug}/"
     if merged:
-        emit(
-            envelope_for(
-                event_type="SPEC.APPROVED",
-                run_id=run_id,
-                correlation_id=correlation_id,
-                actor="webhook",
-                payload=SpecApproved(
-                    project_slug=project_slug,
-                    spec_slug=spec_slug,
-                    spec_s3_prefix=spec_s3_prefix,
-                    reviewer=reviewer,
-                ),
-            ),
-        )
-        return {"ok": True, "decision": "spec_approved"}
-    emit(
-        envelope_for(
-            event_type="SPEC.REJECTED",
-            run_id=run_id,
-            correlation_id=correlation_id,
-            actor="webhook",
-            payload=SpecRejected(
-                project_slug=project_slug,
-                spec_slug=spec_slug,
-                spec_s3_prefix=spec_s3_prefix,
-                reviewer=reviewer,
-                reason="PR closed without merge",
-            ),
-        ),
-    )
-    return {"ok": True, "decision": "spec_rejected"}
-
-
-def emit_impl_pr_close(
-    *,
-    state_row: dict[str, Any] | None,
-    task_rows: list[dict[str, Any]],
-    pr_url: str,
-    merged: bool,
-    reviewer: str,
-) -> dict[str, Any]:
-    """Fan out TASK.APPROVED across tasks on merge; emit RUN.CANCEL_REQUESTED on close."""
-    if not merged:
-        if state_row is None:
-            return {"ok": True, "ignored": "no state row for cancel"}
-        return emit_run_cancel(
-            state_row,
-            requestor=reviewer,
-            source="pr_closed",
-            reason=f"impl PR {pr_url} closed without merge by {reviewer}",
-        )
-    targets = non_terminal_task_rows(task_rows)
-    for row in targets:
-        emit_task_close_event(row, pr_url=pr_url, merged=True, reviewer=reviewer)
-    if state_row is not None:
-        emit_run_completed_for_impl_merge(state_row, task_count=len(targets))
-    return {
-        "ok": True,
-        "decision": "tasks_approved",
-        "fanned_out": [task_id_of(row) for row in targets],
-    }
-
-
-def emit_run_completed_for_impl_merge(
-    state_row: dict[str, Any],
-    *,
-    task_count: int,
-) -> None:
-    """Emit ``RUN.COMPLETED`` so the projector advances ``awaiting_human_merge → done``.
-
-    Fired alongside the per-task ``TASK.APPROVED`` fan-out when the
-    human merges the impl PR. Without this, the run sits in
-    ``awaiting_human_merge`` forever — tasks reach ``merged`` but the
-    run-level cursor has no advancer.
-    """
-    emit(
-        envelope_for(
-            event_type="RUN.COMPLETED",
-            run_id=run_id_of(state_row),
-            correlation_id=attr(state_row, "correlation_id"),
-            actor="webhook",
-            payload=RunCompleted(
-                project_slug=attr(state_row, "project_slug"),
-                spec_slug=attr(state_row, "spec_slug"),
-                tasks_completed=task_count,
-            ),
-        ),
+        actor = (pr.get("merged_by") or pr.get("user") or {}).get("login", "unknown")
+        return emit_run_completed(row, pr_url=pr_url, actor=actor)
+    actor = (payload.get("sender") or {}).get("login", "unknown")
+    return emit_run_cancel(
+        row,
+        requestor=actor,
+        source="pr_closed",
+        reason=f"impl PR {pr_url} closed without merge by {actor}",
     )
 
 
-def emit_task_close_event(
+def emit_run_completed(
     row: dict[str, Any],
     *,
     pr_url: str,
-    merged: bool,
-    reviewer: str,
-) -> None:
-    """Emit one TASK.APPROVED or TASK.REJECTED for one TASK row."""
-    common = {
-        "project_slug": attr(row, "project_slug"),
-        "spec_slug": attr(row, "spec_slug"),
-        "task_id": task_id_of(row),
-        "pr_url": pr_url,
-        "reviewer": reviewer,
-    }
-    event_type = "TASK.APPROVED" if merged else "TASK.REJECTED"
-    payload = (
-        TaskApproved(**common)
-        if merged
-        else TaskRejected(**common, reason="PR closed without merge")
-    )
+    actor: str,
+) -> dict[str, Any]:
+    """Emit ``RUN.COMPLETED`` so the projector advances ``awaiting_human_merge → done``."""
     emit(
         envelope_for(
-            event_type=event_type,
+            event_type="RUN.COMPLETED",
             run_id=run_id_of(row),
             correlation_id=attr(row, "correlation_id"),
             actor="webhook",
-            payload=payload,
+            payload=RunCompleted(
+                project_slug=attr(row, "project_slug"),
+                pr_url=pr_url,
+            ),
         ),
     )
+    return {"ok": True, "decision": "run_completed", "actor": actor}
 
 
 # ---------------------------------------------------------------------------
-# pull_request_review → TASK.APPROVED / TASK.ITERATION_REQUESTED
+# pull_request_review → IMPL.ITERATION_REQUESTED on bot mention
 # ---------------------------------------------------------------------------
 
 
 def handle_pull_request_review(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
-    """``pull_request_review.submitted`` → approve or request iteration.
+    """``pull_request_review.submitted`` on the impl PR → revision request.
 
-    Fans out across every actionable TASK row sharing the impl PR URL.
-    Reviews on a spec-only PR (state_row alone) are ignored — the spec
-    PR is approved by merging, not by a review verdict.
+    Emits ``IMPL.ITERATION_REQUESTED`` only when the review body @-mentions
+    the bot. ``state == "changes_requested"`` carries
+    ``source="review_changes_requested"``; everything else with a mention
+    carries ``source="issue_comment_mention"``. No mention → no event.
     """
     if payload.get("action") != "submitted":
         return {"ok": True, "ignored": True}
     review = payload.get("review") or {}
-    state = review.get("state")
     pr_url = (payload.get("pull_request") or {}).get("html_url") or ""
     if not pr_url:
         return {"ok": True, "ignored": "no pr url"}
-    rows = lookup_pr(pr_url)
-    _state_row, task_rows = partition_rows(rows)
-    if not task_rows:
+    row = lookup_pr(pr_url)
+    if row is None:
         return {"ok": True, "ignored": "not an impl PR"}
-    reviewer = (review.get("user") or {}).get("login", "unknown")
-    if state == "approved":
-        for row in non_terminal_task_rows(task_rows):
-            emit_task_close_event(row, pr_url=pr_url, merged=True, reviewer=reviewer)
-        return {
-            "ok": True,
-            "decision": "tasks_approved",
-            "fanned_out": [task_id_of(row) for row in non_terminal_task_rows(task_rows)],
-        }
-    if state == "changes_requested":
-        feedback = ReviewChangesRequestedFeedback(
-            reviewer=reviewer,
-            body=review.get("body") or "",
-            review_id=int(review.get("id", 0)),
-        )
-        targets = actionable_task_rows(task_rows)
-        for row in targets:
-            emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
-        return {
-            "ok": True,
-            "decision": "iteration_requested",
-            "fanned_out": [task_id_of(row) for row in targets],
-        }
-    return {"ok": True, "ignored": f"review state {state}"}
+    body = review.get("body") or ""
+    if not has_bot_mention(body, settings().github_bot_login):
+        return {"ok": True, "ignored": "no mention"}
+    state = review.get("state")
+    review_source: Literal[
+        "issue_comment_mention",
+        "review_comment_mention",
+        "review_changes_requested",
+    ] = "review_changes_requested" if state == "changes_requested" else "issue_comment_mention"
+    commenter = (review.get("user") or {}).get("login", "unknown")
+    return emit_impl_iteration(
+        row,
+        pr_url=pr_url,
+        delivery_id=delivery_id,
+        source=review_source,
+        commenter=commenter,
+        feedback_body=body,
+    )
 
 
 # ---------------------------------------------------------------------------
-# pull_request_review_comment → TASK.ITERATION_REQUESTED (on bot mention)
+# pull_request_review_comment → IMPL.ITERATION_REQUESTED (on bot mention)
 # ---------------------------------------------------------------------------
 
 
@@ -532,10 +327,7 @@ def handle_pull_request_review_comment(
     payload: dict[str, Any],
     delivery_id: str,
 ) -> dict[str, Any]:
-    """``pull_request_review_comment.created`` w/ bot mention → iteration.
-
-    Fans out across every actionable task on the impl PR.
-    """
+    """``pull_request_review_comment.created`` w/ bot mention → revision."""
     if payload.get("action") != "created":
         return {"ok": True, "ignored": True}
     comment = payload.get("comment") or {}
@@ -543,28 +335,19 @@ def handle_pull_request_review_comment(
     if not has_bot_mention(body, settings().github_bot_login):
         return {"ok": True, "ignored": "no mention"}
     pr_url = (payload.get("pull_request") or {}).get("html_url") or ""
-    rows = lookup_pr(pr_url)
-    _state_row, task_rows = partition_rows(rows)
-    if not task_rows:
+    row = lookup_pr(pr_url)
+    if row is None:
         return {"ok": True, "ignored": "not an impl PR"}
     react_to_pr_review_comment(payload.get("repository") or {}, comment)
-    feedback = ReviewCommentMentionFeedback(
-        path=comment.get("path", ""),
-        line=comment.get("line"),
-        commit_id=comment.get("commit_id", ""),
-        comment_id=int(comment.get("id", 0)),
-        in_reply_to_id=comment.get("in_reply_to_id"),
-        body=body,
-        commenter=(comment.get("user") or {}).get("login", "unknown"),
+    commenter = (comment.get("user") or {}).get("login", "unknown")
+    return emit_impl_iteration(
+        row,
+        pr_url=pr_url,
+        delivery_id=delivery_id,
+        source="review_comment_mention",
+        commenter=commenter,
+        feedback_body=body,
     )
-    targets = actionable_task_rows(task_rows)
-    for row in targets:
-        emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
-    return {
-        "ok": True,
-        "decision": "iteration_requested",
-        "fanned_out": [task_id_of(row) for row in targets],
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -590,109 +373,28 @@ def handle_pr_comment(
     *,
     delivery_id: str,
 ) -> dict[str, Any]:
-    """Route PR conversation comments by ``@aidlc-bot`` mention."""
+    """PR conversation comments — on bot mention, emit IMPL.ITERATION_REQUESTED."""
     issue = payload.get("issue") or {}
     issue_pr = issue.get("pull_request") or {}
     pr_url = issue_pr.get("html_url") or issue.get("html_url") or ""
     if not pr_url:
         return {"ok": True, "ignored": "no pr url"}
-    rows = lookup_pr(pr_url)
-    if not rows:
+    row = lookup_pr(pr_url)
+    if row is None:
         return {"ok": True, "ignored": "pr not tracked"}
-    comment = payload.get("comment") or {}
-    commenter = (comment.get("user") or {}).get("login", "unknown")
-    return classify_pr_comment(
-        rows=rows,
-        body=body,
-        comment=comment,
-        repository=payload.get("repository") or {},
-        pr_url=pr_url,
-        commenter=commenter,
-        delivery_id=delivery_id,
-    )
-
-
-def classify_pr_comment(
-    *,
-    rows: list[dict[str, Any]],
-    body: str,
-    comment: dict[str, Any],
-    repository: dict[str, Any],
-    pr_url: str,
-    commenter: str,
-    delivery_id: str,
-) -> dict[str, Any]:
-    """Pick the right event for a PR conversation comment + emit it.
-
-    On a spec-only PR (no TASK rows), an ``@aidlc-bot`` mention is a
-    spec iteration request. On an impl PR (STATE + TASK rows), fan out
-    a TASK.ITERATION_REQUESTED to every actionable task; the spec is
-    already merged so SPEC.ITERATION_REQUESTED would be a no-op
-    (terminal state) and we skip it.
-    """
     if not has_bot_mention(body, settings().github_bot_login):
         return {"ok": True, "ignored": "no match"}
-    state_row, task_rows = partition_rows(rows)
-    react_to_issue_comment(repository, comment)
-    if task_rows:
-        feedback = IssueCommentMentionFeedback(
-            comment_id=int(comment.get("id", 0)),
-            body=body,
-            commenter=commenter,
-        )
-        targets = actionable_task_rows(task_rows)
-        for row in targets:
-            emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
-        return {
-            "ok": True,
-            "decision": "iteration_requested",
-            "fanned_out": [task_id_of(row) for row in targets],
-        }
-    if state_row is not None:
-        return emit_spec_iteration(
-            state_row,
-            pr_url=pr_url,
-            body=body,
-            commenter=commenter,
-            comment_id=int(comment.get("id", 0)),
-            delivery_id=delivery_id,
-        )
-    return {"ok": True, "ignored": "unrecognised row"}
-
-
-def emit_spec_iteration(
-    row: dict[str, Any],
-    *,
-    pr_url: str,
-    body: str,
-    commenter: str,
-    comment_id: int,
-    delivery_id: str,
-) -> dict[str, Any]:
-    """Publish ``SPEC.ITERATION_REQUESTED`` for an @-mention on the spec PR."""
-    if not delivery_id:
-        return {"ok": True, "ignored": "missing delivery_id"}
-    run_id = run_id_of(row)
-    correlation_id = attr(row, "correlation_id")
-    payload = SpecIterationRequested(
-        project_slug=attr(row, "project_slug"),
-        spec_slug=attr(row, "spec_slug"),
+    comment = payload.get("comment") or {}
+    commenter = (comment.get("user") or {}).get("login", "unknown")
+    react_to_issue_comment(payload.get("repository") or {}, comment)
+    return emit_impl_iteration(
+        row,
         pr_url=pr_url,
         delivery_id=delivery_id,
+        source="issue_comment_mention",
         commenter=commenter,
-        comment_id=comment_id,
         feedback_body=body,
     )
-    emit(
-        envelope_for(
-            event_type="SPEC.ITERATION_REQUESTED",
-            run_id=run_id,
-            correlation_id=correlation_id,
-            actor="webhook",
-            payload=payload,
-        ),
-    )
-    return {"ok": True, "iteration": "spec", "pr_url": pr_url}
 
 
 def handle_issue_only_comment(
@@ -737,44 +439,153 @@ def is_human_comment(comment: dict[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# workflow_run.completed → TASK.ITERATION_REQUESTED
+# Checks aggregation — workflow_run / check_run / check_suite
 # ---------------------------------------------------------------------------
 
 
+def repo_pr_from_payload(
+    payload: dict[str, Any],
+) -> tuple[str, int, str] | None:
+    """Pull (repo_full_name, pr_number, pr_url) from a Checks-family payload.
+
+    ``check_run`` and ``check_suite`` payloads carry ``check_run.pull_requests``
+    or ``check_suite.pull_requests``; ``workflow_run`` payloads carry
+    ``workflow_run.pull_requests``. Each entry has an integer ``number``
+    plus a ``html_url`` we can use directly if present. Returns ``None``
+    if no PR can be resolved (e.g., checks on a branch not associated with
+    a PR — those don't belong to a run).
+    """
+    holder = (
+        payload.get("check_run")
+        or payload.get("check_suite")
+        or payload.get("workflow_run")
+        or {}
+    )
+    pull_requests = holder.get("pull_requests") or []
+    if not pull_requests:
+        return None
+    pr = pull_requests[0]
+    pr_number = pr.get("number")
+    if not isinstance(pr_number, int) or pr_number < 1:
+        return None
+    repo = (payload.get("repository") or {}).get("full_name") or ""
+    if not repo:
+        return None
+    repo_html = (payload.get("repository") or {}).get("html_url", "")
+    pr_url = pr.get("html_url") or f"{repo_html}/pull/{pr_number}"
+    return repo, pr_number, pr_url
+
+
+def get_check_state(repo: str, pr_number: int) -> str:
+    """Invoke ``repo_helper.get_check_state`` synchronously.
+
+    Returns one of ``"passed"`` / ``"failed"`` / ``"pending"`` /
+    ``"unknown"``. ``"unknown"`` indicates the helper is not wired or
+    returned a non-ok response — the caller treats this as no-event.
+    """
+    fn = settings().repo_helper_function_name
+    if not fn:
+        logger.warning("repo_helper not wired; cannot aggregate checks")
+        return "unknown"
+    response = lambda_client().invoke(
+        FunctionName=fn,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(
+            {"input": {"op": "get_check_state", "repo": repo, "pr_number": pr_number}},
+        ).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
+    if not body.get("ok"):
+        logger.warning("repo_helper get_check_state failed", body=body)
+        return "unknown"
+    return str(body.get("state") or body.get("data", {}).get("state") or "unknown")
+
+
+def aggregate_checks_event(
+    payload: dict[str, Any],
+    delivery_id: str,
+    *,
+    head_sha: str,
+    failed_workflow_count: int,
+    failure_summary: str,
+) -> dict[str, Any]:
+    """Aggregate Checks for the PR + emit CHECKS.PASSED / CHECKS.FAILED."""
+    ident = repo_pr_from_payload(payload)
+    if ident is None:
+        return {"ok": True, "ignored": "no pr"}
+    repo, pr_number, pr_url = ident
+    row = lookup_pr(pr_url)
+    if row is None:
+        return {"ok": True, "ignored": "pr not tracked"}
+    state = get_check_state(repo, pr_number)
+    if state == "passed":
+        return emit_checks_passed(row, pr_url=pr_url, head_sha=head_sha, delivery_id=delivery_id)
+    if state == "failed":
+        return emit_checks_failed(
+            row,
+            pr_url=pr_url,
+            head_sha=head_sha,
+            delivery_id=delivery_id,
+            failed_workflow_count=failed_workflow_count,
+            summary=failure_summary,
+        )
+    return {"ok": True, "ignored": f"check state {state}"}
+
+
 def handle_workflow_run(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
-    """CI workflow finished with a non-success conclusion."""
+    """``workflow_run.completed`` → re-aggregate Checks and emit CHECKS.* if decided."""
     if payload.get("action") != "completed":
         return {"ok": True, "ignored": True}
     workflow_run = payload.get("workflow_run") or {}
-    conclusion = workflow_run.get("conclusion")
-    failing = {"failure", "timed_out", "cancelled", "action_required", "stale"}
-    if conclusion not in failing:
-        return {"ok": True, "ignored": f"conclusion={conclusion}"}
-    pull_requests = workflow_run.get("pull_requests") or []
-    if not pull_requests:
-        return {"ok": True, "ignored": "no pr"}
-    pr_url = pull_requests[0].get("html_url") or ""
-    if not pr_url:
-        repo_html = (payload.get("repository") or {}).get("html_url", "")
-        pr_url = f"{repo_html}/pull/{pull_requests[0].get('number', 0)}"
-    rows = lookup_pr(pr_url)
-    _state_row, task_rows = partition_rows(rows)
-    if not task_rows:
-        return {"ok": True, "ignored": "not an impl PR"}
-    feedback = CiFailureFeedback(
-        workflow_name=workflow_run.get("name", "(unknown)"),
-        conclusion=conclusion,
-        head_sha=workflow_run.get("head_sha", ""),
-        html_url=workflow_run.get("html_url", ""),
+    conclusion = workflow_run.get("conclusion") or ""
+    head_sha = workflow_run.get("head_sha", "")
+    name = workflow_run.get("name", "(unknown)")
+    failed = conclusion not in {"success", "neutral", "skipped"}
+    summary = f"workflow {name} concluded {conclusion}" if failed else ""
+    return aggregate_checks_event(
+        payload,
+        delivery_id,
+        head_sha=head_sha,
+        failed_workflow_count=1 if failed else 0,
+        failure_summary=summary,
     )
-    targets = actionable_task_rows(task_rows)
-    for row in targets:
-        emit_iteration(row, pr_url=pr_url, feedback=feedback, delivery_id=delivery_id)
-    return {
-        "ok": True,
-        "decision": "iteration_requested",
-        "fanned_out": [task_id_of(row) for row in targets],
-    }
+
+
+def handle_check_run(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
+    """``check_run.completed`` → re-aggregate Checks; emit CHECKS.* if decided."""
+    if payload.get("action") != "completed":
+        return {"ok": True, "ignored": True}
+    check_run = payload.get("check_run") or {}
+    conclusion = check_run.get("conclusion") or ""
+    head_sha = check_run.get("head_sha", "")
+    name = check_run.get("name", "(unknown)")
+    failed = conclusion not in {"success", "neutral", "skipped"}
+    summary = f"check_run {name} concluded {conclusion}" if failed else ""
+    return aggregate_checks_event(
+        payload,
+        delivery_id,
+        head_sha=head_sha,
+        failed_workflow_count=1 if failed else 0,
+        failure_summary=summary,
+    )
+
+
+def handle_check_suite(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
+    """``check_suite.completed`` → re-aggregate Checks; emit CHECKS.* if decided."""
+    if payload.get("action") != "completed":
+        return {"ok": True, "ignored": True}
+    check_suite = payload.get("check_suite") or {}
+    conclusion = check_suite.get("conclusion") or ""
+    head_sha = check_suite.get("head_sha", "")
+    failed = conclusion not in {"success", "neutral", "skipped"}
+    summary = f"check_suite concluded {conclusion}" if failed else ""
+    return aggregate_checks_event(
+        payload,
+        delivery_id,
+        head_sha=head_sha,
+        failed_workflow_count=1 if failed else 0,
+        failure_summary=summary,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -818,12 +629,7 @@ def handle_issue_unassigned(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_issue_closed(payload: dict[str, Any]) -> dict[str, Any]:
-    """Issue closed → cancel the in-flight run if there is one.
-
-    Replaces the previous ``/aidlc cancel`` comment trigger. Closing
-    the issue is the GitHub-native "I'm done with this" signal; the
-    in-flight run terminates so it doesn't keep firing agents.
-    """
+    """Issue closed → cancel the in-flight run if there is one."""
     issue_url = (payload.get("issue") or {}).get("html_url", "")
     state = lookup_run_by_issue(issue_url) if issue_url else None
     if state is None:
@@ -858,36 +664,102 @@ def issues_action_is_trigger(action: str | None, payload: dict[str, Any]) -> boo
 # ---------------------------------------------------------------------------
 
 
-def emit_iteration(
+def emit_impl_iteration(
     row: dict[str, Any],
     *,
     pr_url: str,
-    feedback: FeedbackItem,
     delivery_id: str,
+    source: Literal[
+        "issue_comment_mention",
+        "review_comment_mention",
+        "review_changes_requested",
+    ],
+    commenter: str,
+    feedback_body: str,
 ) -> dict[str, Any]:
-    """Publish one TASK.ITERATION_REQUESTED for a task row + feedback."""
+    """Publish one IMPL.ITERATION_REQUESTED for a run STATE row + feedback."""
     if not delivery_id:
         return {"ok": True, "ignored": "missing delivery_id"}
+    if not feedback_body:
+        return {"ok": True, "ignored": "empty body"}
     run_id = run_id_of(row)
     correlation_id = attr(row, "correlation_id")
-    payload = TaskIterationRequested(
+    payload = ImplIterationRequested(
         project_slug=attr(row, "project_slug"),
-        spec_slug=attr(row, "spec_slug"),
-        task_id=task_id_of(row),
         pr_url=pr_url,
         delivery_id=delivery_id,
-        feedback=feedback,
+        source=source,
+        commenter=commenter,
+        feedback_body=feedback_body,
     )
     emit(
         envelope_for(
-            event_type="TASK.ITERATION_REQUESTED",
+            event_type="IMPL.ITERATION_REQUESTED",
             run_id=run_id,
             correlation_id=correlation_id,
             actor="webhook",
             payload=payload,
-        )
+        ),
     )
-    return {"ok": True, "iteration": feedback.kind, "task_id": payload.task_id}
+    return {"ok": True, "decision": "iteration_requested", "source": source}
+
+
+def emit_checks_passed(
+    row: dict[str, Any],
+    *,
+    pr_url: str,
+    head_sha: str,
+    delivery_id: str,
+) -> dict[str, Any]:
+    """Publish ``CHECKS.PASSED`` for the impl PR."""
+    if not delivery_id:
+        return {"ok": True, "ignored": "missing delivery_id"}
+    emit(
+        envelope_for(
+            event_type="CHECKS.PASSED",
+            run_id=run_id_of(row),
+            correlation_id=attr(row, "correlation_id"),
+            actor="webhook",
+            payload=ChecksPassed(
+                project_slug=attr(row, "project_slug"),
+                pr_url=pr_url,
+                head_sha=head_sha or "0" * 7,
+                delivery_id=delivery_id,
+            ),
+        ),
+    )
+    return {"ok": True, "decision": "checks_passed"}
+
+
+def emit_checks_failed(
+    row: dict[str, Any],
+    *,
+    pr_url: str,
+    head_sha: str,
+    delivery_id: str,
+    failed_workflow_count: int,
+    summary: str,
+) -> dict[str, Any]:
+    """Publish ``CHECKS.FAILED`` for the impl PR."""
+    if not delivery_id:
+        return {"ok": True, "ignored": "missing delivery_id"}
+    emit(
+        envelope_for(
+            event_type="CHECKS.FAILED",
+            run_id=run_id_of(row),
+            correlation_id=attr(row, "correlation_id"),
+            actor="webhook",
+            payload=ChecksFailed(
+                project_slug=attr(row, "project_slug"),
+                pr_url=pr_url,
+                head_sha=head_sha or "0" * 7,
+                delivery_id=delivery_id,
+                failed_workflow_count=max(failed_workflow_count, 1),
+                summary=summary or "one or more required checks did not succeed",
+            ),
+        ),
+    )
+    return {"ok": True, "decision": "checks_failed"}
 
 
 def emit_run_cancel(
@@ -913,7 +785,7 @@ def emit_run_cancel(
             correlation_id=correlation_id,
             actor="webhook",
             payload=payload,
-        )
+        ),
     )
     return {"ok": True, "cancel_run": run_id}
 
@@ -1096,11 +968,13 @@ def react_to_pr_review_comment(repository: dict[str, Any], comment: dict[str, An
 # ---------------------------------------------------------------------------
 
 
-HANDLERS: dict[str, Any] = {
+EVENT_HANDLERS: dict[str, Any] = {
     "pull_request": handle_pull_request,
     "pull_request_review": handle_pull_request_review,
     "pull_request_review_comment": handle_pull_request_review_comment,
     "issue_comment": handle_issue_comment,
     "issues": handle_issues,
     "workflow_run": handle_workflow_run,
+    "check_run": handle_check_run,
+    "check_suite": handle_check_suite,
 }

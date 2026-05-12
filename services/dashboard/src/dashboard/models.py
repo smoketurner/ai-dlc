@@ -15,16 +15,19 @@ class _Frozen(BaseModel):
 
 
 class RunSummary(_Frozen):
-    """Compact run row for the runs list."""
+    """Compact run row for the runs list.
+
+    Under the single-PR-per-issue contract a run carries at most one
+    impl PR (``pr_url``). The spec-slug / per-task counters are gone;
+    revision count + check state + reviewer verdict surface on the
+    detail page from the STATE row.
+    """
 
     run_id: str
     project_slug: str
     status: str
     current_state: str | None = None
     created_at: datetime | None = None
-    spec_slug: str | None = None
-    tasks_completed: int = 0
-    tasks_total: int = 0
     total_token_in: int = 0
     total_token_out: int = 0
     total_cost_usd: float = 0.0
@@ -34,15 +37,14 @@ class RunSummary(_Frozen):
     issue_number: int | None = None
     issue_title: str | None = None
     pr_url: str | None = None
-
-
-class TaskSummary(_Frozen):
-    """One TASK row, used to render per-task PR links on the run-detail page."""
-
-    task_id: str
-    status: str
-    pr_url: str | None = None
-    last_event_at: str | None = None
+    revision_count: int = 0
+    check_state: str | None = None
+    reviewer_verdict: str | None = None
+    review_high_severity_count: int = 0
+    review_medium_severity_count: int = 0
+    review_low_severity_count: int = 0
+    plan_s3_key: str | None = None
+    critique_s3_key: str | None = None
 
 
 class EventLink(_Frozen):
