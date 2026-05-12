@@ -18,6 +18,7 @@ from common.state import RunState, TaskState
 from state_router.actions import (
     AdvanceState,
     CompoundAction,
+    DedupedAdvisors,
     EmitEvent,
     GuardedAdvance,
     InvokeAgent,
@@ -262,7 +263,7 @@ class TestRunSpecFlow:
         action = decide(run)
         assert isinstance(action, Noop)
 
-    def test_spec_approved_seeds_tasks_and_advances(self) -> None:
+    def test_spec_approved_seeds_tasks_and_creates_impl_branch(self) -> None:
         run = make_run(
             state=RunState.spec_approved,
             spec_slug="demo",
@@ -271,16 +272,32 @@ class TestRunSpecFlow:
         action = decide(run)
         assert isinstance(action, CompoundAction)
         seeds = [a for a in action.actions if isinstance(a, SeedTasks)]
-        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
+        helpers = [a for a in action.actions if isinstance(a, InvokeRepoHelper)]
         assert len(seeds) == 1
         assert seeds[0].task_ids == ("T-001", "T-002")
         assert seeds[0].project_slug == "demo"
         assert seeds[0].spec_slug == "demo"
-        assert len(advances) == 1
-        assert advances[0].advance_to == RunState.tasks_in_progress.value
+        # The impl branch is created via repo_helper.create_branch; the
+        # same InvokeRepoHelper advances the run to ``tasks_in_progress``
+        # on success.
+        assert len(helpers) == 1
+        assert helpers[0].op == "create_branch"
+        assert helpers[0].args["branch"].startswith("aidlc/impl/demo/")
+        assert helpers[0].args["base"] == "main"
+        assert helpers[0].advance_to == RunState.tasks_in_progress.value
 
     def test_spec_approved_with_no_task_ids_is_noop(self) -> None:
         run = make_run(state=RunState.spec_approved, spec_slug="demo")
+        action = decide(run)
+        assert isinstance(action, Noop)
+
+    def test_spec_approved_without_target_repo_is_noop(self) -> None:
+        run = make_run(
+            state=RunState.spec_approved,
+            spec_slug="demo",
+            task_ids=("T-001",),
+            target_repo=None,
+        )
         action = decide(run)
         assert isinstance(action, Noop)
 
@@ -365,17 +382,27 @@ class TestTaskDispatch:
         run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")
         task = make_task(TaskState.pr_open, pr_url="https://github.com/o/r/pull/1")
         action = decide_task(run, task)
-        # The advisors are gated behind a single GuardedAdvance flipping
-        # pr_open → pending_approval; only the winning router fires them.
+        # The GuardedAdvance flips pr_open → pending_approval; only the
+        # winning router fires the inner DedupedAdvisors which gates
+        # reviewer + tester behind a PR-head-SHA dedupe.
         assert isinstance(action, GuardedAdvance)
         assert action.advance_from == TaskState.pr_open.value
         assert action.advance_to == TaskState.pending_approval.value
-        invokes = [a for a in action.on_success if isinstance(a, InvokeAgent)]
-        runtimes = [a.runtime_arn for a in invokes]
+        deduped = [a for a in action.on_success if isinstance(a, DedupedAdvisors)]
+        assert len(deduped) == 1
+        runtimes = [invoke.runtime_arn for invoke in deduped[0].advisors]
         assert any("reviewer" in arn for arn in runtimes)
         assert any("tester" in arn for arn in runtimes)
-        # Each gated invoke fires unconditionally — the gate is the race guard.
-        assert all(a.advance_from is None and a.advance_to is None for a in invokes)
+        # Each gated invoke fires unconditionally — the GuardedAdvance + SHA
+        # dedupe are the race guard / dedupe layers.
+        assert all(a.advance_from is None and a.advance_to is None for a in deduped[0].advisors)
+
+    def test_pr_open_without_pr_url_is_noop(self) -> None:
+        """Waits for state_router to backfill the impl PR URL on its first open."""
+        run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")
+        task = make_task(TaskState.pr_open, pr_url=None)
+        action = decide_task(run, task)
+        assert isinstance(action, Noop)
 
     def test_iterating_dispatches_implementer_with_feedback(self) -> None:
         run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")

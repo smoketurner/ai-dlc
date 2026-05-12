@@ -188,10 +188,7 @@ class SpecBundle(_Frozen):
         for task in self.tasks:
             missing = [dep for dep in task.depends_on if dep not in task_ids]
             if missing:
-                msg = (
-                    f"task {task.id!r} lists unknown depends_on entries: "
-                    f"{sorted(missing)!r}"
-                )
+                msg = f"task {task.id!r} lists unknown depends_on entries: {sorted(missing)!r}"
                 raise ValueError(msg)
         graph = {task.id: tuple(task.depends_on) for task in self.tasks}
         cycle = find_cycle(graph)

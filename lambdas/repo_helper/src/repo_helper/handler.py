@@ -149,6 +149,12 @@ class MergeBranchInput(BaseOp):
     (already up to date). On 409 the response carries ``conflict=True``
     and the caller is expected to resolve via a follow-up commit before
     retrying.
+
+    When ``delete_head_on_merge=True``, a successful merge is followed
+    by ``DELETE /git/refs/heads/{head}`` so the per-task branch
+    disappears immediately rather than accumulating. Delete failures
+    are logged but don't roll back the merge — the branch can be swept
+    later by an operator.
     """
 
     op: Literal["merge_branch"]
@@ -156,6 +162,7 @@ class MergeBranchInput(BaseOp):
     base: str = Field(min_length=1, max_length=128)
     head: str = Field(min_length=1, max_length=128)
     commit_message: str | None = Field(default=None, max_length=1024)
+    delete_head_on_merge: bool = False
 
 
 class CommentIssueInput(BaseOp):
@@ -534,6 +541,11 @@ def merge_branch(req: MergeBranchInput, client: httpx.Client) -> dict[str, Any]:
     * 409 — merge conflict. Returns ``conflict=True`` so the caller can
       run the conflict-resolution flow without seeing this as an error.
     * 404 — base/head missing. Returns ``not_found=True``.
+
+    When the caller passes ``delete_head_on_merge=True`` and the merge
+    succeeds, the head ref is deleted in a follow-up call. A delete
+    failure is logged but doesn't fail the op — the merge already
+    committed and the orphan ref can be cleaned up later.
     """
     payload: dict[str, Any] = {"base": req.base, "head": req.head}
     if req.commit_message:
@@ -541,19 +553,43 @@ def merge_branch(req: MergeBranchInput, client: httpx.Client) -> dict[str, Any]:
     response = client.post(f"/repos/{req.repo}/merges", json=payload)
     if response.status_code == httpx.codes.CREATED:
         body = response.json()
+        head_deleted = (
+            delete_branch_ref(req.repo, req.head, client) if req.delete_head_on_merge else False
+        )
         return {
             "merged": True,
             "already_merged": False,
             "merge_commit_sha": body.get("sha", ""),
+            "head_deleted": head_deleted,
         }
     if response.status_code == httpx.codes.NO_CONTENT:
-        return {"merged": True, "already_merged": True, "merge_commit_sha": ""}
+        head_deleted = (
+            delete_branch_ref(req.repo, req.head, client) if req.delete_head_on_merge else False
+        )
+        return {
+            "merged": True,
+            "already_merged": True,
+            "merge_commit_sha": "",
+            "head_deleted": head_deleted,
+        }
     if response.status_code == httpx.codes.CONFLICT:
         return {"merged": False, "conflict": True}
     if response.status_code == httpx.codes.NOT_FOUND:
         return {"merged": False, "not_found": True}
     response.raise_for_status()
     return {"merged": False}
+
+
+def delete_branch_ref(repo: str, branch: str, client: httpx.Client) -> bool:
+    """Best-effort ``DELETE /git/refs/heads/{branch}``. ``True`` on success."""
+    response = client.delete(f"/repos/{repo}/git/refs/heads/{branch}")
+    if response.status_code in (httpx.codes.NO_CONTENT, httpx.codes.NOT_FOUND):
+        return response.status_code == httpx.codes.NO_CONTENT
+    logger.warning(
+        "delete_branch_ref failed",
+        extra={"repo": repo, "branch": branch, "status": response.status_code},
+    )
+    return False
 
 
 def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:

@@ -240,7 +240,6 @@ def test_emit_task_ready_builds_envelope(
     )
     result = ImplementerResult(
         task_id="T-001",
-        pr_url=payload.pr_url,
         diff_summary="Fix null-check.",
         session_id="sess",
         token_in=1_000,
@@ -248,15 +247,16 @@ def test_emit_task_ready_builds_envelope(
         cost_usd=0.005,
         duration_ms=15_000,
     )
-    assert payload.pr_url is not None
-    emit_task_ready(payload, result, pr_url=payload.pr_url)
+    emit_task_ready(payload, result)
     assert len(captured) == 1
     env = captured[0]
     assert env.type == "TASK.READY"
     assert env.actor_id == "implementer"
     assert isinstance(env.payload, TaskReady)
     assert env.payload.task_id == "T-001"
-    assert env.payload.pr_url == payload.pr_url
+    # New design: implementer doesn't know the impl PR URL; state_router
+    # backfills it once the unified impl PR is open.
+    assert env.payload.pr_url == ""
 
 
 def test_emit_task_blocked_builds_envelope(
@@ -267,7 +267,6 @@ def test_emit_task_blocked_builds_envelope(
     payload = make_input(iteration_count=0, iteration_feedback=None)
     result = ImplementerResult(
         task_id="T-001",
-        pr_url="https://github.com/owner/repo/pull/77",
         diff_summary="(no diff — agent produced no changes)",
         session_id="sess",
         blocked_reason="Spec was contradictory.",
@@ -276,14 +275,15 @@ def test_emit_task_blocked_builds_envelope(
         cost_usd=0.012,
         duration_ms=42_000,
     )
-    emit_task_blocked(payload, result, pr_url="https://github.com/owner/repo/pull/77")
+    emit_task_blocked(payload, result)
     assert len(captured) == 1
     env = captured[0]
     assert env.type == "TASK.BLOCKED"
     assert env.actor_id == "implementer"
     assert isinstance(env.payload, TaskBlocked)
     assert env.payload.blocked_reason == "Spec was contradictory."
-    assert env.payload.pr_url == "https://github.com/owner/repo/pull/77"
+    # pr_url backfilled by state_router; implementer sends empty string.
+    assert env.payload.pr_url == ""
     assert env.payload.cost_usd == 0.012
 
 
@@ -291,10 +291,9 @@ def test_emit_task_blocked_requires_blocked_reason() -> None:
     payload = make_input(iteration_count=0, iteration_feedback=None)
     result = ImplementerResult(
         task_id="T-001",
-        pr_url="https://github.com/owner/repo/pull/77",
         diff_summary="diff",
         session_id="sess",
         blocked_reason=None,
     )
     with pytest.raises(ValueError, match="blocked_reason"):
-        emit_task_blocked(payload, result, pr_url="https://github.com/owner/repo/pull/77")
+        emit_task_blocked(payload, result)

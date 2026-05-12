@@ -99,9 +99,7 @@ def run_architect(payload: ArchitectInput, task_id: int) -> None:
             design_summary=spec.design.approach[:1024],
             task_count=len(spec.tasks),
             task_ids=[t.id for t in spec.tasks],
-            task_depends_on={
-                t.id: list(t.depends_on) for t in spec.tasks if t.depends_on
-            },
+            task_depends_on={t.id: list(t.depends_on) for t in spec.tasks if t.depends_on},
             one_way_task_count=count_one_way_tasks(spec),
             proposed_adrs=spec.design.proposed_adrs,
             session_id=payload.run_id,

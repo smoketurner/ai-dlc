@@ -452,6 +452,7 @@ async def merge_with_resolution(
             base=impl_branch,
             head=task_branch,
             commit_message=f"merge {task_branch} into {impl_branch}",
+            delete_head_on_merge=True,
         )
         if result.get("merged"):
             return MergeOutcome(success=True, resolutions=resolutions)
@@ -829,8 +830,7 @@ def write_blocked_md(
         "",
         "- **Continue**: comment `@aidlc-bot <guidance>` on the impl PR to "
         "retry with that guidance as feedback.",
-        "- **Abort this task**: close the impl PR. Other tasks in the run "
-        "keep running.",
+        "- **Abort this task**: close the impl PR. Other tasks in the run keep running.",
         "",
     ]
     if report is not None:

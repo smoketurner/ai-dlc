@@ -99,8 +99,9 @@ stateDiagram-v2
 
 ## Target-repo prerequisites
 
-The platform writes branches under `aidlc/spec/*` and `aidlc/impl/*` and
-opens PRs from them. Every target repo must be configured as follows:
+The platform writes branches under `aidlc/spec/*`, `aidlc/impl/*`, and
+`aidlc/task/*` and opens PRs from them. Every target repo must be
+configured as follows:
 
 - **Settings → General → "Automatically delete head branches"**: enable.
   Spec branches (`aidlc/spec/{slug}`) and impl branches
@@ -110,9 +111,14 @@ opens PRs from them. Every target repo must be configured as follows:
   router uses GitHub's server-side merge API (`POST /merges`) to push
   task commits into the run's impl branch; branch protection would
   block it.
-- **`aidlc-task-cleanup` workflow**: ships in `.github/workflows/`.
-  Sweeps orphan task sub-branches (`aidlc/impl/.../t-*`) whose parent
-  impl branch is gone. Runs daily.
+
+Task branches live under `aidlc/task/...` rather than nested inside
+`aidlc/impl/...` because git can't have one ref name be a path prefix
+of another ref name. Task branches are deleted inline by
+`repo_helper.merge_branch` (which passes `delete_head_on_merge=True`)
+the moment their merge into the impl branch succeeds. Blocked tasks
+keep their branch so reviewers can read `BLOCKED.md`; cancelled-run
+branches are rare and operator-cleaned.
 
 ## Running tests
 

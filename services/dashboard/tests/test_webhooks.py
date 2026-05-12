@@ -112,31 +112,88 @@ def captured_events(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]
     return captured
 
 
-def stub_pr_lookup(
-    monkeypatch: pytest.MonkeyPatch,
+def _row(
     *,
-    sk: str = "TASK#T-001",
+    sk: str,
+    status: str = "pr_open",
     project_slug: str = "demo",
     spec_slug: str = "add-healthz",
     correlation_id: str = "cor-1",
     run_id: str = "run-1",
 ) -> dict[str, Any]:
-    """Replace ``lookup_pr`` with a canned row matching ``sk`` shape."""
-    row: dict[str, Any] = {
+    """Build one canned DDB attribute map for ``lookup_pr`` to return."""
+    return {
         "pk": {"S": f"RUN#{run_id}"},
         "sk": {"S": sk},
+        "status": {"S": status},
         "project_slug": {"S": project_slug},
         "spec_slug": {"S": spec_slug},
         "correlation_id": {"S": correlation_id},
         "spec_s3_prefix": {"S": f"specs/{spec_slug}/"},
     }
-    monkeypatch.setattr("dashboard.routes.webhooks.lookup_pr", lambda _url: row)
-    return row
+
+
+def stub_pr_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    sk: str = "TASK#T-001",
+    status: str = "pr_open",
+    **fields: Any,
+) -> list[dict[str, Any]]:
+    """Replace ``lookup_pr`` with one canned row.
+
+    Used by the original single-row tests (spec PR pre-impl-PR shape).
+    Returns the row in a list since ``lookup_pr`` now returns ``list``.
+    """
+    row = _row(sk=sk, status=status, **fields)
+    rows = [row]
+    monkeypatch.setattr("dashboard.routes.webhooks.lookup_pr", lambda _url: rows)
+    return rows
+
+
+def stub_unified_pr_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    task_states: dict[str, str] | None = None,
+    project_slug: str = "demo",
+    spec_slug: str = "add-healthz",
+    correlation_id: str = "cor-1",
+    run_id: str = "run-1",
+) -> list[dict[str, Any]]:
+    """Return a STATE row + one TASK row per (task_id, status) pair.
+
+    Mirrors the impl-PR shape: STATE + N TASK rows all share the same
+    impl PR URL via the ``gsi_pr`` GSI.
+    """
+    pairs = task_states or {"T-001": "pr_open", "T-002": "pr_open"}
+    rows: list[dict[str, Any]] = [
+        _row(
+            sk="STATE",
+            status="tasks_in_progress",
+            project_slug=project_slug,
+            spec_slug=spec_slug,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        ),
+    ]
+    rows.extend(
+        _row(
+            sk=f"TASK#{task_id}",
+            status=status,
+            project_slug=project_slug,
+            spec_slug=spec_slug,
+            correlation_id=correlation_id,
+            run_id=run_id,
+        )
+        for task_id, status in pairs.items()
+    )
+    monkeypatch.setattr("dashboard.routes.webhooks.lookup_pr", lambda _url: rows)
+    return rows
 
 
 def stub_pr_miss(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``lookup_pr`` return ``None`` (PR not tracked)."""
-    monkeypatch.setattr("dashboard.routes.webhooks.lookup_pr", lambda _url: None)
+    """Make ``lookup_pr`` return ``[]`` (PR not tracked)."""
+    monkeypatch.setattr("dashboard.routes.webhooks.lookup_pr", lambda _url: [])
 
 
 def stub_run_by_issue(
@@ -207,11 +264,15 @@ def test_verify_signature_rejects_bad_signature() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pr_merged_task_emits_task_approved(
+async def test_pr_merged_impl_fans_out_task_approved(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """Merging the unified impl PR emits TASK.APPROVED for every non-terminal task."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "pending_approval"},
+    )
     payload = {
         "action": "closed",
         "pull_request": {
@@ -221,28 +282,55 @@ async def test_pr_merged_task_emits_task_approved(
         },
     }
     out = await post_webhook(event_type="pull_request", payload=payload)
-    assert out["decision"] == "task_approved"
-    assert len(captured_events) == 1
-    assert captured_events[0].type == "TASK.APPROVED"
-    assert captured_events[0].payload.project_slug == "demo"
-    assert captured_events[0].payload.spec_slug == "add-healthz"
+    assert out["decision"] == "tasks_approved"
+    assert sorted(out["fanned_out"]) == ["T-001", "T-002"]
+    types = [e.type for e in captured_events]
+    assert types.count("TASK.APPROVED") == 2
+    assert all(e.payload.spec_slug == "add-healthz" for e in captured_events)
 
 
 @pytest.mark.asyncio
-async def test_pr_unmerged_task_emits_task_rejected(
+async def test_pr_merged_skips_terminal_task_rows(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """Tasks already in merged/closed/failed don't get re-approved."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "merged"},
+    )
+    payload = {
+        "action": "closed",
+        "pull_request": {
+            "html_url": "https://github.com/o/r/pull/1",
+            "merged": True,
+            "merged_by": {"login": "alice"},
+        },
+    }
+    out = await post_webhook(event_type="pull_request", payload=payload)
+    assert out["fanned_out"] == ["T-001"]
+    assert len(captured_events) == 1
+    assert captured_events[0].type == "TASK.APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_pr_closed_without_merge_emits_run_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """Closing the impl PR without merging cancels the run, not each task."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "pr_open"},
+    )
     payload = {
         "action": "closed",
         "pull_request": {"html_url": "https://github.com/o/r/pull/1", "merged": False},
         "sender": {"login": "alice"},
     }
     await post_webhook(event_type="pull_request", payload=payload)
-    assert captured_events[0].type == "TASK.REJECTED"
-    assert captured_events[0].payload.project_slug == "demo"
-    assert captured_events[0].payload.spec_slug == "add-healthz"
+    assert len(captured_events) == 1
+    assert captured_events[0].type == "RUN.CANCEL_REQUESTED"
 
 
 @pytest.mark.asyncio
@@ -250,7 +338,8 @@ async def test_pr_merged_spec_emits_spec_approved(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="STATE")
+    """Spec PRs (state row only, no task rows) emit SPEC.APPROVED on merge."""
+    stub_pr_lookup(monkeypatch, sk="STATE", status="spec_pr_open")
     payload = {
         "action": "closed",
         "pull_request": {
@@ -283,26 +372,34 @@ async def test_pr_close_no_match_silently_ignores(
 
 
 @pytest.mark.asyncio
-async def test_review_approved_emits_task_approved(
+async def test_review_approved_fans_out_task_approved(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """A PR review approval fans out TASK.APPROVED across every actionable task."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "pending_approval"},
+    )
     payload = {
         "action": "submitted",
         "review": {"state": "approved", "user": {"login": "alice"}},
         "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
     }
     await post_webhook(event_type="pull_request_review", payload=payload)
-    assert captured_events[0].type == "TASK.APPROVED"
+    assert [e.type for e in captured_events] == ["TASK.APPROVED", "TASK.APPROVED"]
 
 
 @pytest.mark.asyncio
-async def test_review_changes_requested_emits_iteration(
+async def test_review_changes_requested_fans_out_iteration(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """changes_requested fans out TASK.ITERATION_REQUESTED across actionable tasks."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "blocked", "T-003": "merged"},
+    )
     payload = {
         "action": "submitted",
         "review": {
@@ -313,10 +410,11 @@ async def test_review_changes_requested_emits_iteration(
         },
         "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
     }
-    await post_webhook(event_type="pull_request_review", payload=payload)
-    assert captured_events[0].type == "TASK.ITERATION_REQUESTED"
-    assert captured_events[0].payload.project_slug == "demo"
-    assert captured_events[0].payload.spec_slug == "add-healthz"
+    out = await post_webhook(event_type="pull_request_review", payload=payload)
+    # merged task is skipped — only actionable rows receive iteration events.
+    assert sorted(out["fanned_out"]) == ["T-001", "T-002"]
+    types = [e.type for e in captured_events]
+    assert types.count("TASK.ITERATION_REQUESTED") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -325,11 +423,15 @@ async def test_review_changes_requested_emits_iteration(
 
 
 @pytest.mark.asyncio
-async def test_review_comment_with_mention_emits_iteration(
+async def test_review_comment_with_mention_fans_out_iteration(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """A bot-mention inline comment fans out across every actionable task."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "iterating"},
+    )
     payload = {
         "action": "created",
         "comment": {
@@ -343,7 +445,8 @@ async def test_review_comment_with_mention_emits_iteration(
         "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
     }
     await post_webhook(event_type="pull_request_review_comment", payload=payload)
-    assert captured_events[0].type == "TASK.ITERATION_REQUESTED"
+    types = [e.type for e in captured_events]
+    assert types == ["TASK.ITERATION_REQUESTED", "TASK.ITERATION_REQUESTED"]
 
 
 @pytest.mark.asyncio
@@ -387,11 +490,15 @@ async def test_pr_comment_without_mention_is_ignored(
 
 
 @pytest.mark.asyncio
-async def test_pr_comment_with_mention_emits_iteration(
+async def test_pr_comment_with_mention_fans_out_iteration(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """``@aidlc-bot`` on the impl PR fans out across every actionable task."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "pending_approval"},
+    )
     payload = {
         "action": "created",
         "comment": {
@@ -402,7 +509,28 @@ async def test_pr_comment_with_mention_emits_iteration(
         "issue": {"pull_request": {"html_url": "https://github.com/o/r/pull/1"}},
     }
     await post_webhook(event_type="issue_comment", payload=payload)
-    assert captured_events[0].type == "TASK.ITERATION_REQUESTED"
+    types = [e.type for e in captured_events]
+    assert types == ["TASK.ITERATION_REQUESTED", "TASK.ITERATION_REQUESTED"]
+
+
+@pytest.mark.asyncio
+async def test_pr_comment_with_mention_on_spec_pr_emits_spec_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """``@aidlc-bot`` on a spec PR (state-only) emits SPEC.ITERATION_REQUESTED."""
+    stub_pr_lookup(monkeypatch, sk="STATE", status="spec_pr_open")
+    payload = {
+        "action": "created",
+        "comment": {
+            "body": f"@{BOT_LOGIN} please reword the design",
+            "id": 7,
+            "user": {"login": "alice"},
+        },
+        "issue": {"pull_request": {"html_url": "https://github.com/o/r/pull/1"}},
+    }
+    await post_webhook(event_type="issue_comment", payload=payload)
+    assert captured_events[0].type == "SPEC.ITERATION_REQUESTED"
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +725,7 @@ async def test_pr_review_comment_with_mention_reacts_on_comment(
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
     """PR-review (inline diff) comments react on the pulls/comments/{id} URL."""
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    stub_unified_pr_lookup(monkeypatch, task_states={"T-001": "pr_open"})
     reactions: list[dict[str, str]] = []
     monkeypatch.setattr(
         "dashboard.routes.webhooks.react_eyes",
@@ -634,11 +762,15 @@ async def test_pr_review_comment_with_mention_reacts_on_comment(
 
 
 @pytest.mark.asyncio
-async def test_workflow_run_failure_emits_iteration(
+async def test_workflow_run_failure_fans_out_iteration(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    stub_pr_lookup(monkeypatch, sk="TASK#T-001")
+    """A failed workflow run on the impl PR fans out across actionable tasks."""
+    stub_unified_pr_lookup(
+        monkeypatch,
+        task_states={"T-001": "pr_open", "T-002": "pending_approval"},
+    )
     payload = {
         "action": "completed",
         "workflow_run": {
@@ -650,7 +782,8 @@ async def test_workflow_run_failure_emits_iteration(
         },
     }
     await post_webhook(event_type="workflow_run", payload=payload)
-    assert captured_events[0].type == "TASK.ITERATION_REQUESTED"
+    types = [e.type for e in captured_events]
+    assert types == ["TASK.ITERATION_REQUESTED", "TASK.ITERATION_REQUESTED"]
 
 
 @pytest.mark.asyncio

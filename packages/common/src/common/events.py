@@ -338,6 +338,7 @@ class RunCancelRequested(Payload):
         "issue_closed",
         "comment_command",
         "dashboard",
+        "pr_closed",
     ]
     reason: Annotated[str, Field(max_length=512)] | None = None
 

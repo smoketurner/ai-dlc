@@ -237,12 +237,18 @@ def impl_branch_name(spec_slug: str, run_id: str) -> str:
 def task_branch_name(task_id: str, spec_slug: str, run_id: str) -> str:
     """Conventional branch name for a single task within an impl run.
 
-    Task branches live under the impl branch namespace and merge into
-    the impl branch rather than into ``main``. Run-scoped via
-    ``short_run_id`` so retries against the same ``(spec_slug, task_id)``
-    don't collide.
+    Lives under ``aidlc/task/...`` rather than nested inside the impl
+    branch's ref path: git stores refs as filesystem paths, so a ref
+    named ``aidlc/impl/{slug}/{short_run_id}`` can't coexist with a
+    second ref under ``aidlc/impl/{slug}/{short_run_id}/{task_id}``
+    (the first would have to be both a file and a directory).
+
+    Run-scoped via ``short_run_id`` so retries against the same
+    ``(spec_slug, task_id)`` don't collide.
     """
-    return f"{impl_branch_name(spec_slug, run_id)}/{task_id.lower()}"
+    from common.ids import short_run_id  # noqa: PLC0415 - cheap import-time pin
+
+    return f"aidlc/task/{spec_slug}/{short_run_id(run_id)}/{task_id.lower()}"
 
 
 def create_branch(branch: str) -> None:
