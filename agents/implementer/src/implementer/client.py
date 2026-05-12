@@ -397,6 +397,9 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
 
 def load_task(payload: ImplementerInput) -> Any:
     """Read tasks.md from the workspace and return the matching task."""
+    if payload.task_id is None:
+        msg = "load_task requires task_id; got None"
+        raise ValueError(msg)
     tasks_md = (spec_path() / "tasks.md").read_text(encoding="utf-8")
     task = find_task(parse_tasks(tasks_md), payload.task_id)
     if task is None:
@@ -493,6 +496,9 @@ def iteration_blocked(
     task_branch: str,
 ) -> ImplementerResult:
     """Build a blocked result without running the agent (pre-flight merge failed)."""
+    if payload.task_id is None:
+        msg = "iteration_blocked requires task_id; got None"
+        raise ValueError(msg)
     write_blocked_md(
         spec_slug=payload.spec_slug,
         task_id=payload.task_id,

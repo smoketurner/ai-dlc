@@ -183,6 +183,9 @@ def emit_task_blocked(payload: ImplementerInput, result: ImplementerResult) -> N
     if result.blocked_reason is None:
         msg = "emit_task_blocked called without blocked_reason"
         raise ValueError(msg)
+    if payload.task_id is None:
+        msg = "emit_task_blocked called without task_id"
+        raise ValueError(msg)
     envelope = EventEnvelope[TaskBlocked](
         event_id=new_event_id(),
         type="TASK.BLOCKED",
