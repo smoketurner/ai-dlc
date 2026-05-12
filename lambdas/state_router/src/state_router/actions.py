@@ -165,6 +165,52 @@ class AdvanceState:
 
 
 @dataclass(frozen=True, slots=True)
+class DedupedAdvisors:
+    """Fire reviewer + tester invocations only on a fresh PR head SHA.
+
+    The executor fetches the impl PR's current head SHA via
+    ``repo_helper.get_pr_head_sha`` and compares to the run's
+    ``last_advisor_sha``. On match, no advisor invocations fire — the
+    surrounding ``GuardedAdvance`` still advances the task to
+    ``pending_approval`` so the FSM progresses. On mismatch, the
+    executor invokes each advisor and writes ``last_advisor_sha``.
+
+    Wrapped inside :class:`GuardedAdvance.on_success` so the GuardedAdvance
+    is the race guard: only one router wins the state advance, and only
+    that router runs the dedupe + advisor dispatch.
+    """
+
+    repo: str
+    pr_url: str
+    advisors: tuple[InvokeAgent, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class OpenImplPr:
+    """Open the unified impl PR and backfill ``pr_url`` to STATE + all TASK rows.
+
+    Fired once per run on the first beacon where any task has reached
+    a state proving it merged into the impl branch (``pr_open`` /
+    ``pending_approval`` / ``iterating`` / ``blocked`` / ``merged``).
+
+    Idempotent: the underlying ``repo_helper.open_pr`` returns the
+    existing open PR for ``(head, base)`` if one was already opened.
+    The backfill is a per-row ``UpdateItem`` loop so a transient
+    failure on one row doesn't block the others; the next beacon
+    retries via the same path because ``run.pr_url`` is still empty
+    until the STATE row's backfill succeeds.
+    """
+
+    repo: str
+    head: str
+    base: str
+    title: str
+    body: str
+    run_id: str
+    task_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CompoundAction:
     """Run several actions in sequence.
 
@@ -209,6 +255,8 @@ type Action = (
     | InvokeAgent
     | EmitEvent
     | InvokeRepoHelper
+    | DedupedAdvisors
+    | OpenImplPr
     | WriteSyntheticSpec
     | SeedTasks
     | AdvanceState

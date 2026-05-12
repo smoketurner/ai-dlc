@@ -20,7 +20,7 @@ from common.events import (
     RunCompleted,
 )
 from common.github_mentions import strip_bot_mention
-from common.ids import CorrelationId, RunId, new_event_id
+from common.ids import CorrelationId, RunId, new_event_id, short_run_id
 from common.state import (
     TERMINAL_TASK_STATES,
     RunState,
@@ -34,6 +34,7 @@ from state_router.actions import (
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
+    OpenImplPr,
     SeedTasks,
     WriteSyntheticSpec,
 )
@@ -375,17 +376,24 @@ def handle_spec_critiqued(run: Run) -> Action:
 
 
 def handle_spec_approved(run: Run) -> Action:
-    """Spec PR merged — seed task rows and advance to ``tasks_in_progress``.
+    """Spec PR merged — seed task rows, create the impl branch, advance to tasks_in_progress.
 
-    Without seeded TASK rows, ``tasks_in_progress`` is a permanent Noop
-    (``handle_tasks_in_progress`` walks ``run.tasks`` and there's nothing
-    to walk). The projector populated ``run.task_ids`` off the SPEC.READY
-    event; if it's empty here, something earlier dropped the field —
-    Noop and let an operator investigate rather than silently advancing
-    to a dead-end state.
+    The impl branch is the head of the unified implementation PR each
+    task merges into. It's created off ``main`` (which already carries
+    the just-merged spec docs from the spec PR), so the impl branch
+    starts identical to main and accumulates one merge commit per task.
+
+    ``InvokeRepoHelper`` carries the state advance: the branch must
+    exist before ``tasks_in_progress`` can dispatch task work. On
+    failure the executor bumps the breaker counter and enqueues a
+    retry beacon so the dispatch eventually retries (idempotent on the
+    repo_helper side — ``create_branch`` is 422-idempotent).
     """
     if not run.task_ids:
         return Noop("spec_approved with no task_ids — projector hasn't seeded them")
+    if not run.target_repo or not run.spec_slug:
+        return Noop("spec_approved: missing target_repo / spec_slug")
+    impl_branch = impl_branch_name(run.spec_slug, run.run_id)
     return CompoundAction(
         actions=(
             SeedTasks(
@@ -394,7 +402,14 @@ def handle_spec_approved(run: Run) -> Action:
                 project_slug=run.project_slug,
                 spec_slug=run.spec_slug or run.run_id,
             ),
-            AdvanceState(
+            InvokeRepoHelper(
+                op="create_branch",
+                args={
+                    "repo": run.target_repo,
+                    "branch": impl_branch,
+                    "base": "main",
+                    "requestor_sub": run.requestor_sub,
+                },
                 target_pk=f"RUN#{run.run_id}",
                 target_sk="STATE",
                 advance_from=RunState.spec_approved.value,
@@ -404,21 +419,54 @@ def handle_spec_approved(run: Run) -> Action:
     )
 
 
+def impl_branch_name(spec_slug: str, run_id: str) -> str:
+    """Conventional impl branch name. Mirrors ``implementer.repo_ops.impl_branch_name``."""
+    return f"aidlc/impl/{spec_slug}/{short_run_id(run_id)}"
+
+
+IMPL_BRANCH_CONTRIBUTOR_STATES: frozenset[TaskState] = frozenset(
+    {
+        TaskState.pr_open,
+        TaskState.pending_approval,
+        TaskState.reviewer_running,
+        TaskState.tester_running,
+        TaskState.iterating,
+        TaskState.blocked,
+        TaskState.merged,
+    },
+)
+"""Task states that prove an implementer merged into the impl branch.
+
+When any task on a run is in one of these states, at least one merge
+commit exists on the impl branch — enough for GitHub to render a
+non-empty PR. Until then, opening the PR would fail with "No commits
+between base and head" so we wait.
+"""
+
+
 def handle_tasks_in_progress(run: Run) -> Action:
     """Walk task rows; dispatch any actionable, otherwise emit completion.
+
+    Two extra concerns on top of task dispatch:
+
+    * If any task has reached an impl-branch-contributing state and
+      ``run.pr_url`` is empty, open the unified impl PR (idempotent;
+      backfills ``pr_url`` to STATE + every TASK row).
+    * If ``run.pr_url`` is set, refresh the impl PR body so reviewers
+      see latest task statuses. One PATCH per beacon; cheap.
 
     Task-level dispatch returns one action per task. We collect them
     into a :class:`CompoundAction`. When every task is in a terminal
     state, the run transitions to ``tasks_complete`` (not done yet —
     the projector will apply ``RUN.COMPLETED → done``).
     """
-    pending = [decide_task(run, t) for t in run.tasks]
-    real_actions = tuple(a for a in pending if not isinstance(a, Noop))
     if not run.tasks:
         return Noop("no tasks seeded yet")
+    pr_actions = impl_pr_actions(run)
     if all(t.state in TERMINAL_TASK_STATES for t in run.tasks):
         return CompoundAction(
             actions=(
+                *pr_actions,
                 AdvanceState(
                     target_pk=f"RUN#{run.run_id}",
                     target_sk="STATE",
@@ -427,9 +475,85 @@ def handle_tasks_in_progress(run: Run) -> Action:
                 ),
             ),
         )
-    if not real_actions:
+    pending = [decide_task(run, t) for t in run.tasks]
+    real_actions = tuple(a for a in pending if not isinstance(a, Noop))
+    if not real_actions and not pr_actions:
         return Noop("all tasks are running or waiting")
-    return CompoundAction(actions=real_actions)
+    return CompoundAction(actions=(*pr_actions, *real_actions))
+
+
+def impl_pr_actions(run: Run) -> tuple[Action, ...]:
+    """Open or refresh the impl PR when there's something to PR.
+
+    Returns an empty tuple when no impl-branch contributor exists yet
+    (every task still in ``pending`` or ``implementer_running``) — the
+    impl branch is empty and a PR can't be opened. Once any task lands
+    in a contributor state, returns either an ``OpenImplPr`` (first
+    time) or an ``InvokeRepoHelper(update_pr)`` (subsequent refresh).
+    """
+    if not run.spec_slug or not run.target_repo:
+        return ()
+    has_contributor = any(t.state in IMPL_BRANCH_CONTRIBUTOR_STATES for t in run.tasks)
+    if not has_contributor:
+        return ()
+    title = f"impl: {run.spec_slug}"
+    body = render_impl_pr_body(run)
+    if not run.pr_url:
+        return (
+            OpenImplPr(
+                repo=run.target_repo,
+                head=impl_branch_name(run.spec_slug, run.run_id),
+                base="main",
+                title=title,
+                body=body,
+                run_id=run.run_id,
+                task_ids=tuple(t.task_id for t in run.tasks),
+            ),
+        )
+    pr_number = parse_pr_number(run.pr_url)
+    if pr_number is None:
+        return ()
+    return (
+        InvokeRepoHelper(
+            op="update_pr",
+            args={
+                "repo": run.target_repo,
+                "pr_number": pr_number,
+                "body": body,
+                "requestor_sub": run.requestor_sub,
+            },
+        ),
+    )
+
+
+def parse_pr_number(pr_url: str) -> int | None:
+    """Extract the PR number from ``https://github.com/owner/repo/pull/{n}``."""
+    tail = pr_url.rsplit("/", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return None
+
+
+def render_impl_pr_body(run: Run) -> str:
+    """Render the unified impl PR body — one checkbox row per task with status."""
+    status_by_id = {t.task_id: t.state.value for t in run.tasks}
+    task_ids = sorted(set(run.task_ids) | set(status_by_id.keys()))
+    lines = [
+        f"ai-dlc implementation run for `{run.spec_slug}` (run `{run.run_id}`).",
+        "",
+        "Each task below merged into this branch as its own commit; "
+        "merging this PR ships the whole spec.",
+        "",
+        "## Tasks",
+        "",
+    ]
+    for task_id in task_ids:
+        status = status_by_id.get(task_id, "pending")
+        checkbox = "x" if status == TaskState.merged.value else " "
+        lines.append(f"- [{checkbox}] `{task_id}` — {status}")
+    lines += ["", f"Spec docs: `docs/specs/{run.spec_slug}/`", ""]
+    return "\n".join(lines)
 
 
 def handle_tasks_complete(run: Run) -> Action:

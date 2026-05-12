@@ -104,6 +104,7 @@ class ArchitectResult(_UsageMixin):
     design_summary: Annotated[str, Field(max_length=1024)]
     task_count: Annotated[int, Field(ge=1)]
     task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
+    task_depends_on: dict[str, list[str]] = Field(default_factory=dict)
     one_way_task_count: Annotated[int, Field(ge=0)] = 0
     proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
     session_id: str
@@ -254,16 +255,15 @@ class ImplementerInput(_Frozen):
 class ImplementerResult(_UsageMixin):
     """Result the Implementer returns.
 
-    ``pr_url`` is always set — the implementer opens a PR even on the
-    blocked path (with ``BLOCKED.md`` as the diff) so a human can
-    advance the task by commenting on the PR. ``blocked_reason`` is
-    set when the agent could not produce a real implementation; the
-    runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY`` in that
-    case.
+    The implementer no longer opens its own PR — it merges the task
+    branch into the run's impl branch via GitHub's merge API. The
+    unified impl PR is opened by the state router on the first task
+    event. ``blocked_reason`` is set when the agent could not produce
+    a real implementation or could not reconcile a merge conflict;
+    the runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY``.
     """
 
     task_id: str
-    pr_url: str | None = None
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
     blocked_reason: Annotated[str, Field(max_length=2048)] | None = None

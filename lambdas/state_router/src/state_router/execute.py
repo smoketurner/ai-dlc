@@ -21,27 +21,33 @@ instead of wedging.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from aws_lambda_powertools import Logger, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
 from botocore.exceptions import ClientError
 
+from common.ddb import PutBuilder, TransactWriteItemsBuilder, UpdateBuilder
 from common.event_emit import publish
+from common.ids import new_event_id
 from state_router import circuit_breaker
 from state_router.actions import (
     Action,
     AdvanceState,
     CompoundAction,
+    DedupedAdvisors,
     EmitEvent,
     GuardedAdvance,
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
+    OpenImplPr,
     SeedTasks,
     WriteSyntheticSpec,
 )
 from state_router.aws import (
+    OUTBOX_TTL_SECONDS,
     ddb,
     dispatch_to_runtime,
     lambda_client,
@@ -418,6 +424,172 @@ def execute_advance_state(run: Run, action: AdvanceState) -> None:
     )
 
 
+def execute_deduped_advisors(run: Run, action: DedupedAdvisors) -> None:
+    """Fire advisor invokes only when the impl PR head SHA has moved.
+
+    Fetches the impl PR's current head SHA via ``repo_helper.get_pr_head_sha``.
+    When equal to ``run.last_advisor_sha`` the advisors are skipped
+    entirely — sibling task merges keep moving the SHA, but on a
+    repeat beacon for the same SHA there's no new diff for
+    reviewer / tester to evaluate. On a fresh SHA, the advisors fire
+    and ``last_advisor_sha`` is updated.
+    """
+    head_sha = fetch_pr_head_sha(action)
+    if head_sha is None:
+        return
+    if head_sha == run.last_advisor_sha:
+        logger.info(
+            "advisors deduped — SHA unchanged",
+            extra={"run_id": run.run_id, "head_sha": head_sha},
+        )
+        return
+    record_advisor_sha(run.run_id, head_sha)
+    for invoke in action.advisors:
+        execute_invoke_agent(run, invoke)
+
+
+def fetch_pr_head_sha(action: DedupedAdvisors) -> str | None:
+    """Resolve the impl PR's current head SHA via ``repo_helper.get_pr_head_sha``."""
+    fn = repo_helper_function_name()
+    if not fn:
+        logger.warning("repo_helper not wired", extra={"op": "get_pr_head_sha"})
+        return None
+    pr_number = pr_number_from_url(action.pr_url)
+    if pr_number is None:
+        return None
+    response = lambda_client().invoke(
+        FunctionName=fn,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(
+            {"input": {"op": "get_pr_head_sha", "repo": action.repo, "pr_number": pr_number}},
+        ).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
+    if not body.get("ok"):
+        logger.warning("get_pr_head_sha failed", extra={"body": body})
+        return None
+    result = body.get("result") or {}
+    head_sha = result.get("head_sha") if isinstance(result, dict) else None
+    return str(head_sha) if head_sha else None
+
+
+def pr_number_from_url(pr_url: str) -> int | None:
+    """Extract ``{n}`` from ``https://github.com/owner/repo/pull/{n}``."""
+    tail = pr_url.rsplit("/", 1)[-1]
+    try:
+        return int(tail)
+    except ValueError:
+        return None
+
+
+def record_advisor_sha(run_id: str, head_sha: str) -> None:
+    """Write ``last_advisor_sha = head_sha`` on the run's STATE row."""
+    try:
+        ddb().update_item(
+            TableName=runs_table(),
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            UpdateExpression="SET last_advisor_sha = :s",
+            ExpressionAttributeValues={":s": {"S": head_sha}},
+        )
+    except ClientError as exc:
+        logger.warning(
+            "record_advisor_sha failed",
+            extra={"run_id": run_id, "head_sha": head_sha, "err": repr(exc)},
+        )
+
+
+def execute_open_impl_pr(run: Run, action: OpenImplPr) -> None:
+    """Open the impl PR via repo_helper, then write ``pr_url`` to STATE + every TASK row.
+
+    ``repo_helper.open_pr`` is idempotent — a re-run that finds the PR
+    already open returns its URL without creating a duplicate. The
+    backfill writes STATE + all TASK rows in one ``TransactWriteItems``
+    so either all rows carry ``pr_url`` or none do; partial state
+    can't leak. On retry (next beacon), ``run.pr_url`` is still empty
+    and we re-open + re-backfill via the same path.
+    """
+    fn = repo_helper_function_name()
+    if not fn:
+        logger.warning("repo_helper not wired", extra={"op": "open_pr"})
+        return
+    payload = {
+        "input": {
+            "op": "open_pr",
+            "repo": action.repo,
+            "head": action.head,
+            "base": action.base,
+            "title": action.title,
+            "body": action.body,
+        },
+    }
+    response = lambda_client().invoke(
+        FunctionName=fn,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(payload).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
+    if not body.get("ok"):
+        logger.warning("open_impl_pr repo_helper failed", extra={"body": body})
+        return
+    result = body.get("result") or {}
+    pr_url = result.get("pr_url") if isinstance(result, dict) else None
+    if not isinstance(pr_url, str) or not pr_url:
+        logger.warning("open_impl_pr returned no pr_url", extra={"body": body})
+        return
+    backfill_impl_pr_url(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
+        task_ids=action.task_ids,
+        pr_url=pr_url,
+    )
+
+
+def backfill_impl_pr_url(
+    *,
+    run_id: str,
+    project_slug: str,
+    task_ids: tuple[str, ...],
+    pr_url: str,
+) -> None:
+    """Atomically write ``pr_url`` to STATE + every TASK row + enqueue a beacon.
+
+    One ``TransactWriteItems`` call: the STATE row, each TASK row, and
+    an OUTBOX row. The OUTBOX row is what triggers the next beacon —
+    without it, advisor dispatch for the first task would Noop (it
+    saw empty pr_url at the start of this beacon's dispatch) and the
+    run would wedge until another event arrived.
+    """
+    table = runs_table()
+    pk = f"RUN#{run_id}"
+    transaction = TransactWriteItemsBuilder()
+    transaction.update(
+        UpdateBuilder(table=table, key={"pk": pk, "sk": "STATE"}).set("pr_url", pr_url),
+    )
+    for task_id in task_ids:
+        task_key = {"pk": pk, "sk": f"TASK#{task_id}"}
+        transaction.update(UpdateBuilder(table=table, key=task_key).set("pr_url", pr_url))
+    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
+    transaction.put(
+        PutBuilder(
+            table=table,
+            item={
+                "pk": pk,
+                "sk": f"OUTBOX#{new_event_id()}",
+                "run_id": run_id,
+                "project_slug": project_slug,
+                "expire_at": expire_at,
+            },
+        ).condition_not_exists("sk"),
+    )
+    try:
+        transaction.commit(ddb())
+    except ClientError as exc:
+        logger.warning(
+            "backfill_impl_pr_url transaction failed",
+            extra={"run_id": run_id, "task_count": len(task_ids), "err": repr(exc)},
+        )
+
+
 def execute_seed_tasks(action: SeedTasks) -> None:
     """Write one TASK row per id in ``status=pending``.
 
@@ -458,6 +630,8 @@ EXECUTORS: dict[type[Action], Any] = {
     InvokeAgent: lambda run, a: execute_invoke_agent(run, a),  # noqa: PLW0108
     EmitEvent: execute_emit_event,
     InvokeRepoHelper: lambda run, a: execute_invoke_repo_helper(run, a),  # noqa: PLW0108
+    DedupedAdvisors: lambda run, a: execute_deduped_advisors(run, a),  # noqa: PLW0108
+    OpenImplPr: lambda run, a: execute_open_impl_pr(run, a),  # noqa: PLW0108
     WriteSyntheticSpec: lambda run, a: execute_write_synthetic_spec(run, a),  # noqa: PLW0108
     SeedTasks: lambda _run, a: execute_seed_tasks(a),
     AdvanceState: lambda run, a: execute_advance_state(run, a),  # noqa: PLW0108

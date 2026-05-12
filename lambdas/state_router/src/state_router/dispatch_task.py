@@ -10,9 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
+from common.events import EventEnvelope, TaskBlocked
+from common.ids import CorrelationId, RunId, new_event_id
 from common.state import TaskState
 from state_router.actions import (
     Action,
+    DedupedAdvisors,
+    EmitEvent,
     GuardedAdvance,
     InvokeAgent,
     Noop,
@@ -25,16 +29,87 @@ if TYPE_CHECKING:
 type TaskHandler = Callable[["Run", "Task"], Action]
 
 
+DEPENDS_ON_SATISFIED_STATES: frozenset[TaskState] = frozenset(
+    {
+        TaskState.pr_open,
+        TaskState.reviewer_running,
+        TaskState.tester_running,
+        TaskState.pending_approval,
+        TaskState.iterating,
+        TaskState.blocked,
+        TaskState.merged,
+    },
+)
+"""Predecessor task states that count as satisfying a ``depends_on``.
+
+A predecessor must have merged into the impl branch before its
+dependent runs — ``pr_open`` and later are the proof of that merge.
+``closed`` / ``failed`` are terminal-not-merged: a dependent on a
+failed predecessor stays blocked because the merge never happened.
+"""
+
+
 def decide_task(run: Run, task: Task) -> Action:
     """Dispatch one task based on its current state.
 
     Pure: takes both the run (for context like spec_slug, target_repo)
     and the task (for state-specific data like pr_url, iteration_count).
+
+    For ``pending`` tasks, ``depends_on`` is enforced first: a missing
+    predecessor (validation bypassed) is a permanent block; an
+    in-progress predecessor is a wait-then-retry.
     """
+    if task.state == TaskState.pending and task.depends_on:
+        action = check_depends_on(run, task)
+        if action is not None:
+            return action
     handler = TASK_DISPATCH.get(task.state)
     if handler is None:
         return Noop(f"unknown task state: {task.state}")
     return handler(run, task)
+
+
+def check_depends_on(run: Run, task: Task) -> Action | None:
+    """Walk ``task.depends_on``; return a Noop / EmitEvent if any blocks dispatch.
+
+    Returns ``None`` when every predecessor has reached a satisfied
+    state — caller proceeds to the normal pending dispatch.
+    """
+    tasks_by_id = {t.task_id: t for t in run.tasks}
+    waiting: list[str] = []
+    for predecessor_id in task.depends_on:
+        predecessor = tasks_by_id.get(predecessor_id)
+        if predecessor is None:
+            return emit_task_blocked(
+                run,
+                task,
+                reason=f"depends_on references unknown task {predecessor_id!r}",
+            )
+        if predecessor.state not in DEPENDS_ON_SATISFIED_STATES:
+            waiting.append(predecessor_id)
+    if waiting:
+        return Noop(f"task {task.task_id} waiting for depends_on: {', '.join(waiting)}")
+    return None
+
+
+def emit_task_blocked(run: Run, task: Task, *, reason: str) -> EmitEvent:
+    """Emit ``TASK.BLOCKED`` so the projector advances this task to ``blocked``."""
+    return EmitEvent(
+        envelope=EventEnvelope[TaskBlocked](
+            event_id=new_event_id(),
+            type="TASK.BLOCKED",
+            run_id=RunId(run.run_id),
+            correlation_id=CorrelationId(run.correlation_id),
+            actor_id="state_router",
+            payload=TaskBlocked(
+                project_slug=run.project_slug,
+                spec_slug=run.spec_slug or "",
+                task_id=task.task_id,
+                blocked_reason=reason,
+                session_id=run.run_id,
+            ),
+        ),
+    )
 
 
 def dispatch_implementer(run: Run, task: Task) -> Action:
@@ -67,34 +142,44 @@ def dispatch_implementer(run: Run, task: Task) -> Action:
 
 
 def dispatch_advisors(run: Run, task: Task) -> Action:
-    """PR is open — fire reviewer + tester in parallel, race-protected.
+    """PR is open — fire reviewer + tester in parallel, dedup'd by PR head SHA.
 
     The :class:`GuardedAdvance` flips the task ``pr_open → pending_approval``;
-    only the winning router runs ``on_success`` and fires the advisors.
-    A loser (e.g., a redelivered beacon while the original consumer was
-    still mid-execution) sees the new state on its next read and no-ops.
-    Without the gate, ``advance_from == advance_to`` is a no-op
-    conditional that always succeeds — every concurrent router would
-    fire both advisors, doubling cost and PR comment noise.
+    only the winning router runs ``on_success``. The inner
+    :class:`DedupedAdvisors` action then fetches the PR head SHA and
+    skips the advisor invocations if it matches ``run.last_advisor_sha``
+    — sibling-task merges that move the SHA between this beacon and
+    a redelivery would otherwise re-fire reviewer + tester on the same
+    diff.
 
     Reviewer's ``REVIEW.READY`` and tester's ``TEST_REPORT.READY``
     events are advisory and do not change task state; advisors post
-    their findings as PR comments while we wait for human merge or PR
-    review verdict.
+    their findings as PR comments while we wait for human merge or
+    review verdict. When the task hasn't yet been linked to a PR
+    (``task.pr_url`` empty — first task in the run, impl PR opening
+    in flight), Noop and let the next beacon retry once pr_url is set.
     """
-    fires: list[Action] = []
+    if not task.pr_url or not run.target_repo:
+        return Noop(f"task {task.task_id} pr_url not yet set; waiting for impl PR open")
+    invokes: list[InvokeAgent] = []
     reviewer_arn = runtime_arn("reviewer")
     tester_arn = runtime_arn("tester")
     if reviewer_arn:
-        fires.append(invoke_reviewer(run, task, reviewer_arn))
+        invokes.append(invoke_reviewer(run, task, reviewer_arn))
     if tester_arn:
-        fires.append(invoke_tester(run, task, tester_arn))
+        invokes.append(invoke_tester(run, task, tester_arn))
     return GuardedAdvance(
         target_pk=f"RUN#{run.run_id}",
         target_sk=f"TASK#{task.task_id}",
         advance_from=TaskState.pr_open.value,
         advance_to=TaskState.pending_approval.value,
-        on_success=tuple(fires),
+        on_success=(
+            DedupedAdvisors(
+                repo=run.target_repo,
+                pr_url=task.pr_url,
+                advisors=tuple(invokes),
+            ),
+        ),
     )
 
 

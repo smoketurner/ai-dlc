@@ -124,6 +124,40 @@ class GetPrInput(BaseOp):
     pr_number: int = Field(ge=1)
 
 
+class GetPrHeadShaInput(BaseOp):
+    """Resolve a PR number to its current head commit SHA."""
+
+    op: Literal["get_pr_head_sha"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+
+
+class UpdatePrInput(BaseOp):
+    """Update a pull request's title and/or body via PATCH."""
+
+    op: Literal["update_pr"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+    title: str | None = Field(default=None, min_length=1, max_length=256)
+    body: str | None = Field(default=None, max_length=65_536)
+
+
+class MergeBranchInput(BaseOp):
+    """Merge ``head`` into ``base`` via GitHub's server-side merge API.
+
+    Returns ``merged=True`` on 201 (merge commit created) or 204
+    (already up to date). On 409 the response carries ``conflict=True``
+    and the caller is expected to resolve via a follow-up commit before
+    retrying.
+    """
+
+    op: Literal["merge_branch"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    base: str = Field(min_length=1, max_length=128)
+    head: str = Field(min_length=1, max_length=128)
+    commit_message: str | None = Field(default=None, max_length=1024)
+
+
 class CommentIssueInput(BaseOp):
     """Add a comment to an issue."""
 
@@ -334,10 +368,13 @@ class ListCheckRunsInput(BaseOp):
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
     "open_spec_pr": OpenSpecPrInput,
+    "update_pr": UpdatePrInput,
     "comment_pr": CommentPrInput,
     "create_branch": CreateBranchInput,
+    "merge_branch": MergeBranchInput,
     "commit_files": CommitFilesInput,
     "get_pr": GetPrInput,
+    "get_pr_head_sha": GetPrHeadShaInput,
     "get_file": GetFileInput,
     "comment_issue": CommentIssueInput,
     "label_issue": LabelIssueInput,
@@ -420,11 +457,27 @@ def run_op(req: BaseOp, client: httpx.Client) -> dict[str, Any]:
 
 
 def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
-    """Open a pull request."""
+    """Open a pull request, idempotent when an open PR already exists.
+
+    On 422 "A pull request already exists for ..." the open PR is
+    looked up via ``GET /pulls?head={owner}:{head}&state=open`` and
+    its number + URL are returned. The existing PR's title/body are
+    left untouched — callers wanting to refresh metadata use
+    ``update_pr``.
+    """
     response = client.post(
         f"/repos/{req.repo}/pulls",
         json={"title": req.title, "body": req.body, "head": req.head, "base": req.base},
     )
+    if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+        existing = find_open_pr(req.repo, branch=req.head, base=req.base, client=client)
+        if existing is not None:
+            return {
+                "pr_number": existing["number"],
+                "pr_url": existing["html_url"],
+                "state": existing["state"],
+                "reused": True,
+            }
     response.raise_for_status()
     body = response.json()
     return {
@@ -432,6 +485,75 @@ def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
         "pr_url": body["html_url"],
         "state": body["state"],
     }
+
+
+def update_pr(req: UpdatePrInput, client: httpx.Client) -> dict[str, Any]:
+    """PATCH a PR's title / body. No-op when neither is provided."""
+    payload: dict[str, Any] = {}
+    if req.title is not None:
+        payload["title"] = req.title
+    if req.body is not None:
+        payload["body"] = req.body
+    if not payload:
+        return {"pr_number": req.pr_number, "updated": False}
+    response = client.patch(
+        f"/repos/{req.repo}/pulls/{req.pr_number}",
+        json=payload,
+    )
+    response.raise_for_status()
+    body = response.json()
+    return {
+        "pr_number": body["number"],
+        "pr_url": body["html_url"],
+        "state": body["state"],
+        "updated": True,
+    }
+
+
+def get_pr_head_sha(req: GetPrHeadShaInput, client: httpx.Client) -> dict[str, Any]:
+    """Return only the head SHA + state for a PR — cheap polling primitive."""
+    response = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
+    response.raise_for_status()
+    body = response.json()
+    return {
+        "pr_number": body["number"],
+        "head_sha": body["head"]["sha"],
+        "state": body["state"],
+        "merged": body.get("merged", False),
+    }
+
+
+def merge_branch(req: MergeBranchInput, client: httpx.Client) -> dict[str, Any]:
+    """Merge ``head`` into ``base`` via ``POST /repos/{repo}/merges``.
+
+    The GitHub merges API performs a server-side three-way merge:
+
+    * 201 — merge commit created. Returns ``merged=True`` + the new SHA.
+    * 204 — nothing to merge (already up to date). Returns ``merged=True``,
+      ``already_merged=True``.
+    * 409 — merge conflict. Returns ``conflict=True`` so the caller can
+      run the conflict-resolution flow without seeing this as an error.
+    * 404 — base/head missing. Returns ``not_found=True``.
+    """
+    payload: dict[str, Any] = {"base": req.base, "head": req.head}
+    if req.commit_message:
+        payload["commit_message"] = req.commit_message
+    response = client.post(f"/repos/{req.repo}/merges", json=payload)
+    if response.status_code == httpx.codes.CREATED:
+        body = response.json()
+        return {
+            "merged": True,
+            "already_merged": False,
+            "merge_commit_sha": body.get("sha", ""),
+        }
+    if response.status_code == httpx.codes.NO_CONTENT:
+        return {"merged": True, "already_merged": True, "merge_commit_sha": ""}
+    if response.status_code == httpx.codes.CONFLICT:
+        return {"merged": False, "conflict": True}
+    if response.status_code == httpx.codes.NOT_FOUND:
+        return {"merged": False, "not_found": True}
+    response.raise_for_status()
+    return {"merged": False}
 
 
 def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
@@ -599,7 +721,13 @@ def comment_pr(req: CommentPrInput, client: httpx.Client) -> dict[str, Any]:
 
 
 def create_branch(req: CreateBranchInput, client: httpx.Client) -> dict[str, Any]:
-    """Create a branch off another branch via the GitHub Git refs API."""
+    """Create a branch off another branch via the GitHub Git refs API.
+
+    Idempotent on 422 "Reference already exists" — the existing ref is
+    fetched and returned so callers don't need to special-case re-runs.
+    The returned SHA is whatever the branch points at today, which may
+    have advanced past the requested base.
+    """
     base_ref = client.get(f"/repos/{req.repo}/git/refs/heads/{req.base}")
     base_ref.raise_for_status()
     base_sha = base_ref.json()["object"]["sha"]
@@ -607,6 +735,16 @@ def create_branch(req: CreateBranchInput, client: httpx.Client) -> dict[str, Any
         f"/repos/{req.repo}/git/refs",
         json={"ref": f"refs/heads/{req.branch}", "sha": base_sha},
     )
+    if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
+        existing = client.get(f"/repos/{req.repo}/git/refs/heads/{req.branch}")
+        existing.raise_for_status()
+        body = existing.json()
+        return {
+            "branch": req.branch,
+            "ref": body["ref"],
+            "sha": body["object"]["sha"],
+            "reused": True,
+        }
     response.raise_for_status()
     body = response.json()
     return {
@@ -1122,10 +1260,13 @@ OpHandler = Callable[[Any, httpx.Client], dict[str, Any]]
 OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     OpenPrInput: ("open_pr", open_pr),
     OpenSpecPrInput: ("open_spec_pr", open_spec_pr),
+    UpdatePrInput: ("update_pr", update_pr),
     CommentPrInput: ("comment_pr", comment_pr),
     CreateBranchInput: ("create_branch", create_branch),
+    MergeBranchInput: ("merge_branch", merge_branch),
     CommitFilesInput: ("commit_files", commit_files),
     GetPrInput: ("get_pr", get_pr),
+    GetPrHeadShaInput: ("get_pr_head_sha", get_pr_head_sha),
     GetFileInput: ("get_file", get_file),
     CommentIssueInput: ("comment_issue", comment_issue),
     LabelIssueInput: ("label_issue", label_issue),

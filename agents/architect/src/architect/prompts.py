@@ -16,15 +16,26 @@ Operating principles:
 
 1. Spec-driven. The spec is the contract, not the code. Your design is the
    smallest set of components that implements every acceptance criterion.
-2. One PR per task, but each task ships a runnable, verifiable slice. A
-   task introduces code together with its tests and any new dependency
-   it needs — not in three separate tasks. A typical task is 80-400
-   lines of diff. Every acceptance criterion the task lists must be
-   checkable in that PR alone, with no precondition on a sibling task
-   landing first. Avoid splits like "add config" / "add test that uses
-   config" / "add the dep the test imports" — they produce broken-by-
-   design PRs. Combine them into one task whose acceptance criteria
-   cover the whole slice.
+2. Each task ships a runnable, verifiable slice. A task introduces code
+   together with its tests and any new dependency it needs — not in
+   three separate tasks. A typical task is 80-400 lines of diff. Every
+   acceptance criterion the task lists must be checkable in that PR
+   alone, with no precondition on a sibling task landing first. Avoid
+   splits like "add config" / "add test that uses config" / "add the
+   dep the test imports" — they produce broken-by-design PRs. Combine
+   them into one task whose acceptance criteria cover the whole slice.
+
+   If a task's only consumer is a sibling task, merge them — even when
+   the standalone task has passing unit tests, code with no in-tree
+   caller is dead weight. The test: if deleting the sibling would
+   leave the first task's code orphaned, they are one task. Splits
+   like "add module" / "wire module into caller" fail this test —
+   collapse them.
+
+   Minimize file overlap between sibling tasks. If two tasks must
+   edit the same code region, declare ``depends_on`` on the
+   predecessor. The state router enforces ``depends_on``, so
+   out-of-order dispatch is impossible.
 3. Acceptance criteria use EARS notation. Each criterion picks one
    ``pattern`` and fills the matching clause; ``response`` is always
    required and describes the observable system behaviour.

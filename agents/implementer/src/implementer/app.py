@@ -93,45 +93,31 @@ def run_implementer(payload: ImplementerInput, async_task_id: int) -> None:
 
 
 def emit_terminal_event(payload: ImplementerInput, result: ImplementerResult) -> None:
-    """Branch on the agent's result to emit TASK.READY / TASK.BLOCKED / RUN.FAILED.
+    """Branch on the agent's result to emit TASK.READY / TASK.BLOCKED.
 
-    A ``None`` ``pr_url`` is the historical "implementer dead-ended"
-    case; without an event the task wedges. Emit ``RUN.FAILED`` so the
-    run terminates and a human can investigate.
+    The implementer no longer owns the PR — the unified impl PR is
+    opened by the state router on the first task event. ``pr_url`` on
+    the event is left empty; the projector / state router backfills
+    it once the PR is open.
     """
-    if result.pr_url is None:
-        logger.error(
-            "implementer returned no pr_url",
-            run_id=payload.run_id,
-            task_id=payload.task_id,
-        )
-        publish_run_failed_no_pr(payload)
-        return
     if result.blocked_reason is not None:
         logger.info(
             "task blocked",
             run_id=payload.run_id,
             task_id=payload.task_id,
-            pr_url=result.pr_url,
             blocked_reason=result.blocked_reason,
         )
-        emit_task_blocked(payload, result, pr_url=result.pr_url)
+        emit_task_blocked(payload, result)
         return
     logger.info(
         "task ready",
         run_id=payload.run_id,
         task_id=payload.task_id,
-        pr_url=result.pr_url,
     )
-    emit_task_ready(payload, result, pr_url=result.pr_url)
+    emit_task_ready(payload, result)
 
 
-def emit_task_ready(
-    payload: ImplementerInput,
-    result: ImplementerResult,
-    *,
-    pr_url: str,
-) -> None:
+def emit_task_ready(payload: ImplementerInput, result: ImplementerResult) -> None:
     """Emit TASK.READY so the projector advances the task to ``pr_open``."""
     envelope = EventEnvelope[TaskReady](
         event_id=new_event_id(),
@@ -143,7 +129,6 @@ def emit_task_ready(
             project_slug=payload.project_slug,
             spec_slug=payload.spec_slug,
             task_id=payload.task_id,
-            pr_url=pr_url,
             diff_summary=result.diff_summary,
             session_id=result.session_id,
             token_in=result.token_in,
@@ -155,12 +140,7 @@ def emit_task_ready(
     publish(envelope)
 
 
-def emit_task_blocked(
-    payload: ImplementerInput,
-    result: ImplementerResult,
-    *,
-    pr_url: str,
-) -> None:
+def emit_task_blocked(payload: ImplementerInput, result: ImplementerResult) -> None:
     """Emit TASK.BLOCKED so the projector advances the task to ``blocked``."""
     if result.blocked_reason is None:
         msg = "emit_task_blocked called without blocked_reason"
@@ -175,7 +155,6 @@ def emit_task_blocked(
             project_slug=payload.project_slug,
             spec_slug=payload.spec_slug,
             task_id=payload.task_id,
-            pr_url=pr_url,
             blocked_reason=result.blocked_reason,
             session_id=result.session_id,
             token_in=result.token_in,
@@ -200,31 +179,6 @@ def publish_run_failed(payload: ImplementerInput, exc: BaseException) -> None:
             failed_state="implementer_running",
             error_class=type(exc).__name__,
             error_message=str(exc)[:1024],
-            retryable=True,
-        ),
-    )
-    publish(envelope)
-
-
-def publish_run_failed_no_pr(payload: ImplementerInput) -> None:
-    """Emit RUN.FAILED when the agent ran clean but produced no PR.
-
-    The historical "dead-end" case — the agent decides not to make a
-    change and returns without ``pr_url``. Without an event the task
-    wedges in ``implementer_running``; this terminates the run so a
-    human can investigate.
-    """
-    envelope = EventEnvelope[RunFailed](
-        event_id=new_event_id(),
-        type="RUN.FAILED",
-        run_id=RunId(payload.run_id),
-        correlation_id=CorrelationId(payload.correlation_id),
-        actor_id="implementer",
-        payload=RunFailed(
-            project_slug=payload.project_slug,
-            failed_state="implementer_running",
-            error_class="implementer_no_pr",
-            error_message=(f"implementer for task {payload.task_id} returned without a PR url"),
             retryable=True,
         ),
     )

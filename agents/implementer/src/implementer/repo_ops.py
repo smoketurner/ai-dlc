@@ -33,7 +33,6 @@ import boto3
 import httpx
 import structlog
 
-from common.door import classify_paths
 from common.github_app import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
@@ -223,16 +222,27 @@ def fetch_spec(spec_s3_prefix: str) -> None:
         (target / f"{doc}.md").write_bytes(body)
 
 
-def task_branch_name(task_id: str, spec_slug: str, run_id: str) -> str:
-    """Conventional branch name for a single-task PR.
+def impl_branch_name(spec_slug: str, run_id: str) -> str:
+    """Conventional branch name for the unified implementation PR.
 
-    Run-scoped: each run gets isolated task branches so reviewers see
-    a stable branch tip per run instead of force-pushed history from
-    later runs on the same ``(spec_slug, task_id)``.
+    One impl branch per run; every task in the run merges into it via
+    GitHub's server-side merge API. Mirrors the existing
+    ``aidlc/spec/{spec_slug}`` naming for spec PRs.
     """
     from common.ids import short_run_id  # noqa: PLC0415 - cheap import-time pin
 
-    return f"aidlc/{spec_slug}/{short_run_id(run_id)}/{task_id.lower()}"
+    return f"aidlc/impl/{spec_slug}/{short_run_id(run_id)}"
+
+
+def task_branch_name(task_id: str, spec_slug: str, run_id: str) -> str:
+    """Conventional branch name for a single task within an impl run.
+
+    Task branches live under the impl branch namespace and merge into
+    the impl branch rather than into ``main``. Run-scoped via
+    ``short_run_id`` so retries against the same ``(spec_slug, task_id)``
+    don't collide.
+    """
+    return f"{impl_branch_name(spec_slug, run_id)}/{task_id.lower()}"
 
 
 def create_branch(branch: str) -> None:
@@ -244,6 +254,56 @@ def create_branch(branch: str) -> None:
     run_git("checkout", "-B", branch)
 
 
+def checkout_impl_branch(branch: str) -> None:
+    """Fetch + check out the run's impl branch as the task branch's base.
+
+    Called after ``clone_repo`` (which lands on ``main``) and before
+    ``create_branch`` for the task. The impl branch is created by the
+    event projector on ``SPEC.APPROVED`` and starts identical to
+    ``main`` — sibling-task merges advance it.
+    """
+    run_git("fetch", "origin", branch)
+    run_git("checkout", "-B", branch, f"origin/{branch}")
+
+
+def fetch_branch(branch: str) -> None:
+    """Fetch ``branch`` from ``origin`` without changing HEAD."""
+    run_git("fetch", "origin", branch)
+
+
+def merge_remote_into_head(branch: str) -> bool:
+    """Merge ``origin/{branch}`` into the current HEAD.
+
+    Returns ``True`` when the merge completed cleanly (auto-merge with
+    no conflict markers, or a fast-forward). Returns ``False`` when
+    the merge left conflict markers in the working tree — caller is
+    expected to either resolve them and commit, or run
+    ``git merge --abort``.
+    """
+    run_git("fetch", "origin", branch)
+    try:
+        run_git("merge", f"origin/{branch}", "--no-edit")
+    except RuntimeError:
+        return not has_unmerged_paths()
+    return True
+
+
+def has_unmerged_paths() -> bool:
+    """``True`` when ``git diff --name-only --diff-filter=U`` is non-empty."""
+    return bool(unmerged_paths())
+
+
+def unmerged_paths() -> list[str]:
+    """List paths with unresolved merge conflicts in the working tree."""
+    output = run_git("diff", "--name-only", "--diff-filter=U")
+    return [line for line in output.splitlines() if line]
+
+
+def abort_merge() -> None:
+    """Abort an in-progress merge, restoring the working tree."""
+    run_git("merge", "--abort")
+
+
 def commit_changes(message: str) -> str:
     """Stage every change in the repo + create a commit. Return the SHA."""
     run_git("add", "-A")
@@ -252,23 +312,13 @@ def commit_changes(message: str) -> str:
 
 
 def push_branch(branch: str) -> None:
-    """Push ``branch`` to ``origin``, recovering from non-fast-forward rejects.
+    """Push ``branch`` to ``origin``. Single-writer: a plain push suffices.
 
-    A re-run for the same ``(spec_slug, task_id)`` finds the remote branch
-    populated from the prior run while the local branch was force-recreated
-    off ``main``. The first push fails with ``! [rejected] ... non-fast-
-    forward``; we fetch the remote ref (which updates
-    ``refs/remotes/origin/<branch>`` thanks to the default refspec set up
-    by ``clone_repo``) and force-with-lease push so a concurrent
-    maintainer push between fetch and push is still detected.
+    Task branches are scoped to ``short_run_id`` and branched off the
+    run's impl branch tip; no other container writes the same task
+    branch, so the push is always fast-forward.
     """
-    try:
-        run_git("push", "--set-upstream", "origin", branch)
-    except RuntimeError as exc:
-        logger.info("push rejected; fetching and force-pushing", branch=branch, error=str(exc))
-        run_git("fetch", "origin", branch)
-        run_git("push", "--force-with-lease", "origin", branch)
-        logger.info("force-pushed existing branch", branch=branch)
+    run_git("push", "--set-upstream", "origin", branch)
 
 
 def has_uncommitted_changes() -> bool:
@@ -276,17 +326,15 @@ def has_uncommitted_changes() -> bool:
     return bool(run_git("status", "--porcelain").strip())
 
 
-def agent_made_real_changes(spec_slug: str) -> bool:
+def agent_made_real_changes(spec_slug: str, *, base: str) -> bool:
     """``True`` when committed or uncommitted edits touch any path outside the spec tree.
 
-    Compares ``HEAD`` against ``origin/main`` (the merge base) so this catches
-    edits the agent made and committed during its session, edits inherited
-    from a prior run on the same branch, and edits still in the working
-    tree. The platform writes the spec bundle to ``docs/specs/<spec_slug>/``
-    after the agent finishes, so those paths are excluded — they don't
-    represent agent work. Re-runs that hit a Bedrock auth failure or
-    otherwise short-circuit produce zero edits anywhere; detecting that is
-    what skips the PR-creation flow rather than emit a 1-line "diff" PR.
+    Compares ``HEAD`` against ``origin/{base}`` (typically the run's
+    impl branch) so this catches edits the agent made and committed
+    during its session, edits inherited from a prior run on the same
+    branch, and edits still in the working tree. Spec docs under
+    ``docs/specs/<spec_slug>/`` are excluded — they're merged via the
+    spec PR before the implementer runs.
     """
     spec_prefix = f"docs/specs/{spec_slug}/"
     # ``rstrip`` instead of ``strip``: porcelain leads with two status chars
@@ -294,7 +342,7 @@ def agent_made_real_changes(spec_slug: str) -> bool:
     porcelain = run_git("status", "--porcelain").rstrip().splitlines()
     # ``XY <path>`` (or ``XY <old> -> <new>`` for renames); strip the flags.
     uncommitted = [line[3:].split(" -> ")[-1] for line in porcelain]
-    committed = changed_paths(base="main")
+    committed = changed_paths(base=base)
     return any(not p.startswith(spec_prefix) for p in committed + uncommitted)
 
 
@@ -308,131 +356,6 @@ def changed_paths(*, base: str) -> list[str]:
     """
     output = run_git("diff", "--name-only", f"origin/{base}...HEAD")
     return [line for line in output.splitlines() if line]
-
-
-def github_headers(token: str) -> dict[str, str]:
-    """Standard GitHub REST headers for one bearer token."""
-    return {
-        "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-def comment_on_pr(session: RepoSession, *, pr_number: int, body: str) -> None:
-    """Post an issue-comment on a PR (PRs share the issues comment endpoint)."""
-    url = f"{GITHUB_API}/repos/{session.target_repo}/issues/{pr_number}/comments"
-    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-        resp = client.post(url, headers=github_headers(session.access_token), json={"body": body})
-        resp.raise_for_status()
-
-
-def draft_explanation(categories: list[str]) -> str:
-    """Body of the explanatory comment posted when draft mode is forced."""
-    bullets = "\n".join(f"- `{c}`" for c in categories)
-    return (
-        "This PR is held in draft because the diff touches changes that the "
-        "platform classifies as **one-way doors** (changes that are hard to "
-        "reverse without significant cost):\n\n"
-        f"{bullets}\n\n"
-        'A maintainer should review the diff and mark the PR "Ready for '
-        'review" before merging. See `packages/common/src/common/door.py` for '
-        "the full taxonomy."
-    )
-
-
-def read_pr_html_url(session: RepoSession, pr_number: int) -> str:
-    """Fetch a PR's ``html_url`` by number."""
-    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls/{pr_number}"
-    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-        resp = client.get(url, headers=github_headers(session.access_token))
-        resp.raise_for_status()
-        return str(resp.json()["html_url"])
-
-
-def find_open_pr_for_branch(session: RepoSession, branch: str) -> int | None:
-    """Return the open PR's number for ``branch``, or ``None`` if none exists.
-
-    Used to make :func:`open_pr` idempotent across re-runs: when a prior
-    invocation already opened a PR for this head, we reuse it rather than
-    posting and getting a 422 "A pull request already exists" back.
-    """
-    owner = session.target_repo.split("/", 1)[0]
-    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls"
-    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-        resp = client.get(
-            url,
-            headers=github_headers(session.access_token),
-            params={"head": f"{owner}:{branch}", "state": "open"},
-        )
-        resp.raise_for_status()
-        body = resp.json()
-    if not body:
-        return None
-    return int(body[0]["number"])
-
-
-def open_pr(
-    session: RepoSession,
-    *,
-    branch: str,
-    base: str,
-    title: str,
-    body: str,
-    draft: bool = False,
-) -> str:
-    """Open (or reuse) a PR via the GitHub REST API; return the PR HTML URL.
-
-    When an open PR already exists for ``branch``, return its URL instead
-    of creating a new one. The existing PR's title/body/draft state is
-    left untouched — reviewers may have anchored comments on the original
-    body, and we don't want to flip a "Ready for review" PR back to draft.
-
-    For brand-new PRs, force draft mode when the diff touches any path
-    matching the one-way door rules in :func:`common.door.classify_paths`
-    — defense in depth on top of the Architect's stated ``door_class``.
-    When the override engages, also post an explanatory first comment on
-    the PR so the maintainer knows why it landed in draft.
-    """
-    existing_pr = find_open_pr_for_branch(session, branch)
-    if existing_pr is not None:
-        existing_url = read_pr_html_url(session, existing_pr)
-        logger.info(
-            "open_pr reused existing pr",
-            target_repo=session.target_repo,
-            branch=branch,
-            pr_number=existing_pr,
-        )
-        return existing_url
-    forced_categories = classify_paths(changed_paths(base=base))
-    is_draft = draft or bool(forced_categories)
-    override_engaged = bool(forced_categories) and not draft
-    if override_engaged:
-        logger.warning(
-            "open_pr forcing draft mode",
-            target_repo=session.target_repo,
-            branch=branch,
-            categories=forced_categories,
-        )
-    url = f"{GITHUB_API}/repos/{session.target_repo}/pulls"
-    payload = {
-        "title": title,
-        "body": body,
-        "head": branch,
-        "base": base,
-        "draft": is_draft,
-    }
-    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
-        resp = client.post(url, headers=github_headers(session.access_token), json=payload)
-        resp.raise_for_status()
-        pr = resp.json()
-    if override_engaged:
-        comment_on_pr(
-            session,
-            pr_number=int(pr["number"]),
-            body=draft_explanation(list(forced_categories)),
-        )
-    return str(pr["html_url"])
 
 
 def short_diff_summary() -> str:

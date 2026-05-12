@@ -174,6 +174,68 @@ class SpecBundle(_Frozen):
     design: Design
     tasks: Annotated[list[Task], Field(min_length=1, max_length=64)]
 
+    @model_validator(mode="after")
+    def depends_on_graph_is_well_formed(self) -> Self:
+        """Reject dangling ``depends_on`` references and cyclic graphs.
+
+        The state router treats a task as dispatchable only after every
+        ``depends_on`` predecessor has reached ``pr_open`` or later. A
+        dangling predecessor would leave the dependent task stuck
+        indefinitely; a cycle would deadlock the run. Both fail the
+        spec at validation time rather than at dispatch time.
+        """
+        task_ids = {task.id for task in self.tasks}
+        for task in self.tasks:
+            missing = [dep for dep in task.depends_on if dep not in task_ids]
+            if missing:
+                msg = (
+                    f"task {task.id!r} lists unknown depends_on entries: "
+                    f"{sorted(missing)!r}"
+                )
+                raise ValueError(msg)
+        graph = {task.id: tuple(task.depends_on) for task in self.tasks}
+        cycle = find_cycle(graph)
+        if cycle is not None:
+            msg = f"depends_on graph has a cycle: {' -> '.join(cycle)}"
+            raise ValueError(msg)
+        return self
+
+
+def find_cycle(graph: dict[str, tuple[str, ...]]) -> list[str] | None:
+    """Return one cycle as a node list, or ``None`` if the graph is a DAG.
+
+    Iterative DFS with a three-colour marker (unseen / on-stack / done).
+    The returned list starts and ends with the same node so the caller
+    can render it as ``A -> B -> C -> A``.
+    """
+    white, gray, black = 0, 1, 2
+    colour: dict[str, int] = dict.fromkeys(graph, white)
+    for root in graph:
+        if colour[root] != white:
+            continue
+        stack: list[tuple[str, int]] = [(root, 0)]
+        path: list[str] = []
+        while stack:
+            node, index = stack[-1]
+            if index == 0:
+                colour[node] = gray
+                path.append(node)
+            successors = graph.get(node, ())
+            if index < len(successors):
+                stack[-1] = (node, index + 1)
+                child = successors[index]
+                child_colour = colour.get(child, white)
+                if child_colour == gray:
+                    start = path.index(child)
+                    return [*path[start:], child]
+                if child_colour == white:
+                    stack.append((child, 0))
+                continue
+            colour[node] = black
+            path.pop()
+            stack.pop()
+    return None
+
 
 def render_acceptance_criterion(ac: AcceptanceCriterion) -> str:
     """Render one criterion as a single EARS sentence ending with a period.

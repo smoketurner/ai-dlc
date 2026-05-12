@@ -97,6 +97,23 @@ stateDiagram-v2
 6. Add `<name> = "latest"` to `agent_image_tags` in `terraform/envs/<env>/main.tf` and apply again to create the AgentCore Runtime.
 7. Add the corresponding state(s) to `packages/common/src/common/state.py`, transitions to `packages/common/src/common/state_transitions.py`, and a dispatch handler in `lambdas/state_router/src/state_router/dispatch.py` — only if the agent participates in the run state machine (out-of-band agents like the retrospector skip this step).
 
+## Target-repo prerequisites
+
+The platform writes branches under `aidlc/spec/*` and `aidlc/impl/*` and
+opens PRs from them. Every target repo must be configured as follows:
+
+- **Settings → General → "Automatically delete head branches"**: enable.
+  Spec branches (`aidlc/spec/{slug}`) and impl branches
+  (`aidlc/impl/{slug}/{short_run_id}`) are removed on PR merge so old
+  runs don't accumulate.
+- **Branch protection on `aidlc/*`**: do not configure. The state
+  router uses GitHub's server-side merge API (`POST /merges`) to push
+  task commits into the run's impl branch; branch protection would
+  block it.
+- **`aidlc-task-cleanup` workflow**: ships in `.github/workflows/`.
+  Sweeps orphan task sub-branches (`aidlc/impl/.../t-*`) whose parent
+  impl branch is gone. Runs daily.
+
 ## Running tests
 
 ```bash

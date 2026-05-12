@@ -31,6 +31,7 @@ class Task:
     delivery_ids: frozenset[str] = field(default_factory=frozenset)
     pending_feedback: tuple[dict[str, Any], ...] = ()
     dispatch_failure_count: int = 0
+    depends_on: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +64,8 @@ class Run:
     tasks: tuple[Task, ...] = ()
     pending_spec_feedback: tuple[str, ...] = ()
     dispatch_failure_count: int = 0
+    task_depends_on: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    last_advisor_sha: str = ""
 
 
 def deserialize_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -110,6 +113,7 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
     data = deserialize_item(item)
     state = data.get("current_state")
     pk = data.get("pk") or ""
+    task_depends_on = parse_task_depends_on(data.get("task_depends_on"))
     return Run(
         run_id=data.get("run_id") or pk.removeprefix("RUN#"),
         correlation_id=data.get("correlation_id") or "",
@@ -134,10 +138,35 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         pr_url=data.get("pr_url"),
         synthetic_spec_slug=data.get("synthetic_spec_slug"),
         task_ids=as_str_tuple(data.get("task_ids")),
-        tasks=tuple(parse_task(t) for t in task_items),
+        tasks=tuple(
+            parse_task(t, depends_on=task_depends_on.get(raw_task_id(t), ())) for t in task_items
+        ),
         pending_spec_feedback=as_str_list_tuple(data.get("pending_spec_feedback")),
         dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
+        task_depends_on=task_depends_on,
+        last_advisor_sha=str(data.get("last_advisor_sha") or ""),
     )
+
+
+def raw_task_id(item: dict[str, Any]) -> str:
+    """Extract a TASK row's id from its raw (un-deserialised) DDB item."""
+    sk = item.get("sk", {})
+    if isinstance(sk, dict):
+        return sk.get("S", "").removeprefix("TASK#")
+    return ""
+
+
+def parse_task_depends_on(value: Any) -> dict[str, tuple[str, ...]]:
+    """Decode the ``task_depends_on`` DDB Map into a typed dict."""
+    if not isinstance(value, dict):
+        return {}
+    parsed: dict[str, tuple[str, ...]] = {}
+    for key, deps in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(deps, list):
+            parsed[key] = tuple(str(d) for d in deps if isinstance(d, str))
+    return parsed
 
 
 def as_str_list_tuple(value: Any) -> tuple[str, ...]:
@@ -151,8 +180,13 @@ def as_str_list_tuple(value: Any) -> tuple[str, ...]:
     return tuple(str(v) for v in value) if isinstance(value, list) else ()
 
 
-def parse_task(item: dict[str, Any]) -> Task:
-    """Build a :class:`Task` from one ``sk=TASK#{task_id}`` row."""
+def parse_task(item: dict[str, Any], *, depends_on: tuple[str, ...] = ()) -> Task:
+    """Build a :class:`Task` from one ``sk=TASK#{task_id}`` row.
+
+    ``depends_on`` is sourced from the run's STATE row (set on
+    SPEC.READY); the caller looks it up and threads it in so each
+    Task carries the predecessor list the dispatch handler needs.
+    """
     data = deserialize_item(item)
     sk = data.get("sk") or ""
     return Task(
@@ -164,4 +198,5 @@ def parse_task(item: dict[str, Any]) -> Task:
         delivery_ids=as_str_frozenset(data.get("delivery_ids")),
         pending_feedback=normalize_feedback(data.get("pending_feedback")),
         dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
+        depends_on=depends_on,
     )

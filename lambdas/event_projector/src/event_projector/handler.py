@@ -492,21 +492,34 @@ def apply_event_specific_projections(
     for the run summary.
     """
     if event_type == "ISSUE.TRIAGED":
-        workflow_kind = payload.get("workflow_kind")
-        if isinstance(workflow_kind, str) and workflow_kind:
-            update.set("workflow_kind", workflow_kind)
-        action = payload.get("action")
-        if isinstance(action, str) and action:
-            update.set("triage_action", action)
+        project_triage(update, payload=payload)
     elif event_type == "SPEC.READY":
-        task_count = payload.get("task_count")
-        if isinstance(task_count, int):
-            update.set("tasks_total", task_count)
-        task_ids = payload.get("task_ids")
-        if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
-            update.set("task_ids", set(task_ids))
+        project_spec_ready(update, payload=payload)
     elif event_type == "RUN.COMPLETED":
         update.set("tasks_completed", int(payload.get("tasks_completed", 0)))
+
+
+def project_triage(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:
+    """Project the ``ISSUE.TRIAGED`` workflow + action onto the STATE row."""
+    workflow_kind = payload.get("workflow_kind")
+    if isinstance(workflow_kind, str) and workflow_kind:
+        update.set("workflow_kind", workflow_kind)
+    action = payload.get("action")
+    if isinstance(action, str) and action:
+        update.set("triage_action", action)
+
+
+def project_spec_ready(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:
+    """Project the ``SPEC.READY`` task list + dependency graph onto STATE."""
+    task_count = payload.get("task_count")
+    if isinstance(task_count, int):
+        update.set("tasks_total", task_count)
+    task_ids = payload.get("task_ids")
+    if isinstance(task_ids, list) and task_ids and all(isinstance(t, str) for t in task_ids):
+        update.set("task_ids", set(task_ids))
+    task_depends_on = payload.get("task_depends_on")
+    if isinstance(task_depends_on, dict) and task_depends_on:
+        update.set("task_depends_on", task_depends_on)
 
 
 def apply_usage_totals(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:

@@ -175,6 +175,11 @@ class SpecReady(UsagePayload):
     design_summary: Annotated[str, Field(max_length=1024)]
     task_count: Annotated[int, Field(ge=1)]
     task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
+    # task_id → list of predecessor task_ids. Tasks without dependencies
+    # are omitted (empty dict is the common case). The state router
+    # blocks a pending task from dispatching until every predecessor has
+    # reached ``pr_open`` or later.
+    task_depends_on: dict[str, list[str]] = Field(default_factory=dict)
     proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
     session_id: str
 
@@ -219,30 +224,33 @@ class CritiqueReady(UsagePayload):
 
 
 class TaskReady(UsagePayload):
-    """The implementer agent opened a PR for one task and is awaiting approval."""
+    """The implementer merged its task branch into the run's impl branch.
 
-    project_slug: str
-    spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str
-    diff_summary: Annotated[str, Field(max_length=4096)]
-    session_id: str
-
-
-class TaskBlocked(UsagePayload):
-    """The implementer could not produce an implementation for one task.
-
-    A draft PR exists carrying ``BLOCKED.md`` with the explanation; the
-    human advances by commenting on the PR (which fires
-    ``TASK.ITERATION_REQUESTED`` and re-runs the implementer with the
-    comment as feedback) or by closing the PR (which fires
-    ``TASK.REJECTED`` and ends the task).
+    The unified impl PR is opened by the event projector on the first
+    ``TASK.READY`` for a run; ``pr_url`` is left empty by the
+    implementer and populated by the projector after the PR is open.
     """
 
     project_slug: str
     spec_slug: str
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str
+    pr_url: str = ""
+    diff_summary: Annotated[str, Field(max_length=4096)]
+    session_id: str
+
+
+class TaskBlocked(UsagePayload):
+    """The implementer could not advance one task.
+
+    A ``BLOCKED.md`` commit on the task branch carries the explanation;
+    the human advances by commenting ``@aidlc-bot <guidance>`` on the
+    unified impl PR (which fires ``TASK.ITERATION_REQUESTED``).
+    """
+
+    project_slug: str
+    spec_slug: str
+    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    pr_url: str = ""
     blocked_reason: Annotated[str, Field(min_length=1, max_length=2048)]
     session_id: str
 
