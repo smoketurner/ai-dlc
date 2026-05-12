@@ -60,7 +60,7 @@ def test_run_state_iterable_for_dispatch_table() -> None:
     assert RunState.awaiting_human_merge in every
     assert RunState.proposer_running in every
     assert RunState.done in every
-    assert len(every) == 20
+    assert len(every) == 21
 
 
 def test_task_state_iterable_for_dispatch_table() -> None:

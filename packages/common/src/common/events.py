@@ -52,6 +52,8 @@ EventType = Literal[
     "TEST_REPORT.READY",
     "CODE_CRITIQUE.READY",
     "REVISION.READY",
+    "LINT_GATE.PASSED",
+    "LINT_GATE.FAILED",
     "RUN.COMPLETED",
     "RUN.FAILED",
     "RUN.CANCEL_REQUESTED",
@@ -430,6 +432,42 @@ class RevisionReady(UsagePayload):
     session_id: str
 
 
+class LintGatePassed(Payload):
+    """All lint/type checks passed on the impl branch.
+
+    Emitted by the lint_gate Lambda after ``ruff check .``,
+    ``ruff format --check .``, and ``ty check`` all exit 0.
+    """
+
+    project_slug: str
+    spec_slug: str
+    pr_url: str
+    head_sha: str
+    commands_run: list[str]
+    duration_ms: Annotated[int, Field(ge=0)]
+    session_id: str
+
+
+class LintGateFailed(Payload):
+    """A lint/type check failed on the impl branch.
+
+    ``error_class`` is ``"infrastructure"`` when the sandbox itself
+    could not be started or the tarball extract step failed; otherwise
+    it names the tool that produced the non-zero exit code.
+    ``stderr`` is the tail of the tool's stderr output (≤ 4 KiB).
+    """
+
+    project_slug: str
+    spec_slug: str
+    pr_url: str
+    head_sha: str
+    failed_command: str
+    stderr: Annotated[str, Field(max_length=4096)]
+    error_class: Literal["lint", "format", "typecheck", "infrastructure"]
+    duration_ms: Annotated[int, Field(ge=0)]
+    session_id: str
+
+
 class RunCompleted(Payload):
     """The run reached its terminal success state.
 
@@ -471,6 +509,8 @@ type AnyPayload = (
     | TestReportReady
     | CodeCritiqueReady
     | RevisionReady
+    | LintGatePassed
+    | LintGateFailed
     | RunCompleted
     | RunFailed
     | RunCancelRequested

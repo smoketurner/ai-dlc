@@ -11,6 +11,8 @@ from common.events import (
     CritiqueReady,
     EventEnvelope,
     IssueTriaged,
+    LintGateFailed,
+    LintGatePassed,
     RequestReceived,
     ReviewReady,
     RunCancelRequested,
@@ -402,4 +404,98 @@ def test_task_blocked_requires_blocked_reason() -> None:
                 "blocked_reason": "",
                 "session_id": "01999999-9999-7999-9999-999999999999",
             },
+        )
+
+
+def test_lint_gate_passed_round_trip() -> None:
+    payload = LintGatePassed(
+        project_slug="demo",
+        spec_slug="lint-gate",
+        pr_url="https://github.com/owner/repo/pull/7",
+        head_sha="abc1234",
+        commands_run=["ruff check .", "ruff format --check .", "ty check"],
+        duration_ms=1500,
+        session_id="r1-lint-gate",
+    )
+    env = EventEnvelope[LintGatePassed](
+        type="LINT_GATE.PASSED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="lint_gate",
+        payload=payload,
+    )
+    parsed = EventEnvelope[LintGatePassed].model_validate_json(env.model_dump_json())
+    assert parsed.type == "LINT_GATE.PASSED"
+    assert parsed.payload.commands_run == ["ruff check .", "ruff format --check .", "ty check"]
+    assert parsed.payload.head_sha == "abc1234"
+    assert parsed.payload.duration_ms == 1500
+
+
+def test_lint_gate_failed_round_trip() -> None:
+    payload = LintGateFailed(
+        project_slug="demo",
+        spec_slug="lint-gate",
+        pr_url="https://github.com/owner/repo/pull/7",
+        head_sha="abc1234",
+        failed_command="ruff check .",
+        stderr="src/foo.py:10:5: E501 line too long",
+        error_class="lint",
+        duration_ms=800,
+        session_id="r1-lint-gate",
+    )
+    env = EventEnvelope[LintGateFailed](
+        type="LINT_GATE.FAILED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="lint_gate",
+        payload=payload,
+    )
+    parsed = EventEnvelope[LintGateFailed].model_validate_json(env.model_dump_json())
+    assert parsed.type == "LINT_GATE.FAILED"
+    assert parsed.payload.error_class == "lint"
+    assert parsed.payload.failed_command == "ruff check ."
+
+
+def test_lint_gate_failed_infrastructure_error_class() -> None:
+    payload = LintGateFailed(
+        project_slug="demo",
+        spec_slug="lint-gate",
+        pr_url="https://github.com/owner/repo/pull/7",
+        head_sha="abc1234",
+        failed_command="start_session",
+        stderr="timeout starting code interpreter",
+        error_class="infrastructure",
+        duration_ms=5000,
+        session_id="",
+    )
+    assert payload.error_class == "infrastructure"
+
+
+def test_lint_gate_failed_rejects_unknown_error_class() -> None:
+    with pytest.raises(ValidationError):
+        LintGateFailed.model_validate(
+            {
+                "project_slug": "demo",
+                "spec_slug": "lint-gate",
+                "pr_url": "https://github.com/owner/repo/pull/7",
+                "head_sha": "abc1234",
+                "failed_command": "ruff check .",
+                "stderr": "error",
+                "error_class": "unknown",
+                "duration_ms": 100,
+                "session_id": "x",
+            },
+        )
+
+
+def test_lint_gate_passed_negative_duration_rejected() -> None:
+    with pytest.raises(ValidationError):
+        LintGatePassed(
+            project_slug="demo",
+            spec_slug="lint-gate",
+            pr_url="https://github.com/owner/repo/pull/7",
+            head_sha="abc",
+            commands_run=[],
+            duration_ms=-1,
+            session_id="x",
         )

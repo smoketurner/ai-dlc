@@ -86,13 +86,50 @@ class TestRunTransitions:
             == RunState.validation_complete
         )
 
-    def test_revision_ready_advances_revising_back_to_validation_running(self) -> None:
+    def test_revision_ready_advances_revising_to_tasks_complete(self) -> None:
+        # Revision re-runs the lint gate before validators fire.
         assert (
             apply_run_transition(
                 event_type="REVISION.READY",
                 current_state=RunState.revising,
             )
+            == RunState.tasks_complete
+        )
+
+    def test_lint_gate_passed_advances_to_validation_running(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="LINT_GATE.PASSED",
+                current_state=RunState.lint_gate_running,
+            )
             == RunState.validation_running
+        )
+
+    def test_lint_gate_failed_advances_to_revising(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="LINT_GATE.FAILED",
+                current_state=RunState.lint_gate_running,
+            )
+            == RunState.revising
+        )
+
+    def test_lint_gate_passed_wrong_state_is_no_op(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="LINT_GATE.PASSED",
+                current_state=RunState.tasks_complete,
+            )
+            is None
+        )
+
+    def test_lint_gate_failed_wrong_state_is_no_op(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="LINT_GATE.FAILED",
+                current_state=RunState.tasks_complete,
+            )
+            is None
         )
 
 

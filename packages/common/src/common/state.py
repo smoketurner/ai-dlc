@@ -41,6 +41,7 @@ class RunState(StrEnum):
 
     tasks_in_progress = "tasks_in_progress"
     tasks_complete = "tasks_complete"
+    lint_gate_running = "lint_gate_running"
 
     validation_running = "validation_running"
     validation_complete = "validation_complete"
