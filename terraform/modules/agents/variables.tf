@@ -219,7 +219,8 @@ variable "bus_name" {
     EventBridge platform bus name. Threaded into every agent runtime as
     ``AIDLC_BUS_NAME`` so the agent can emit its completion event
     (``SPEC.READY``, ``TASK.READY``, ``REVIEW.READY``, ``TEST_REPORT.READY``,
-    ``CRITIQUE.READY``, ``ISSUE.TRIAGED``).
+    ``CRITIQUE.READY``, ``CODE_CRITIQUE.READY``, ``REVISION.READY``,
+    ``ISSUE.TRIAGED``).
   EOT
   type        = string
 }

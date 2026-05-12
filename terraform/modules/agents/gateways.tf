@@ -33,7 +33,12 @@ resource "aws_iam_role_policy" "gateway_invoke" {
 resource "aws_bedrockagentcore_gateway" "agent" {
   for_each = var.agents
 
-  name            = "${local.prefix}-${each.key}"
+  # AgentCore Gateway names match ``^([0-9a-zA-Z][-]?){1,100}$`` —
+  # alphanumerics with hyphen separators only. Agent keys can carry
+  # underscores (e.g. ``code_critic``), so we replace ``_`` with ``-``
+  # for the name. Keep ``each.key`` for IAM role / tag-Name fields
+  # where underscores are valid.
+  name            = "${local.prefix}-${replace(each.key, "_", "-")}"
   description     = each.value.description
   role_arn        = aws_iam_role.gateway[each.key].arn
   authorizer_type = "CUSTOM_JWT"

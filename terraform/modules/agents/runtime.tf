@@ -286,9 +286,10 @@ data "aws_iam_policy_document" "runtime_inline" {
 
   # Every agent emits its own completion event (``SPEC.READY``,
   # ``TASK.READY``, ``REVIEW.READY``, ``TEST_REPORT.READY``,
-  # ``CRITIQUE.READY``, ``ISSUE.TRIAGED``) onto the platform bus when
-  # finished. The state-router invocation is fire-and-forget; the agent's
-  # event is what advances the projector's state machine.
+  # ``CRITIQUE.READY``, ``CODE_CRITIQUE.READY``, ``REVISION.READY``,
+  # ``ISSUE.TRIAGED``) onto the platform bus when finished. The
+  # state-router invocation is fire-and-forget; the agent's event is
+  # what advances the projector's state machine.
   statement {
     sid       = "EventBusPublish"
     actions   = ["events:PutEvents"]
