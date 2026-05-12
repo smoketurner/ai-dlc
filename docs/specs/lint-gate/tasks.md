@@ -1,16 +1,22 @@
-# Tasks — Deterministic lint/typecheck gates between agent steps
+# Tasks — Deterministic lint/typecheck gate between agent steps
 
 > **Spec slug:** `lint-gate`
 
 Ordered, atomic units. Each task is one PR.
 
-- [ ] **T-001** — Add implementer.lint_gate module with run_lint_gate using Makefile targets
-  - **Implements:** AC-001, AC-004
-  - **Touches:** `agents/implementer/src/implementer/lint_gate.py`, `agents/implementer/tests/test_lint_gate.py`
-  - **Done when:** run_lint_gate(path) executes `make lint`, `make format`, `make type`, and `make test` via subprocess.run with a 60s timeout per command and cwd set to the repo root, returns a LintGateResult with per-command exit codes and truncated output (max 4096 chars per command), and unit tests cover pass, single-failure, all-failure, and timeout scenarios. `make lint` passes, `make format-check` passes, `make type` passes, `uv run pytest -q agents/implementer/tests/test_lint_gate.py` passes.
+- [ ] **T-001** — Add LINT_GATE event types, payloads, and RunState.lint_gate_running
+  - **Implements:** R-001, R-002
+  - **Touches:** `packages/common/src/common/state.py`, `packages/common/src/common/state_transitions.py`, `packages/common/src/common/events.py`, `packages/common/tests/test_state_transitions.py`
+  - **Done when:** RunState.lint_gate_running exists in state.py; EventType includes LINT_GATE.PASSED and LINT_GATE.FAILED; LintGatePassed and LintGateFailed Pydantic models exist in events.py with correct fields; RUN_TRANSITIONS maps (LINT_GATE.PASSED, lint_gate_running) → validation_running and (LINT_GATE.FAILED, lint_gate_running) → revising; (REVISION.READY, revising) now maps to tasks_complete; unit tests for all new/changed transitions pass; ruff check + ruff format --check + ty check pass on the diff.
 
-- [ ] **T-002** — Integrate lint gate into execute_initial and execute_iteration with one-retry loop
-  - **Implements:** AC-002, AC-003, AC-005, AC-006
-  - **Touches:** `agents/implementer/src/implementer/client.py`, `packages/common/src/common/runtime.py`, `agents/implementer/tests/test_client.py`
+- [ ] **T-002** — Implement lint_gate Lambda handler
+  - **Implements:** R-001, R-002, R-003
+  - **Touches:** `lambdas/lint_gate/pyproject.toml`, `lambdas/lint_gate/src/lint_gate/__init__.py`, `lambdas/lint_gate/src/lint_gate/handler.py`, `lambdas/lint_gate/tests/__init__.py`, `lambdas/lint_gate/tests/test_handler.py`
   - **Depends on:** T-001
-  - **Done when:** Both execute_initial and execute_iteration call run_lint_gate after the agent loop when the agent reported status='done' and made real changes; on failure the agent is resumed with lint error feedback for one retry; ImplementerResult carries a `lint_gate: LintGateResult | None` field (None when blocked); double-failure proceeds to commit with passed=False; unit tests verify the retry path, the pass-through path, and the blocked-skip path. `make lint` passes, `make format-check` passes, `make type` passes, `uv run pytest -q agents/implementer/tests/test_client.py` passes.
+  - **Done when:** lambdas/lint_gate/ package exists with pyproject.toml, __init__.py, and handler.py; handler clones impl branch via sandbox helpers, runs ruff check / ruff format --check / ty check in sequence (stop on first failure), emits LINT_GATE.PASSED or LINT_GATE.FAILED via common.event_emit.publish; unit tests mock Code Interpreter and assert correct event emission for pass, lint fail, format fail, typecheck fail, and infrastructure failure; ruff + ty pass.
+
+- [ ] **T-003** — Wire lint gate into state_router dispatch and event_projector
+  - **Implements:** R-001, R-002, R-003
+  - **Touches:** `lambdas/state_router/src/state_router/dispatch_run.py`, `lambdas/state_router/src/state_router/config.py`, `lambdas/event_projector/src/event_projector/handler.py`, `lambdas/state_router/tests/test_dispatch_run.py`
+  - **Depends on:** T-001, T-002
+  - **Done when:** handle_tasks_complete dispatches lint_gate Lambda (via InvokeRepoHelper or direct Lambda invoke) + advances to lint_gate_running; new handle_validation_running handler dispatches reviewer + tester + code_critic (logic moved from old handle_tasks_complete); RUN_DISPATCH maps lint_gate_running → noop_waiting and validation_running → handle_validation_running; config.py exposes lint_gate_function_name(); event_projector projects LINT_GATE.PASSED (advance + write attrs) and LINT_GATE.FAILED (advance to revising + store feedback); existing state_router tests updated; ruff + ty pass.
