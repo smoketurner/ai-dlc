@@ -33,7 +33,6 @@ def test_publish_issue_triaged_builds_envelope(captured: list[EventEnvelope[Any]
     result = TriageResult(
         decision_s3_key="runs/r-1/triage.json",
         action="proceed",
-        workflow_kind="bug_fix",
         rationale="clear bug",
         confidence=0.9,
         session_id="r-1",
@@ -48,5 +47,4 @@ def test_publish_issue_triaged_builds_envelope(captured: list[EventEnvelope[Any]
     assert isinstance(env.payload, IssueTriaged)
     assert env.payload.target_repo == "owner/repo"
     assert env.payload.action == "proceed"
-    assert env.payload.workflow_kind == "bug_fix"
     assert env.payload.issue_number == 1

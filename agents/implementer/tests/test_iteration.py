@@ -1,4 +1,4 @@
-"""Tests for the iteration-mode helpers in ``implementer.client`` + ``app``."""
+"""Tests for the revision flow + emit helpers in ``implementer``."""
 
 from __future__ import annotations
 
@@ -7,42 +7,40 @@ from uuid import uuid4
 
 import pytest
 
-from common.events import EventEnvelope, TaskBlocked, TaskReady
+from common.events import EventEnvelope, ImplPrOpened, RevisionReady
 from common.runtime import (
     CiFailureFeedback,
     ImplementerInput,
     ImplementerResult,
+    ImplementerRevisionResult,
     IssueCommentMentionFeedback,
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
 )
-from implementer.app import emit_task_blocked, emit_task_ready
+from implementer.app import emit_impl_pr_opened, emit_revision_ready
 from implementer.client import (
     any_ci_failure_feedback,
-    build_iteration_commit_message,
-    compose_iteration_prompt,
-    format_failed_check,
+    compose_revision_prompt,
     format_feedback_item,
 )
 
 
 def make_input(
     *,
-    iteration_count: int = 1,
-    iteration_feedback: list[Any] | None = None,
+    mode: str = "revision",
+    revision_number: int = 1,
+    revision_feedback: list[Any] | None = None,
     pr_url: str | None = "https://github.com/owner/repo/pull/42",
 ) -> ImplementerInput:
     return ImplementerInput.model_validate(
         {
             "project_slug": "demo",
-            "spec_slug": "add-healthz",
-            "spec_s3_prefix": "specs/add-healthz/",
-            "task_id": "T-001",
             "run_id": str(uuid4()),
             "correlation_id": str(uuid4()),
             "target_repo": "owner/repo",
-            "iteration_count": iteration_count,
-            "iteration_feedback": iteration_feedback,
+            "mode": mode,
+            "revision_number": revision_number,
+            "revision_feedback": revision_feedback,
             "pr_url": pr_url,
         },
     )
@@ -98,19 +96,6 @@ def test_format_review_comment_mention_feedback() -> None:
     assert "this is wrong" in out
 
 
-def test_format_review_comment_mention_no_line() -> None:
-    item = ReviewCommentMentionFeedback(
-        path="src/handler.py",
-        commit_id="abcdef0",
-        comment_id=7,
-        body="x",
-        commenter="alice",
-    )
-    out = format_feedback_item(item)
-    assert "src/handler.py" in out
-    assert ":" not in out.split("`src/handler.py`", 1)[1].split(" from")[0]
-
-
 def test_format_issue_comment_mention_feedback() -> None:
     item = IssueCommentMentionFeedback(
         comment_id=12,
@@ -121,25 +106,6 @@ def test_format_issue_comment_mention_feedback() -> None:
     assert "PR comment" in out
     assert "@bob" in out
     assert "comment_id=12" in out
-
-
-def test_format_failed_check_renders_summary() -> None:
-    check = {
-        "name": "CI / test",
-        "conclusion": "failure",
-        "html_url": "https://github.com/x/y/runs/1",
-        "output": {"title": "fail", "summary": "1 of 50 failed"},
-    }
-    out = format_failed_check(check)
-    assert "CI / test" in out
-    assert "failure" in out
-    assert "1 of 50 failed" in out
-
-
-def test_format_failed_check_handles_missing_output() -> None:
-    check = {"name": "CI", "conclusion": "failure", "html_url": "https://example.com"}
-    out = format_failed_check(check)
-    assert "(no summary)" in out
 
 
 def test_any_ci_failure_feedback_detects_ci() -> None:
@@ -164,17 +130,12 @@ def test_any_ci_failure_feedback_handles_none() -> None:
     assert any_ci_failure_feedback(None) is False
 
 
-def test_build_iteration_commit_message_format() -> None:
-    msg = build_iteration_commit_message("T-001", "Add /healthz", 2)
-    assert msg == "T-001: iter 2 — Add /healthz"
-
-
-def test_compose_iteration_prompt_lists_feedback(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Stub agent_memory_preamble to keep the test free of S3 lookups.
+def test_compose_revision_prompt_lists_feedback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Revision prompt threads validator artifacts + per-revision feedback."""
     monkeypatch.setattr("implementer.client.agent_memory_preamble", lambda **_: "<<MEMORY>>")
     payload = make_input(
-        iteration_count=2,
-        iteration_feedback=[
+        revision_number=2,
+        revision_feedback=[
             CiFailureFeedback(
                 workflow_name="CI / test",
                 conclusion="failure",
@@ -191,109 +152,94 @@ def test_compose_iteration_prompt_lists_feedback(monkeypatch: pytest.MonkeyPatch
             ),
         ],
     )
-    prompt = compose_iteration_prompt(
+    prompt = compose_revision_prompt(
         payload,
-        task_title="Add /healthz",
-        task_done_when="200 returns under 100ms",
-        failed_checks=[],
+        revision_number=2,
+        inputs={
+            "review": "## Reviewer findings\n- bug X",
+            "test_report": "## Tester findings\n- gap Y",
+            "critique": "## Code-critic findings\n- missed edge Z",
+            "mention": "@aidlc-bot also fix the typo",
+            "checks": "workflow ci/test failed: 1 of 50 tests failed",
+        },
     )
-    assert "iteration 2" in prompt
-    assert "T-001" in prompt
-    assert "Add /healthz" in prompt
-    assert payload.pr_url is not None
-    assert payload.pr_url in prompt
+    assert "<<MEMORY>>" in prompt
+    assert "Revision number: 2" in prompt
+    assert "bug X" in prompt
+    assert "gap Y" in prompt
+    assert "missed edge Z" in prompt
+    assert "@aidlc-bot also fix the typo" in prompt
+    assert "ci/test failed" in prompt
     assert "CI / test" in prompt
     assert "src/handler.py" in prompt
-    assert "<<MEMORY>>" in prompt
-    assert "inline_replies" in prompt
-    assert "do NOT create a new branch" in prompt
+    assert "directly on the impl branch" in prompt
 
 
-def test_compose_iteration_prompt_omits_failed_checks_when_none(
+def test_compose_revision_prompt_omits_optional_sources_when_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No mention/checks artifacts → those sections do not appear."""
     monkeypatch.setattr("implementer.client.agent_memory_preamble", lambda **_: "")
-    payload = make_input(iteration_feedback=[])
-    prompt = compose_iteration_prompt(
-        payload, task_title="x", task_done_when=None, failed_checks=[]
+    payload = make_input(revision_feedback=[])
+    prompt = compose_revision_prompt(
+        payload,
+        revision_number=1,
+        inputs={
+            "review": "(none)",
+            "test_report": "(none)",
+            "critique": "(none)",
+            "mention": "",
+            "checks": "",
+        },
     )
-    assert "Failed CI check details" not in prompt
+    assert "Human @aidlc-bot mention" not in prompt
+    assert "CI failure context" not in prompt
+    assert "Per-revision feedback items" not in prompt
 
 
-def test_emit_task_ready_builds_envelope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_emit_impl_pr_opened_builds_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``emit_impl_pr_opened`` builds the IMPL_PR.OPENED envelope correctly."""
     captured: list[EventEnvelope[Any]] = []
     monkeypatch.setattr("implementer.app.publish", captured.append)
-    payload = make_input(
-        iteration_count=2,
-        iteration_feedback=[
-            ReviewCommentMentionFeedback(
-                path="src/x.py",
-                commit_id="abcdef0",
-                comment_id=7,
-                body="x",
-                commenter="alice",
-            ),
-            IssueCommentMentionFeedback(comment_id=8, body="y", commenter="bob"),
-        ],
-    )
+    payload = make_input(mode="implementation", revision_number=0, revision_feedback=None)
     result = ImplementerResult(
-        task_id="T-001",
-        diff_summary="Fix null-check.",
+        pr_url="https://github.com/owner/repo/pull/77",
+        diff_summary="Added /healthz route.",
         session_id="sess",
         token_in=1_000,
         token_out=200,
         cost_usd=0.005,
         duration_ms=15_000,
     )
-    emit_task_ready(payload, result)
+    emit_impl_pr_opened(payload, result)
     assert len(captured) == 1
     env = captured[0]
-    assert env.type == "TASK.READY"
+    assert env.type == "IMPL_PR.OPENED"
     assert env.actor_id == "implementer"
-    assert isinstance(env.payload, TaskReady)
-    assert env.payload.task_id == "T-001"
-    # New design: implementer doesn't know the impl PR URL; state_router
-    # backfills it once the unified impl PR is open.
-    assert env.payload.pr_url == ""
+    assert isinstance(env.payload, ImplPrOpened)
+    assert env.payload.pr_url == "https://github.com/owner/repo/pull/77"
+    assert env.payload.diff_summary == "Added /healthz route."
 
 
-def test_emit_task_blocked_builds_envelope(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_emit_revision_ready_builds_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``emit_revision_ready`` builds the REVISION.READY envelope correctly."""
     captured: list[EventEnvelope[Any]] = []
     monkeypatch.setattr("implementer.app.publish", captured.append)
-    payload = make_input(iteration_count=0, iteration_feedback=None)
-    result = ImplementerResult(
-        task_id="T-001",
-        diff_summary="(no diff — agent produced no changes)",
+    payload = make_input()
+    result = ImplementerRevisionResult(
+        pr_url="https://github.com/owner/repo/pull/77",
+        diff_summary="Fix null-check.",
+        revision_number=2,
         session_id="sess",
-        blocked_reason="Spec was contradictory.",
         token_in=2_000,
         token_out=300,
         cost_usd=0.012,
         duration_ms=42_000,
     )
-    emit_task_blocked(payload, result)
+    emit_revision_ready(payload, result)
     assert len(captured) == 1
     env = captured[0]
-    assert env.type == "TASK.BLOCKED"
-    assert env.actor_id == "implementer"
-    assert isinstance(env.payload, TaskBlocked)
-    assert env.payload.blocked_reason == "Spec was contradictory."
-    # pr_url backfilled by state_router; implementer sends empty string.
-    assert env.payload.pr_url == ""
+    assert env.type == "REVISION.READY"
+    assert isinstance(env.payload, RevisionReady)
+    assert env.payload.revision_number == 2
     assert env.payload.cost_usd == 0.012
-
-
-def test_emit_task_blocked_requires_blocked_reason() -> None:
-    payload = make_input(iteration_count=0, iteration_feedback=None)
-    result = ImplementerResult(
-        task_id="T-001",
-        diff_summary="diff",
-        session_id="sess",
-        blocked_reason=None,
-    )
-    with pytest.raises(ValueError, match="blocked_reason"):
-        emit_task_blocked(payload, result)

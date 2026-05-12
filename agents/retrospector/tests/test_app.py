@@ -47,12 +47,10 @@ Project summary.
 
 def make_payload(**overrides: Any) -> RetrospectorInput:
     base: dict[str, Any] = {
-        "event_type": "TASK.APPROVED",
+        "event_type": "RUN.COMPLETED",
         "project_slug": "ai-dlc",
         "target_repo": "smoketurner/ai-dlc",
         "pr_url": "https://github.com/smoketurner/ai-dlc/pull/42",
-        "spec_slug": "lint-gate",
-        "task_id": "T-001",
         "run_id": "019e0e69-198d-7263-8bfc-7ea2d077b3a6",
         "correlation_id": "019e0e69-198d-7263-8bfc-7eb9e8ae05df",
     }

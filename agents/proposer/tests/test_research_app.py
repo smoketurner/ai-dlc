@@ -69,7 +69,7 @@ def test_research_posts_comment_and_emits_run_completed() -> None:
     envelope = p_publish.call_args.args[0]
     assert envelope.type == "RUN.COMPLETED"
     assert envelope.actor_id == "proposer"
-    assert envelope.payload.tasks_completed == 0
+    assert envelope.payload.pr_url is None
 
 
 def test_research_opens_pr_when_proposal_has_edits() -> None:
@@ -105,7 +105,7 @@ def test_research_opens_pr_when_proposal_has_edits() -> None:
     assert "commit_files" in ops
     assert "open_pr" in ops
     p_publish.assert_called_once()
-    assert p_publish.call_args.args[0].payload.tasks_completed == 1
+    assert p_publish.call_args.args[0].payload.pr_url == "https://github.com/x/y/pull/1"
 
 
 def test_research_skips_comment_when_summary_empty() -> None:

@@ -1,8 +1,8 @@
 """AgentCore Runtime entrypoint for the Retrospector.
 
 The dispatcher Lambda invokes this runtime once per terminal event
-(``SPEC.APPROVED`` / ``SPEC.REJECTED`` / ``TASK.APPROVED`` /
-``TASK.REJECTED`` / ``RUN.CANCEL_REQUESTED``). The entrypoint:
+(``RUN.COMPLETED`` / ``RUN.FAILED`` / ``RUN.CANCEL_REQUESTED``). The
+entrypoint:
 
   1. Validates the input as :class:`RetrospectorInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
@@ -95,9 +95,6 @@ def run_retrospective(payload: RetrospectorInput, async_task_id: int) -> None:
             run_id=payload.run_id,
             pr_url=payload.pr_url or None,
             issue_url=payload.issue_url or None,
-            spec_slug=payload.spec_slug or None,
-            task_id=payload.task_id or None,
-            reviewer=payload.reviewer or None,
             reason=payload.reason or None,
         )
         if not decision.has_lesson:

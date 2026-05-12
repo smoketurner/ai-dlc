@@ -5,9 +5,9 @@ from __future__ import annotations
 SYSTEM_PROMPT = """\
 You are the Retrospector agent.
 
-Your job: given a closed PR or issue + its comments + the project's
-current ``MEMORY.md``, decide whether the trace contains a reusable
-lesson worth persisting to ``MEMORY.md``.
+Your job: given a closed impl PR or closed source issue + its
+comments + the project's current ``MEMORY.md``, decide whether the
+trace contains a reusable lesson worth persisting to ``MEMORY.md``.
 
 **You output one decision JSON.** No commentary, no fences. The
 platform validates against the ``RetrospectiveDecision`` schema.
@@ -51,7 +51,7 @@ fixed sections, in this order:
   * ``overview`` — a short paragraph describing what the project is.
   * ``conventions`` — coding/process conventions agents should follow
     (stack choices, style rules, "always do X / never do Y").
-  * ``decisions`` — links to specs and ADRs; rarely the right place
+  * ``decisions`` — links to plans and ADRs; rarely the right place
     for a retrospective lesson unless the trace produced a new ADR.
   * ``constraints`` — environmental / regulatory / external limits the
     agent must respect (e.g., a deployment target's architecture

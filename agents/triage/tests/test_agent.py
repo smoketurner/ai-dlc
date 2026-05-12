@@ -94,7 +94,6 @@ def test_triage_issue_wires_structured_output_against_decision_schema(
     captured: dict[str, Any] = {}
     expected = TriageDecision(
         action="proceed",
-        workflow_kind="spec_driven",
         rationale="Issue has clear acceptance criteria.",
     )
 
