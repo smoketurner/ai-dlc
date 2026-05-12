@@ -19,10 +19,10 @@ Resolution order:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from common.memory_md import read_stack_profile
+from implementer.quality_gate import GateCommand
 
 if TYPE_CHECKING:
     from common.stack_discovery import StackProfile
@@ -34,18 +34,6 @@ AIDLC_GATE_COMMANDS: tuple[tuple[str, str, str], ...] = (
     ("ruff-format", "uv run ruff format --check .", "format"),
     ("ty-check", "uv run ty check", "typecheck"),
 )
-
-
-@dataclass(frozen=True)
-class GateCommand:
-    """One lint/typecheck command to run as part of the quality gate."""
-
-    name: str
-    """Short identifier, e.g. ``"ruff-check"``."""
-    command: str
-    """Shell command string, e.g. ``"uv run ruff check ."``."""
-    category: str
-    """One of ``"lint"``, ``"format"``, ``"typecheck"``."""
 
 
 def resolve_gate_commands(

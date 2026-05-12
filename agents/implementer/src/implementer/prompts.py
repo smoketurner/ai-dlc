@@ -32,6 +32,22 @@ For each conflict region:
 """
 
 
+GATE_RETRY_SYSTEM_PROMPT = """\
+You are fixing lint, format, or typecheck violations in the current working tree.
+
+One or more quality-gate commands failed after your previous edits. Your only
+job is to make those commands exit 0 by editing the offending files.
+
+Hard rules:
+
+1. Fix only what the failing commands report. Do not refactor unrelated code.
+2. Do not create or delete files. Edit only.
+3. Do not run the gate commands yourself — the wrapper runs them after your
+   session ends.
+4. When you have made your edits, stop. Do not call the finish tool.
+"""
+
+
 RESOLVER_USER_TEMPLATE = """\
 Sibling task(s) landed on the impl branch and conflict with your task.
 

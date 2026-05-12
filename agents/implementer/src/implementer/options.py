@@ -14,13 +14,15 @@ from implementer.hooks import (
     deny_sensitive_writes,
     validate_finish_report,
 )
-from implementer.prompts import RESOLVER_SYSTEM_PROMPT
+from implementer.prompts import GATE_RETRY_SYSTEM_PROMPT, RESOLVER_SYSTEM_PROMPT
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 DEFAULT_BUDGET_USD = 5.0
 DEFAULT_MAX_TURNS = 50
 RESOLVER_BUDGET_USD = 1.0
 RESOLVER_MAX_TURNS = 12
+GATE_RETRY_BUDGET_USD = 1.0
+GATE_RETRY_MAX_TURNS = 8
 
 
 def model_id() -> str:
@@ -91,6 +93,28 @@ def build_options(run_id: str, *, finish_sink: FinishSink) -> ClaudeAgentOptions
         },
         env={
             # Claude Code uses Bedrock when this is set.
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
+        },
+    )
+
+
+def build_gate_retry_options() -> ClaudeAgentOptions:
+    """Constrained ClaudeAgentOptions for the gate-retry sub-session.
+
+    The retry agent fixes lint/format/typecheck violations — it edits files
+    but does not call finish. Budget and turn cap are aggressive so a stuck
+    session can't burn much before the wrapper re-runs the gate.
+    """
+    return ClaudeAgentOptions(
+        model=model_id(),
+        system_prompt=GATE_RETRY_SYSTEM_PROMPT,
+        cwd=working_dir(),
+        permission_mode="acceptEdits",
+        max_turns=GATE_RETRY_MAX_TURNS,
+        max_budget_usd=GATE_RETRY_BUDGET_USD,
+        allowed_tools=["Read", "Edit", "Glob", "Grep"],
+        env={
             "CLAUDE_CODE_USE_BEDROCK": "1",
             "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
         },
