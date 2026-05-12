@@ -44,3 +44,49 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "bedrock_quota_models" {
+  description = <<-EOT
+    Map of friendly key -> Bedrock cross-region inference profile ID
+    (e.g. ``sonnet_4_6 = "us.anthropic.claude-sonnet-4-6"``). The
+    inference profile ID is the value Bedrock publishes as the
+    ``ModelId`` CloudWatch dimension. Used by the per-model
+    quota-usage alarms. Empty (default) skips the alarms entirely.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
+variable "bedrock_quota_codes" {
+  description = <<-EOT
+    Per-model Service Quotas codes (``L-XXXXXXXX``) for the three
+    Bedrock on-demand / cross-region quotas the alarms cover. Keys
+    must match ``var.bedrock_quota_models``. Any sub-field left
+    ``null`` skips that quota's alarms for that model. Discover the
+    codes with:
+
+        aws service-quotas list-service-quotas --service-code bedrock \
+          --query "Quotas[?contains(QuotaName,'Claude')].[QuotaName,QuotaCode,Value]" \
+          --output table --region us-east-1
+  EOT
+  type = map(object({
+    tpm = optional(string)
+    rpm = optional(string)
+    tpd = optional(string)
+  }))
+  default = {}
+}
+
+variable "bedrock_quota_threshold_pct" {
+  description = "Alarm thresholds expressed as a percentage of the resolved quota."
+  type = object({
+    warn     = number
+    high     = number
+    critical = number
+  })
+  default = {
+    warn     = 50
+    high     = 80
+    critical = 95
+  }
+}

@@ -92,6 +92,10 @@ module "observability" {
   env                         = var.env
   alert_emails                = var.alert_emails
   daily_token_spend_alarm_usd = var.daily_token_spend_alarm_usd
+
+  bedrock_quota_models        = var.bedrock_quota_models
+  bedrock_quota_codes         = var.bedrock_quota_codes
+  bedrock_quota_threshold_pct = var.bedrock_quota_threshold_pct
 }
 
 module "agents" {

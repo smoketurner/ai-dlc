@@ -15,3 +15,32 @@ github_bot_login       = "mybot-bot"
 # (JSON array string, e.g. ``["alice@example.com"]``) so personal
 # emails stay out of git. For local-only entries, add to
 # ``terraform.tfvars`` (gitignored).
+
+# Bedrock per-model quota alarms (warn/high/critical at 50/80/95%
+# of the live Service Quotas value). Discover the L-XXXXXXXX codes
+# once with:
+#
+#   aws service-quotas list-service-quotas --service-code bedrock \
+#     --query "Quotas[?contains(QuotaName,'Claude')].[QuotaName,QuotaCode,Value]" \
+#     --output table --region us-east-1
+#
+# Keys must match ``bedrock_quota_models``; leave a sub-field unset
+# (or the whole map empty) to skip those alarms.
+#
+# bedrock_quota_codes = {
+#   opus_4_6 = {
+#     tpm = "L-XXXXXXXX"
+#     rpm = "L-XXXXXXXX"
+#     tpd = "L-XXXXXXXX"
+#   }
+#   sonnet_4_6 = {
+#     tpm = "L-XXXXXXXX"
+#     rpm = "L-XXXXXXXX"
+#     tpd = "L-XXXXXXXX"
+#   }
+#   haiku_4_5 = {
+#     tpm = "L-XXXXXXXX"
+#     rpm = "L-XXXXXXXX"
+#     tpd = "L-XXXXXXXX"
+#   }
+# }

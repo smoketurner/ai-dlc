@@ -44,6 +44,60 @@ variable "daily_token_spend_alarm_usd" {
   default     = 20
 }
 
+variable "bedrock_quota_models" {
+  description = <<-EOT
+    Map of friendly key -> Bedrock cross-region inference profile ID
+    to alarm on. The value is the CloudWatch ``ModelId`` dimension
+    Bedrock publishes for that profile (e.g.
+    ``us.anthropic.claude-sonnet-4-6``). Mirrors the
+    ``bedrock_model_id`` values agents pass via
+    ``AIDLC_BEDROCK_MODEL_ID``.
+  EOT
+  type        = map(string)
+  default = {
+    opus_4_6   = "us.anthropic.claude-opus-4-6-v1"
+    sonnet_4_6 = "us.anthropic.claude-sonnet-4-6"
+    haiku_4_5  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  }
+}
+
+variable "bedrock_quota_codes" {
+  description = <<-EOT
+    Per-model Service Quotas codes for the on-demand /
+    cross-region Bedrock quotas the alarms cover (``tpm`` = tokens
+    per minute, ``rpm`` = requests per minute, ``tpd`` = daily
+    tokens). Keys must match ``bedrock_quota_models``. Discover
+    codes once with::
+
+        aws service-quotas list-service-quotas --service-code bedrock \
+          --query "Quotas[?contains(QuotaName,'Claude')].[QuotaName,QuotaCode,Value]" \
+          --output table --region us-east-1
+
+    Any null/empty sub-field skips that quota's alarms for that
+    model. Default ``{}`` skips all alarms (module is opt-in).
+  EOT
+  type = map(object({
+    tpm = optional(string)
+    rpm = optional(string)
+    tpd = optional(string)
+  }))
+  default = {}
+}
+
+variable "bedrock_quota_threshold_pct" {
+  description = "Bedrock quota alarm thresholds as a percentage of the resolved quota."
+  type = object({
+    warn     = number
+    high     = number
+    critical = number
+  })
+  default = {
+    warn     = 50
+    high     = 80
+    critical = 95
+  }
+}
+
 variable "dashboard_callback_urls" {
   description = "OIDC callback URLs for the Cognito app client. Defaults to the dashboard's terraform-managed FQDN; override only if you need additional callbacks (e.g., a second hostname)."
   type        = list(string)
