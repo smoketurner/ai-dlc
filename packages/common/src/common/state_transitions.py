@@ -43,8 +43,10 @@ RUN_TRANSITIONS: Mapping[tuple[EventType, RunState | None], RunState] = {
     ("SPEC.APPROVED", RunState.spec_pr_open): RunState.spec_approved,
     ("SPEC.REJECTED", RunState.spec_pr_open): RunState.failed,
     ("SPEC.ITERATION_REQUESTED", RunState.spec_pr_open): RunState.spec_pending,
+    ("LINT_GATE.PASSED", RunState.lint_gate_running): RunState.validation_running,
+    ("LINT_GATE.FAILED", RunState.lint_gate_running): RunState.revising,
     ("REVIEW.READY", RunState.validation_running): RunState.validation_complete,
-    ("REVISION.READY", RunState.revising): RunState.validation_running,
+    ("REVISION.READY", RunState.revising): RunState.tasks_complete,
     ("RUN.COMPLETED", RunState.awaiting_human_merge): RunState.done,
     ("RUN.COMPLETED", RunState.proposer_running): RunState.done,
 }
