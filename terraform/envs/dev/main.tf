@@ -114,22 +114,28 @@ module "agents" {
 
   agents = {
     architect = {
-      description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
-      targets          = ["artifact_tool"]
-      features         = ["browser"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description = "Architect agent — writes the spec bundle (requirements + design + tasks)."
+      targets     = ["artifact_tool"]
+      features    = ["browser"]
+      # Temporarily on Sonnet 4.6 while the Bedrock daily-token quota
+      # increase for Opus 4.6 V1 is pending support review. Revert when
+      # the quota lands.
+      # bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     critic = {
-      description      = "Critic agent — adversarially reviews the spec (advisory)."
-      targets          = ["artifact_tool"]
-      features         = ["browser"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description = "Critic agent — adversarially reviews the spec (advisory)."
+      targets     = ["artifact_tool"]
+      features    = ["browser"]
+      # bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     code_critic = {
-      description      = "Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
-      targets          = ["artifact_tool", "repo_helper"]
-      features         = ["browser", "code_interpreter"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description = "Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
+      targets     = ["artifact_tool", "repo_helper"]
+      features    = ["browser", "code_interpreter"]
+      # bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
@@ -149,10 +155,11 @@ module "agents" {
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     proposer = {
-      description      = "Proposer agent — research-driven; opens PRs proposing prompt/MEMORY edits."
-      targets          = ["repo_helper"]
-      features         = ["browser"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description = "Proposer agent — research-driven; opens PRs proposing prompt/MEMORY edits."
+      targets     = ["repo_helper"]
+      features    = ["browser"]
+      # bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     retrospector = {
       description      = "Retrospector agent — fires on every terminal event; appends lessons to MEMORY.md via PR."

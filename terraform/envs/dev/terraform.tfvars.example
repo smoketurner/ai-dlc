@@ -1,8 +1,0 @@
-project                = "ai-dlc"
-env                    = "dev"
-region                 = "us-east-1"
-github_owner           = ""
-github_repo            = "ai-dlc"
-github_app_secret_name = "ai-dlc/github-app"
-github_bot_login       = "mybot-bot"
-alert_emails           = []

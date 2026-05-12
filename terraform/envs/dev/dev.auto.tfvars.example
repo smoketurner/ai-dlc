@@ -1,0 +1,17 @@
+# Example of the team-shared dev config. Copy to ``dev.auto.tfvars``
+# (committed) and edit the values for your fork. Auto-loaded by both
+# local ``terraform apply`` and CI.
+#
+# Personal solo-testing overrides go in ``terraform.tfvars`` (gitignored).
+# Anything CI-only (``aws_profile=""``, ``github_owner``, ``github_repo``)
+# is set as ``TF_VAR_*`` env vars in ``.github/workflows/terraform-apply.yml``.
+
+github_owner           = "your-org"
+github_repo            = "your-repo"
+github_app_secret_name = "ai-dlc/github-app"
+github_bot_login       = "mybot-bot"
+
+# ``alert_emails`` — set as the ``AIDLC_ALERT_EMAILS`` repo variable
+# (JSON array string, e.g. ``["alice@example.com"]``) so personal
+# emails stay out of git. For local-only entries, add to
+# ``terraform.tfvars`` (gitignored).

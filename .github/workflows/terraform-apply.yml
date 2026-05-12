@@ -49,20 +49,11 @@ jobs:
       # Force the provider + backend to use OIDC env-var credentials, not the
       # local dev SSO profile that's the default.
       TF_VAR_aws_profile: ""
-      # Name of the operator-managed Secrets Manager secret holding the
-      # GitHub App credentials (created out-of-band; never managed by
-      # terraform). Set as a repo variable so CI applies don't destroy
-      # the credential provider / workload identities. Empty when the
-      # GitHub integration is intentionally not provisioned.
-      TF_VAR_github_app_secret_name: ${{ vars.AIDLC_GITHUB_APP_SECRET_NAME }}
-      # Required tfvars sourced from the workflow context so the
-      # gitignored terraform.tfvars isn't needed in CI.
-      TF_VAR_github_owner: ${{ github.repository_owner }}
-      TF_VAR_github_repo: ${{ github.event.repository.name }}
-      # Login of the GitHub App's bot user — drives the
-      # ``issues.assigned`` and ``@<bot>`` mention triggers in the
-      # dashboard webhook handler. Empty disables those paths.
-      TF_VAR_github_bot_login: ${{ vars.AIDLC_GITHUB_BOT_LOGIN }}
+      # Team-shared config lives in ``terraform/envs/dev/dev.auto.tfvars``.
+      # ``alert_emails`` is the one exception — kept in a repo variable
+      # to keep personal addresses out of git. Format: JSON array
+      # string, e.g. ``["alice@example.com"]``.
+      TF_VAR_alert_emails: ${{ vars.AIDLC_ALERT_EMAILS }}
     defaults:
       run:
         working-directory: terraform/envs/dev

@@ -40,7 +40,11 @@ lambdas/*/build/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.*
+# Personal overrides only — gitignore terraform.tfvars + any *.local.tfvars,
+# but allow *.auto.tfvars (committed team-shared config) and the .example.
 *.tfvars
+!*.auto.tfvars
+!*.tfvars.example
 backend.hcl
 crash.log
 crash.*.log
