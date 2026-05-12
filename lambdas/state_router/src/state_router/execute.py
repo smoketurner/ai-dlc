@@ -278,7 +278,7 @@ def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
     """
     if circuit_breaker.is_open(run, action):
         return
-    fn = repo_helper_function_name()
+    fn = action.function_name or repo_helper_function_name()
     if not fn:
         logger.warning("repo_helper not wired", extra={"op": action.op})
         return

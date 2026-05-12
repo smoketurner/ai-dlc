@@ -437,7 +437,13 @@ def run_state_item(
         .set("last_event_id", detail.get("event_id", ""))
         .set("last_event_at", detail.get("timestamp", ""))
     )
-    apply_payload_projections(update, run_id=run_id, event_type=event_type, payload=payload)
+    apply_payload_projections(
+        update,
+        run_id=run_id,
+        event_type=event_type,
+        payload=payload,
+        timestamp=detail.get("timestamp", ""),
+    )
     apply_usage_totals(update, payload=payload)
     apply_run_state_advance(update, mode=mode, event_type=event_type)
     apply_spec_feedback_accumulator(update, mode=mode, payload=payload)
@@ -451,6 +457,7 @@ def apply_payload_projections(
     run_id: str,
     event_type: str,
     payload: dict[str, Any],
+    timestamp: str = "",
 ) -> None:
     """Project payload fields onto the STATE row.
 
@@ -475,7 +482,9 @@ def apply_payload_projections(
     spec_s3_prefix = payload.get("spec_s3_prefix")
     if isinstance(spec_s3_prefix, str) and spec_s3_prefix:
         update.set("spec_s3_prefix", spec_s3_prefix)
-    apply_event_specific_projections(update, event_type=event_type, payload=payload)
+    apply_event_specific_projections(
+        update, event_type=event_type, payload=payload, timestamp=timestamp
+    )
 
 
 def apply_event_specific_projections(
@@ -483,6 +492,7 @@ def apply_event_specific_projections(
     *,
     event_type: str,
     payload: dict[str, Any],
+    timestamp: str = "",
 ) -> None:
     """Project fields that exist only for specific event types.
 
@@ -492,7 +502,9 @@ def apply_event_specific_projections(
     for the run summary. REVIEW.READY projects the reviewer's verdict
     so ``handle_validation_complete`` can branch on it; REVISION.READY
     increments the revision counter so the dispatch handler can enforce
-    the ``MAX_REVISIONS`` cap.
+    the ``MAX_REVISIONS`` cap. LINT_GATE.PASSED / LINT_GATE.FAILED
+    write gate result attrs and, on failure, append lint error feedback
+    to ``pending_revision_feedback``.
     """
     if event_type == "ISSUE.TRIAGED":
         project_triage(update, payload=payload)
@@ -506,6 +518,8 @@ def apply_event_specific_projections(
             update.set("reviewer_verdict", verdict)
     elif event_type == "REVISION.READY":
         update.add("revision_count", 1)
+    elif event_type in ("LINT_GATE.PASSED", "LINT_GATE.FAILED"):
+        project_lint_gate(update, event_type=event_type, payload=payload, timestamp=timestamp)
 
 
 def project_triage(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:
@@ -529,6 +543,35 @@ def project_spec_ready(update: UpdateBuilder, *, payload: dict[str, Any]) -> Non
     task_depends_on = payload.get("task_depends_on")
     if isinstance(task_depends_on, dict) and task_depends_on:
         update.set("task_depends_on", task_depends_on)
+
+
+def project_lint_gate(
+    update: UpdateBuilder,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    timestamp: str = "",
+) -> None:
+    """Project LINT_GATE.PASSED / LINT_GATE.FAILED attrs onto the STATE row.
+
+    Both events write ``lint_gate_result``, ``lint_gate_sha``, and
+    ``lint_gate_at``. On failure, a structured feedback entry is
+    appended to ``pending_revision_feedback`` so the implementer
+    receives the exact errors when dispatched in revision mode.
+    """
+    result = "passed" if event_type == "LINT_GATE.PASSED" else "failed"
+    update.set("lint_gate_result", result)
+    head_sha = payload.get("head_sha")
+    if isinstance(head_sha, str) and head_sha:
+        update.set("lint_gate_sha", head_sha)
+    update.set("lint_gate_at", timestamp or datetime.now(UTC).isoformat())
+    if event_type == "LINT_GATE.FAILED":
+        stderr = payload.get("stderr") or ""
+        failed_command = payload.get("failed_command") or ""
+        update.list_append(
+            "pending_revision_feedback",
+            [{"source": "lint_gate", "body": stderr, "command": failed_command}],
+        )
 
 
 def apply_usage_totals(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:

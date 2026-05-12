@@ -32,5 +32,6 @@ def runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
             f"arn:aws:bedrock-agentcore:us-east-1:111111111111:runtime/{agent}",
         )
     monkeypatch.setenv("AIDLC_REPO_HELPER_FUNCTION_NAME", "ai-dlc-repo-helper")
+    monkeypatch.setenv("AIDLC_LINT_GATE_FUNCTION_NAME", "ai-dlc-lint-gate")
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "ai-dlc-artifacts")
     monkeypatch.setenv("AIDLC_RUNS_TABLE", "ai-dlc-runs")

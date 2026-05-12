@@ -105,6 +105,8 @@ class InvokeRepoHelper:
     advance_to: str | None = None
     advance_on_no_change_to: str | None = None
     record_pr_url_attrs: tuple[str, ...] = ()
+    function_name: str | None = None
+    """Override the invoked Lambda; defaults to ``repo_helper_function_name()`` when ``None``."""
 
 
 @dataclass(frozen=True, slots=True)

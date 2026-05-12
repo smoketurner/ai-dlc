@@ -38,6 +38,7 @@ from state_router.actions import (
 )
 from state_router.config import (
     github_bot_login,
+    lint_gate_function_name,
     repo_helper_function_name,
     runtime_arn,
 )
@@ -588,6 +589,36 @@ spending tokens indefinitely.
 
 
 def handle_tasks_complete(run: Run) -> Action:
+    """Dispatch the lint gate Lambda and advance to ``lint_gate_running``.
+
+    The lint gate runs ruff check + ruff format --check + ty check on
+    the impl branch before any LLM validator fires. It emits
+    ``LINT_GATE.PASSED`` or ``LINT_GATE.FAILED`` on EventBridge; the
+    projector advances state accordingly.
+    """
+    if not run.pr_url or not run.spec_slug:
+        return Noop("impl PR or spec_slug not yet available")
+    fn = lint_gate_function_name()
+    if not fn:
+        return Noop("lint_gate Lambda not yet provisioned")
+    return InvokeRepoHelper(
+        op="run_lint_gate",
+        args={
+            "project_slug": run.project_slug,
+            "spec_slug": run.spec_slug,
+            "pr_url": run.pr_url,
+            "run_id": run.run_id,
+            "correlation_id": run.correlation_id,
+        },
+        function_name=fn,
+        target_pk=f"RUN#{run.run_id}",
+        target_sk="STATE",
+        advance_from=RunState.tasks_complete.value,
+        advance_to=RunState.lint_gate_running.value,
+    )
+
+
+def handle_validation_running(run: Run) -> Action:
     """Dispatch the validation pass: reviewer + tester + code-critic in parallel.
 
     All three target the unified impl PR (``run.pr_url``). Reviewer is
@@ -597,8 +628,11 @@ def handle_tasks_complete(run: Run) -> Action:
     the impl PR and inform the implementer's revision pass if one is
     triggered.
 
-    The :class:`InvokeAgent` advances ``tasks_complete → validation_running``
-    once; subsequent beacons in ``validation_running`` no-op.
+    The projector already advanced to ``validation_running`` via
+    ``LINT_GATE.PASSED``; this handler fires the validators on the
+    beacon produced by that transition. Validators are fire-and-forget
+    (no state advance here) — the run stays in ``validation_running``
+    until ``REVIEW.READY`` arrives.
     """
     if not run.pr_url or not run.spec_slug:
         return Noop("impl PR or spec_slug not yet available")
@@ -610,17 +644,7 @@ def handle_tasks_complete(run: Run) -> Action:
         invokes.append(invoke_validator(run, agent_name, arn))
     if not invokes:
         return Noop("no validator runtimes provisioned")
-    return CompoundAction(
-        actions=(
-            *invokes,
-            AdvanceState(
-                target_pk=f"RUN#{run.run_id}",
-                target_sk="STATE",
-                advance_from=RunState.tasks_complete.value,
-                advance_to=RunState.validation_running.value,
-            ),
-        ),
-    )
+    return CompoundAction(actions=tuple(invokes))
 
 
 def invoke_validator(run: Run, agent_name: str, arn: str) -> InvokeAgent:
@@ -750,7 +774,8 @@ RUN_DISPATCH: Mapping[RunState, RunHandler] = {
     RunState.tasks_in_progress: handle_tasks_in_progress,
     RunState.proposer_running: noop_waiting,
     RunState.tasks_complete: handle_tasks_complete,
-    RunState.validation_running: noop_waiting,
+    RunState.lint_gate_running: noop_waiting,
+    RunState.validation_running: handle_validation_running,
     RunState.validation_complete: handle_validation_complete,
     RunState.revising: noop_waiting,
     RunState.awaiting_human_merge: noop_waiting,
