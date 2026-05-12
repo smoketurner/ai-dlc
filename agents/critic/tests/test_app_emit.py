@@ -22,14 +22,12 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]:
 def test_publish_critique_ready_builds_envelope(captured: list[EventEnvelope[Any]]) -> None:
     payload = CriticInput(
         project_slug="demo",
-        spec_slug="add-healthz",
-        spec_s3_prefix="specs/add-healthz/",
+        plan_s3_key="runs/r-1/plan.md",
         intent="Add /healthz",
         run_id="r-1",
         correlation_id="c-1",
     )
     result = CriticResult(
-        spec_slug="add-healthz",
         critique_s3_key="runs/r-1/critique.md",
         issue_count=3,
         high_severity_count=1,
@@ -50,3 +48,4 @@ def test_publish_critique_ready_builds_envelope(captured: list[EventEnvelope[Any
     assert isinstance(env.payload, CritiqueReady)
     assert env.payload.issue_count == 3
     assert env.payload.high_severity_count == 1
+    assert env.payload.critique_s3_key == "runs/r-1/critique.md"

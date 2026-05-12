@@ -1,6 +1,7 @@
 """AgentCore Runtime entrypoint for the Tester.
 
-The state-router invokes the runtime once per task PR. The entrypoint:
+The state-router invokes the runtime once per impl-PR validation pass.
+The entrypoint:
 
   1. Validates the input as :class:`TesterInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
@@ -89,7 +90,7 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
         report = analyze_gaps(
             agent,
             project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
+            plan_s3_key=payload.plan_s3_key,
             run_id=payload.run_id,
             pr_url=payload.pr_url,
             revision_number=payload.revision_number,
@@ -147,7 +148,6 @@ def publish_test_report_ready(payload: TesterInput, result: TesterResult) -> Non
         actor_id="tester",
         payload=TestReportReady(
             project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
             pr_url=result.pr_url,
             gap_count=result.gap_count,
             suggested_test_count=result.suggested_test_count,

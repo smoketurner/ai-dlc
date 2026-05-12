@@ -1,8 +1,8 @@
 """Strands hooks for the Tester.
 
-Mirrors the Reviewer's cap: ``read_spec_doc`` at most 3 times per
-invocation. Mapping acceptance criteria to tests should not require
-re-reading the same documents over and over.
+Mirrors the Reviewer's cap on plan reads — ``read_plan_doc`` at most 2
+times per invocation. Mapping plan steps to tests shouldn't require
+re-reading the plan repeatedly.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from strands.hooks import HookCallback, HookProvider
 
 from common.hooks import ToolCallCounter
 
-READ_SPEC_DOC_CAP = 3
+READ_PLAN_DOC_CAP = 2
 
 
 def build_hooks() -> list[HookProvider | HookCallback[Any]]:
     """Build a fresh list of hook providers for one agent invocation."""
     return [
-        ToolCallCounter({"read_spec_doc": READ_SPEC_DOC_CAP}),
+        ToolCallCounter({"read_plan_doc": READ_PLAN_DOC_CAP}),
     ]

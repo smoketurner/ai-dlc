@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from reviewer.hooks import READ_SPEC_DOC_CAP, build_hooks
+from reviewer.hooks import READ_PLAN_DOC_CAP, build_hooks
 
 
 @dataclass
@@ -20,23 +20,23 @@ def call(hook: Any, name: str) -> StubBeforeToolCall:
     return event
 
 
-def test_read_spec_doc_cap_is_three() -> None:
-    assert READ_SPEC_DOC_CAP == 3
+def test_read_plan_doc_cap_is_two() -> None:
+    assert READ_PLAN_DOC_CAP == 2
 
 
-def test_third_read_spec_doc_is_allowed() -> None:
+def test_second_read_plan_doc_is_allowed() -> None:
     counter = build_hooks()[0]
-    for _ in range(3):
-        event = call(counter, "read_spec_doc")
+    for _ in range(2):
+        event = call(counter, "read_plan_doc")
         assert event.cancel_tool is None
 
 
-def test_fourth_read_spec_doc_is_denied() -> None:
+def test_third_read_plan_doc_is_denied() -> None:
     counter = build_hooks()[0]
-    for _ in range(3):
-        call(counter, "read_spec_doc")
-    fourth = call(counter, "read_spec_doc")
-    assert fourth.cancel_tool is not None
+    for _ in range(2):
+        call(counter, "read_plan_doc")
+    third = call(counter, "read_plan_doc")
+    assert third.cancel_tool is not None
 
 
 def test_other_tools_are_unbounded() -> None:
