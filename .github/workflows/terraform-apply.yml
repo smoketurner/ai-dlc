@@ -59,6 +59,10 @@ jobs:
       # gitignored terraform.tfvars isn't needed in CI.
       TF_VAR_github_owner: ${{ github.repository_owner }}
       TF_VAR_github_repo: ${{ github.event.repository.name }}
+      # Login of the GitHub App's bot user — drives the
+      # ``issues.assigned`` and ``@<bot>`` mention triggers in the
+      # dashboard webhook handler. Empty disables those paths.
+      TF_VAR_github_bot_login: ${{ vars.AIDLC_GITHUB_BOT_LOGIN }}
     defaults:
       run:
         working-directory: terraform/envs/dev
