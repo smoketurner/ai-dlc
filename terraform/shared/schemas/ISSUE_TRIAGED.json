@@ -53,11 +53,7 @@
         "issue_number": { "type": "integer", "minimum": 1 },
         "action": {
           "type": "string",
-          "enum": ["proceed", "ask", "defer", "decline"]
-        },
-        "workflow_kind": {
-          "type": ["string", "null"],
-          "enum": ["spec_driven", "bug_fix", "upgrade", "docs", null]
+          "enum": ["proceed", "ask", "defer", "decline", "research"]
         },
         "decision_s3_key": { "type": "string", "minLength": 1, "maxLength": 512 },
         "rationale": { "type": "string", "minLength": 1, "maxLength": 2048 },

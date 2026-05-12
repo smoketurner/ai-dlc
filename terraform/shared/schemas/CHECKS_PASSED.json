@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "SPEC.READY",
-  "description": "The architect agent produced a spec bundle (requirements, design, tasks) and is awaiting approval.",
+  "title": "CHECKS.PASSED",
+  "description": "All required GitHub Checks for the impl PR's HEAD sha are conclusion=success.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["SPEC.READY"] },
+    "type": { "type": "string", "enum": ["CHECKS.PASSED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,27 +26,17 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "project_slug",
-        "spec_slug",
-        "spec_s3_prefix",
-        "requirements_summary",
-        "design_summary",
-        "task_count",
-        "session_id"
-      ],
+      "required": ["project_slug", "pr_url", "head_sha", "delivery_id"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "spec_s3_prefix": { "type": "string", "minLength": 1 },
-        "requirements_summary": { "type": "string", "maxLength": 1024 },
-        "design_summary": { "type": "string", "maxLength": 1024 },
-        "task_count": { "type": "integer", "minimum": 1 },
-        "proposed_adrs": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+        "pr_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^https://github\\.com/.+/pull/[0-9]+$"
         },
-        "session_id": { "type": "string", "minLength": 1 }
+        "head_sha": { "type": "string", "minLength": 7, "maxLength": 40 },
+        "delivery_id": { "type": "string", "minLength": 1, "maxLength": 128 }
       }
     }
   }

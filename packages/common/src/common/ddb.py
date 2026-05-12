@@ -17,13 +17,13 @@ Example::
 
     update = (
         UpdateBuilder(table="runs", key={"pk": "RUN#1", "sk": "STATE"})
-        .set("status", "SPEC.READY")
+        .set("status", "DESIGN.READY")
         .add("total_token_in", 4000)
         .condition_eq("current_state", "architect_running")
     )
     put = PutBuilder(
         table="runs",
-        item={"pk": "RUN#1", "sk": "EVENT#abc", "type": "SPEC.READY"},
+        item={"pk": "RUN#1", "sk": "EVENT#abc", "type": "DESIGN.READY"},
     ).condition_not_exists("sk")
     committed = TransactWriteItemsBuilder().update(update).put(put).commit(client)
 """

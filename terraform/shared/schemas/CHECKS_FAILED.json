@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "TASK.BLOCKED",
-  "description": "The implementer could not produce an implementation for one task. A draft PR carrying BLOCKED.md is open; the human advances by commenting on the PR (TASK.ITERATION_REQUESTED) or closing it (TASK.REJECTED).",
+  "title": "CHECKS.FAILED",
+  "description": "One or more required GitHub Checks for the impl PR's HEAD sha did not succeed. Triggers an implementer revision (counts toward MAX_REVISIONS).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["TASK.BLOCKED"] },
+    "type": { "type": "string", "enum": ["CHECKS.FAILED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -28,19 +28,24 @@
       "additionalProperties": false,
       "required": [
         "project_slug",
-        "spec_slug",
-        "task_id",
         "pr_url",
-        "blocked_reason",
-        "session_id"
+        "head_sha",
+        "delivery_id",
+        "failed_workflow_count",
+        "summary"
       ],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
-        "pr_url": { "type": "string", "format": "uri" },
-        "blocked_reason": { "type": "string", "minLength": 1, "maxLength": 2048 },
-        "session_id": { "type": "string", "minLength": 1 }
+        "pr_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^https://github\\.com/.+/pull/[0-9]+$"
+        },
+        "head_sha": { "type": "string", "minLength": 7, "maxLength": 40 },
+        "delivery_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "failed_workflow_count": { "type": "integer", "minimum": 1 },
+        "summary": { "type": "string", "maxLength": 2048 }
       }
     }
   }

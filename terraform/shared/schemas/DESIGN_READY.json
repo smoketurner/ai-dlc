@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "TASK.APPROVED",
-  "description": "A reviewer approved the task PR. The next task may start.",
+  "title": "DESIGN.READY",
+  "description": "The architect agent produced a single plan.md (Context, Assumptions, Approach, Files, Reuse, Implementation steps, Verification, Out of scope) and is ready for the critic.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["TASK.APPROVED"] },
+    "type": { "type": "string", "enum": ["DESIGN.READY"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,13 +26,16 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_slug", "spec_slug", "task_id", "pr_url", "reviewer"],
+      "required": ["project_slug", "plan_s3_key", "summary", "session_id"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
-        "pr_url": { "type": "string", "format": "uri" },
-        "reviewer": { "type": "string", "minLength": 1 }
+        "plan_s3_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "summary": { "type": "string", "maxLength": 2048 },
+        "session_id": { "type": "string", "minLength": 1 },
+        "token_in": { "type": "integer", "minimum": 0 },
+        "token_out": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0.0 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
       }
     }
   }

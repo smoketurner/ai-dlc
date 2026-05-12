@@ -20,12 +20,9 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from collections.abc import Callable
-from functools import cache
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
-import boto3
 import httpx
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
@@ -39,9 +36,6 @@ from common.github_app import (
     USER_AGENT,
     token_for_call,
 )
-
-if TYPE_CHECKING:
-    from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="repo_helper")
 tracer = Tracer(service="repo_helper")
@@ -314,36 +308,6 @@ class ReplyPrReviewCommentInput(BaseOp):
     body: str = Field(min_length=1, max_length=65_536)
 
 
-class OpenSpecPrInput(BaseOp):
-    """Open the spec PR for a run.
-
-    Compound op: reads the three spec Markdown docs from S3
-    (``specs/{spec_slug}/{requirements,design,tasks}.md``), creates a
-    branch off ``base``, commits the docs into the repo under
-    ``docs/specs/{spec_slug}/``, and opens a PR. Returns the PR's URL +
-    number so the state-router can persist them on the run STATE row
-    (``pr_url``) for the webhook ``gsi_pr`` lookup.
-    """
-
-    op: Literal["open_spec_pr"]
-    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
-    spec_slug: str = Field(min_length=1, max_length=128)
-    spec_s3_prefix: str = Field(min_length=1, max_length=512)
-    run_id: str = Field(min_length=1, max_length=64)
-    base: str = Field(default="main", min_length=1, max_length=128)
-    # When the run was triggered by a GitHub issue, the URL goes into
-    # the PR body so GitHub renders a backlink in both directions
-    # (issue timeline shows the PR; PR shows the source issue). We
-    # deliberately don't use closing keywords ("Fixes #N") — the issue
-    # stays open until task PRs land, not when the spec is approved.
-    source_issue_url: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=512,
-        pattern=r"^https://github\.com/.+$",
-    )
-
-
 class ListCheckRunsInput(BaseOp):
     """List GitHub Checks API check runs for a commit / branch.
 
@@ -372,9 +336,31 @@ class ListCheckRunsInput(BaseOp):
     ) = Field(default=None, max_length=8)
 
 
+class GetCheckStateInput(BaseOp):
+    """Aggregate GitHub Checks for a PR's current HEAD sha into one verdict.
+
+    Resolves the PR's current head SHA via ``GET /repos/{repo}/pulls/{n}``,
+    then queries both ``/commits/{sha}/check-runs`` and
+    ``/commits/{sha}/check-suites`` and aggregates them:
+
+    * ``"failed"`` — any check_run or check_suite has ``conclusion`` in
+      ``{failure, timed_out, cancelled, action_required, stale}``.
+    * ``"passed"`` — every completed check_run / check_suite has
+      ``conclusion == "success"`` (or ``neutral`` / ``skipped``).
+    * ``"pending"`` — neither of the above (at least one not-completed
+      run or suite).
+
+    Idempotent + safe to call repeatedly; the only side effect is the
+    HTTP read against GitHub.
+    """
+
+    op: Literal["get_check_state"]
+    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
+    pr_number: int = Field(ge=1)
+
+
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
-    "open_spec_pr": OpenSpecPrInput,
     "update_pr": UpdatePrInput,
     "comment_pr": CommentPrInput,
     "create_branch": CreateBranchInput,
@@ -395,21 +381,8 @@ DISPATCH: dict[str, type[BaseOp]] = {
     "list_pr_review_comments": ListPrReviewCommentsInput,
     "reply_pr_review_comment": ReplyPrReviewCommentInput,
     "list_check_runs": ListCheckRunsInput,
+    "get_check_state": GetCheckStateInput,
 }
-
-
-@cache
-def s3_client() -> S3Client:
-    """Process-cached boto3 S3 client (used by ``open_spec_pr``)."""
-    return boto3.client("s3")
-
-
-def artifacts_bucket() -> str:
-    """Bucket holding spec bundles + run artifacts."""
-    return os.environ["AIDLC_ARTIFACTS_BUCKET"]
-
-
-SPEC_DOCS = ("requirements", "design", "tasks")
 
 
 @logger.inject_lambda_context(log_event=False)
@@ -592,74 +565,6 @@ def delete_branch_ref(repo: str, branch: str, client: httpx.Client) -> bool:
     return False
 
 
-def open_spec_pr(req: OpenSpecPrInput, client: httpx.Client) -> dict[str, Any]:
-    """Read the three spec docs from S3, branch, commit them, open the PR.
-
-    When the spec docs match what's already on ``base`` (a re-run that
-    produced an identical bundle to a previously-merged spec), the new
-    tree's SHA equals the base tree's SHA. Short-circuit before
-    creating an empty commit + 0-file-change PR — return ``no_change``
-    so the state-router can advance straight to ``spec_approved``.
-    """
-    docs = read_spec_docs(req.spec_s3_prefix)
-    branch = f"aidlc/spec/{req.spec_slug}"
-    files = [
-        CommitFile(
-            path=f"docs/specs/{req.spec_slug}/{name}.md",
-            content=docs[name],
-        )
-        for name in SPEC_DOCS
-    ]
-    base_commit_sha = create_or_reuse_branch(req.repo, branch, req.base, client)
-    base_tree_sha = commit_tree_sha(req.repo, base_commit_sha, client)
-    tree_entries = [build_blob_entry(req.repo, f, client) for f in files]
-    new_tree_sha = create_tree(req.repo, base_tree_sha, tree_entries, client)
-    if new_tree_sha == base_tree_sha:
-        return {
-            "no_change": True,
-            "spec_slug": req.spec_slug,
-            "branch": branch,
-            "base_commit_sha": base_commit_sha,
-        }
-    new_commit_sha = create_commit(
-        req.repo,
-        f"spec: {req.spec_slug}",
-        new_tree_sha,
-        base_commit_sha,
-        client,
-    )
-    update_ref(req.repo, branch, new_commit_sha, client)
-    title = f"spec: {req.spec_slug}"
-    body = render_spec_pr_body(req.spec_slug, req.run_id, req.source_issue_url)
-    existing_pr = find_open_pr(req.repo, branch=branch, base=req.base, client=client)
-    if existing_pr is not None:
-        # Spec-PR iteration: the architect re-ran on the same branch.
-        # The fast-forward above already added the new commit; the PR
-        # is now showing the new content automatically. Skip POST /pulls
-        # (would 422 with "A pull request already exists for ...").
-        return {
-            "pr_number": existing_pr["number"],
-            "pr_url": existing_pr["html_url"],
-            "state": existing_pr["state"],
-            "branch": branch,
-            "commit_sha": new_commit_sha,
-            "iteration": True,
-        }
-    response = client.post(
-        f"/repos/{req.repo}/pulls",
-        json={"title": title, "body": body, "head": branch, "base": req.base},
-    )
-    response.raise_for_status()
-    pr = response.json()
-    return {
-        "pr_number": pr["number"],
-        "pr_url": pr["html_url"],
-        "state": pr["state"],
-        "branch": branch,
-        "commit_sha": new_commit_sha,
-    }
-
-
 def find_open_pr(
     repo: str,
     *,
@@ -678,68 +583,6 @@ def find_open_pr(
     if isinstance(prs, list) and prs:
         return prs[0]
     return None
-
-
-def read_spec_docs(spec_s3_prefix: str) -> dict[str, str]:
-    """Read the three Markdown docs from ``s3://{bucket}/{prefix}{name}.md``."""
-    bucket = artifacts_bucket()
-    prefix = spec_s3_prefix if spec_s3_prefix.endswith("/") else f"{spec_s3_prefix}/"
-    docs: dict[str, str] = {}
-    for name in SPEC_DOCS:
-        obj = s3_client().get_object(Bucket=bucket, Key=f"{prefix}{name}.md")
-        docs[name] = obj["Body"].read().decode("utf-8")
-    return docs
-
-
-def create_or_reuse_branch(
-    repo: str,
-    branch: str,
-    base: str,
-    client: httpx.Client,
-) -> str:
-    """Create ``branch`` off ``base`` (or reuse it if it already exists).
-
-    Returns the branch's tip commit SHA — caller chains it into the
-    tree/commit/ref dance to land the spec docs on top.
-    """
-    existing = client.get(f"/repos/{repo}/git/refs/heads/{branch}")
-    if existing.status_code == httpx.codes.OK:
-        return str(existing.json()["object"]["sha"])
-    base_ref = client.get(f"/repos/{repo}/git/refs/heads/{base}")
-    base_ref.raise_for_status()
-    base_sha = str(base_ref.json()["object"]["sha"])
-    created = client.post(
-        f"/repos/{repo}/git/refs",
-        json={"ref": f"refs/heads/{branch}", "sha": base_sha},
-    )
-    created.raise_for_status()
-    return base_sha
-
-
-def render_spec_pr_body(
-    spec_slug: str,
-    run_id: str,
-    source_issue_url: str | None = None,
-) -> str:
-    """PR body that links the spec docs, the source issue, and the run.
-
-    No closing keyword on the source-issue line — the issue stays open
-    until task PRs are merged. The plain URL gives GitHub a clickable
-    link + a back-reference in the issue's timeline.
-    """
-    paragraphs = [f"ai-dlc spec for `{spec_slug}` (run `{run_id}`)."]
-    if source_issue_url:
-        paragraphs.append(f"Source issue: {source_issue_url}")
-    paragraphs.append(
-        f"This PR contains three docs under `docs/specs/{spec_slug}/`:\n\n"
-        "- `requirements.md`\n"
-        "- `design.md`\n"
-        "- `tasks.md`",
-    )
-    paragraphs.append(
-        "Merging approves the spec; the platform will then dispatch each task as a separate PR.",
-    )
-    return "\n\n".join(paragraphs) + "\n"
 
 
 def comment_pr(req: CommentPrInput, client: httpx.Client) -> dict[str, Any]:
@@ -1094,6 +937,89 @@ def list_check_runs(req: ListCheckRunsInput, client: httpx.Client) -> dict[str, 
     }
 
 
+CHECK_FAILED_CONCLUSIONS: frozenset[str] = frozenset(
+    {"failure", "timed_out", "cancelled", "action_required", "stale"},
+)
+"""GitHub Checks conclusions we treat as a hard ``failed`` aggregate.
+
+A single failed run or suite at the head sha trips the whole PR to
+``failed`` — the implementer revision pass needs to address it before
+the run can advance back into validation.
+"""
+
+CHECK_PASSED_CONCLUSIONS: frozenset[str] = frozenset({"success", "neutral", "skipped"})
+"""Conclusions that count as ``passed`` for aggregate purposes."""
+
+
+def get_check_state(req: GetCheckStateInput, client: httpx.Client) -> dict[str, Any]:
+    """Aggregate the GitHub Checks for a PR's HEAD sha into a single verdict.
+
+    Resolves the PR's current head sha, queries check-runs +
+    check-suites for that sha, and returns one of:
+    ``{passed, failed, pending}``. ``head_sha`` is echoed back so
+    callers can use it to key idempotent state writes.
+    """
+    pr = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
+    pr.raise_for_status()
+    head_sha = str(pr.json()["head"]["sha"])
+
+    runs_resp = client.get(
+        f"/repos/{req.repo}/commits/{head_sha}/check-runs",
+        params={"per_page": "100"},
+    )
+    runs_resp.raise_for_status()
+    runs = runs_resp.json().get("check_runs", []) or []
+
+    suites_resp = client.get(
+        f"/repos/{req.repo}/commits/{head_sha}/check-suites",
+        params={"per_page": "100"},
+    )
+    suites_resp.raise_for_status()
+    suites = suites_resp.json().get("check_suites", []) or []
+
+    state = aggregate_check_state(runs=runs, suites=suites)
+    return {
+        "state": state,
+        "head_sha": head_sha,
+        "run_count": len(runs),
+        "suite_count": len(suites),
+    }
+
+
+def aggregate_check_state(
+    *,
+    runs: list[dict[str, Any]],
+    suites: list[dict[str, Any]],
+) -> Literal["passed", "failed", "pending"]:
+    """Combine check_runs + check_suites into one verdict.
+
+    Rules (in order):
+
+    * ``failed`` — any conclusion in :data:`CHECK_FAILED_CONCLUSIONS`.
+    * ``pending`` — any incomplete run/suite (``status != "completed"``
+      or ``conclusion is None``), or the run/suite list is empty.
+    * ``passed`` — every completed run/suite has a passing conclusion.
+
+    Empty input is ``pending`` rather than ``passed``: no checks have
+    reported yet, so we should not claim success.
+    """
+    if not runs and not suites:
+        return "pending"
+    entries: list[dict[str, Any]] = list(runs) + list(suites)
+    for entry in entries:
+        conclusion = entry.get("conclusion")
+        if conclusion in CHECK_FAILED_CONCLUSIONS:
+            return "failed"
+    for entry in entries:
+        status = entry.get("status")
+        conclusion = entry.get("conclusion")
+        if status != "completed" or conclusion is None:
+            return "pending"
+        if conclusion not in CHECK_PASSED_CONCLUSIONS:
+            return "pending"
+    return "passed"
+
+
 GET_PR_DIFF_FILE_CAP = 300
 GET_PR_DIFF_PATCH_TAIL_BYTES = 4096
 GET_PR_DIFF_PER_PAGE = 100
@@ -1269,13 +1195,12 @@ def github_client(*, repo: str, requestor_sub: str | None) -> httpx.Client:
 def safe_body(response: httpx.Response) -> str | dict[str, Any]:
     """Best-effort body extraction that never raises.
 
-    ``json.JSONDecodeError`` is a subclass of ``ValueError``, so the
-    second clause is redundant — the parenthesised form is here only
-    to make intent explicit and to keep the bare-except lint quiet.
+    ``json.JSONDecodeError`` is a subclass of ``ValueError`` so we
+    catch the base class and fall through to ``response.text``.
     """
     try:
         return response.json()
-    except ValueError, json.JSONDecodeError:
+    except (ValueError, json.JSONDecodeError):
         return response.text[:1024]
 
 
@@ -1295,7 +1220,6 @@ def error(kind: str, detail: object) -> dict[str, Any]:
 OpHandler = Callable[[Any, httpx.Client], dict[str, Any]]
 OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     OpenPrInput: ("open_pr", open_pr),
-    OpenSpecPrInput: ("open_spec_pr", open_spec_pr),
     UpdatePrInput: ("update_pr", update_pr),
     CommentPrInput: ("comment_pr", comment_pr),
     CreateBranchInput: ("create_branch", create_branch),
@@ -1316,4 +1240,5 @@ OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     ListPrReviewCommentsInput: ("list_pr_review_comments", list_pr_review_comments),
     ReplyPrReviewCommentInput: ("reply_pr_review_comment", reply_pr_review_comment),
     ListCheckRunsInput: ("list_check_runs", list_check_runs),
+    GetCheckStateInput: ("get_check_state", get_check_state),
 }

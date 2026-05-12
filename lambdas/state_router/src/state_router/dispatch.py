@@ -1,14 +1,11 @@
 """Top-level dispatch entry — :func:`decide` for the state router.
 
-Run handlers live in :mod:`state_router.dispatch_run`; task handlers
-live in :mod:`state_router.dispatch_task`. This module composes the
-two into the public ``decide`` / ``decide_task`` surface that the
-handler walks each beacon receive.
+Run handlers live in :mod:`state_router.dispatch_run`. There is no
+per-task dispatch any more (the platform consolidated to one issue →
+one impl PR, so there are no TASK rows).
 
 Adding a new state = adding one entry to :data:`RUN_DISPATCH` (in
-:mod:`state_router.dispatch_run`) or :data:`TASK_DISPATCH` (in
-:mod:`state_router.dispatch_task`) and one handler function. ASL
-editing is no longer part of the workflow.
+:mod:`state_router.dispatch_run`) and one handler function.
 """
 
 from __future__ import annotations
@@ -18,7 +15,6 @@ from typing import TYPE_CHECKING
 from common.state import TERMINAL_RUN_STATES
 from state_router.actions import Action, Noop
 from state_router.dispatch_run import RUN_DISPATCH, terminal
-from state_router.dispatch_task import TASK_DISPATCH, decide_task
 
 if TYPE_CHECKING:
     from state_router.model import Run
@@ -43,7 +39,5 @@ def decide(run: Run) -> Action:
 
 __all__ = [
     "RUN_DISPATCH",
-    "TASK_DISPATCH",
     "decide",
-    "decide_task",
 ]

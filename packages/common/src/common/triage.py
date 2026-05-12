@@ -1,9 +1,13 @@
 """Pydantic contracts for the Triage agent's structured output.
 
 The Triage agent reads a tagged GitHub issue (assigned to the bot user)
-and decides what the system should do next. Four terminal actions:
+and decides what the system should do next. Five terminal actions:
 
-  * ``proceed`` — route into the workflow indicated by ``workflow_kind``.
+  * ``proceed`` — route into the single-PR-per-issue pipeline
+    (architect → critic → implementer → reviewer / tester / code-critic).
+  * ``research`` — branch to the Proposer, which reads external URLs in
+    the issue body and synthesises findings as a comment back on the
+    issue. Optionally opens a PR proposing prompt / MEMORY.md edits.
   * ``ask`` — post the listed questions on the issue and wait for a
     reply via the ``issue_comment`` webhook; triage re-runs with the
     additional context once the human responds.
@@ -24,21 +28,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from common.validators import NoneSafeList
 
-WorkflowKind = Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"]
-"""Which workflow phase Step Functions should branch into.
+TriageAction = Literal["proceed", "ask", "defer", "decline", "research"]
+"""Top-level decision the state router branches on.
 
-  * ``spec_driven`` — Feature / Task issue types; full architect → critic →
-    implementer → reviewer / tester loop.
-  * ``bug_fix`` — Bug issue type; reproduce → fix → test, no spec bundle.
-  * ``upgrade`` — dependency-upgrade issues; scan → bump → test.
-  * ``docs`` — documentation-only changes; single-agent edit.
-  * ``research`` — read external resources (URLs in the issue body) and
-    synthesise findings; the Proposer posts a comment on the issue and
-    optionally opens a PR proposing prompt / MEMORY.md edits.
+  * ``proceed`` — run the full architect → critic → implementer pipeline,
+    producing a single impl PR.
+  * ``research`` — invoke the Proposer; no impl PR, just a synthesis
+    comment on the source issue (and optionally a MEMORY.md PR).
+  * ``ask`` — wait for human clarification.
+  * ``defer`` / ``decline`` — terminate the run with a comment.
 """
-
-TriageAction = Literal["proceed", "ask", "defer", "decline"]
-"""Top-level decision the Step Functions ``Choice`` state branches on."""
 
 
 class _Frozen(BaseModel):
@@ -64,15 +63,14 @@ class TriageDecision(_Frozen):
 
     Cross-field consistency:
 
-      * ``proceed`` requires ``workflow_kind``; no other action sets it.
       * ``ask`` requires at least one ``missing_information`` item; no
         other action lists any.
-      * ``defer`` and ``decline`` rely on ``rationale`` alone.
+      * ``proceed`` / ``research`` / ``defer`` / ``decline`` rely on
+        ``rationale`` alone.
     """
 
     action: TriageAction
     rationale: Annotated[str, Field(min_length=1, max_length=2048)]
-    workflow_kind: WorkflowKind | None = None
     missing_information: Annotated[
         NoneSafeList[MissingInformation],
         Field(max_length=8),
@@ -81,13 +79,7 @@ class TriageDecision(_Frozen):
 
     @model_validator(mode="after")
     def consistency(self) -> Self:
-        """Enforce the action / workflow_kind / missing_information rules."""
-        if self.action == "proceed" and self.workflow_kind is None:
-            msg = "action='proceed' requires a workflow_kind"
-            raise ValueError(msg)
-        if self.action != "proceed" and self.workflow_kind is not None:
-            msg = f"action={self.action!r} must not set workflow_kind"
-            raise ValueError(msg)
+        """Enforce the action / missing_information rules."""
         if self.action == "ask" and not self.missing_information:
             msg = "action='ask' requires at least one missing_information item"
             raise ValueError(msg)

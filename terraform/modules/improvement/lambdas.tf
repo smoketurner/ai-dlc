@@ -2,9 +2,9 @@
 # retrospector_dispatcher Lambda + EventBridge rule on terminal events.
 #
 # Fires the Retrospector AgentCore Runtime once per terminal event
-# (SPEC.APPROVED / SPEC.REJECTED / TASK.APPROVED / TASK.REJECTED /
-# RUN.CANCEL_REQUESTED). Provisioned only when the retrospector image
-# tag is set (i.e., the agent's container has been pushed at least once).
+# (RUN.COMPLETED / RUN.FAILED / RUN.CANCEL_REQUESTED). Provisioned only
+# when the retrospector image tag is set (i.e., the agent's container
+# has been pushed at least once).
 ################################################################################
 
 module "retrospector_dispatcher" {
@@ -65,10 +65,8 @@ resource "aws_cloudwatch_event_rule" "terminal_events" {
   event_pattern = jsonencode({
     source = [{ "prefix" : "ai-dlc." }]
     detail-type = [
-      "SPEC.APPROVED",
-      "SPEC.REJECTED",
-      "TASK.APPROVED",
-      "TASK.REJECTED",
+      "RUN.COMPLETED",
+      "RUN.FAILED",
       "RUN.CANCEL_REQUESTED",
     ]
   })

@@ -1382,393 +1382,206 @@ def test_list_check_runs_truncates_long_summary(
     assert len(out["result"]["check_runs"][0]["output"]["summary"]) == 4096
 
 
-SPEC_DOCS_S3 = {
-    "specs/add-healthz/requirements.md": b"# Requirements\n",
-    "specs/add-healthz/design.md": b"# Design\n",
-    "specs/add-healthz/tasks.md": b"# Tasks\n",
-}
-
-
-class _FakeS3Body:
-    def __init__(self, content: bytes) -> None:
-        self.content = content
-
-    def read(self) -> bytes:
-        return self.content
-
-
-class _FakeS3:
-    def __init__(self, docs: dict[str, bytes]) -> None:
-        self.docs = docs
-        self.requested: list[tuple[str, str]] = []
-
-    def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
-        self.requested.append((Bucket, Key))
-        return {"Body": _FakeS3Body(self.docs[Key])}
-
-
-def _miss_404(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(404, json={"message": "Not Found"})
-
-
-def _ok_main_ref(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"object": {"sha": "mainsha"}})
-
-
-def _ok_base_commit(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"tree": {"sha": "basetree"}})
-
-
-def _ok_blob(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(201, json={"sha": "blob"})
-
-
-def _ok_new_tree(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(201, json={"sha": "newtree"})
-
-
-def _ok_new_commit(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(201, json={"sha": "newcommit"})
-
-
-def _ok_patched_ref(_: httpx.Request) -> httpx.Response:
-    return httpx.Response(200, json={"object": {"sha": "newcommit"}})
-
-
-def _spec_pr_routes(
-    *, branch: str, base: str, slug: str, run_id: str
-) -> dict[
-    tuple[str, str],
-    Callable[[httpx.Request], httpx.Response],
-]:
-    """Build the GitHub-API responder map ``open_spec_pr`` should walk.
-
-    Lookup misses the branch first → falls back to ``base`` ref → tree /
-    commit / ref dance → PR open. ``create_branch_check`` and
-    ``open_pr_check`` assert their inbound shapes inline.
-    """
-    new_branch_ref = f"/repos/o/r/git/refs/heads/{branch}"
-    spec_files = {f"docs/specs/{slug}/{n}.md" for n in ("requirements", "design", "tasks")}
-
-    def create_branch_check(req: httpx.Request) -> httpx.Response:
-        assert json.loads(req.content) == {"ref": f"refs/heads/{branch}", "sha": "mainsha"}
-        return httpx.Response(201, json={"object": {"sha": "mainsha"}})
-
-    def tree_check(req: httpx.Request) -> httpx.Response:
-        assert {e["path"] for e in json.loads(req.content)["tree"]} == spec_files
-        return _ok_new_tree(req)
-
-    def commit_check(req: httpx.Request) -> httpx.Response:
-        assert json.loads(req.content)["message"] == f"spec: {slug}"
-        return _ok_new_commit(req)
-
-    def open_pr_check(req: httpx.Request) -> httpx.Response:
-        body = json.loads(req.content)
-        assert body["head"] == branch
-        assert body["base"] == base
-        assert run_id in body["body"]
-        return httpx.Response(
-            201,
-            json={
-                "number": 5,
-                "html_url": "https://github.com/o/r/pull/5",
-                "state": "open",
-            },
-        )
-
-    return {
-        ("GET", new_branch_ref): _miss_404,
-        ("GET", f"/repos/o/r/git/refs/heads/{base}"): _ok_main_ref,
-        ("POST", "/repos/o/r/git/refs"): create_branch_check,
-        ("GET", "/repos/o/r/git/commits/mainsha"): _ok_base_commit,
-        ("POST", "/repos/o/r/git/blobs"): _ok_blob,
-        ("POST", "/repos/o/r/git/trees"): tree_check,
-        ("POST", "/repos/o/r/git/commits"): commit_check,
-        ("PATCH", new_branch_ref): _ok_patched_ref,
-        # Default: no existing open PR for this head:branch — happy path
-        # falls through to POST /pulls. Iteration tests override this.
-        ("GET", "/repos/o/r/pulls"): lambda _: httpx.Response(200, json=[]),
-        ("POST", "/repos/o/r/pulls"): open_pr_check,
-    }
-
-
-def _route_with(
-    routes: dict[tuple[str, str], Callable[[httpx.Request], httpx.Response]],
-) -> Callable[[httpx.Request], httpx.Response]:
-    """Adapter that routes httpx requests via ``(method, path) → handler``."""
+def test_get_check_state_returns_passed_when_all_success(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Every run + suite at the PR's head sha conclusion=success → passed."""
 
     def respond(request: httpx.Request) -> httpx.Response:
-        handler = routes.get((request.method, request.url.path))
-        if handler is None:
-            msg = f"unexpected request: {request.method} {request.url.path}"
-            raise AssertionError(msg)
-        return handler(request)
+        if request.url.path == "/repos/o/r/pulls/42":
+            return httpx.Response(200, json={"head": {"sha": "abcdef0"}})
+        if request.url.path == "/repos/o/r/commits/abcdef0/check-runs":
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {"id": 1, "status": "completed", "conclusion": "success"},
+                        {"id": 2, "status": "completed", "conclusion": "success"},
+                    ],
+                },
+            )
+        if request.url.path == "/repos/o/r/commits/abcdef0/check-suites":
+            return httpx.Response(
+                200,
+                json={
+                    "check_suites": [
+                        {"id": 9, "status": "completed", "conclusion": "success"},
+                    ],
+                },
+            )
+        msg = f"unexpected request: {request.method} {request.url.path}"
+        raise AssertionError(msg)
 
-    return respond
-
-
-def test_open_spec_pr_reads_s3_branches_commits_and_opens(
-    patch_client: Callable[[httpx.MockTransport], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The compound op walks: read S3 → branch → blobs → tree → commit → ref → PR."""
-    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
-    fake_s3 = _FakeS3(SPEC_DOCS_S3)
-    monkeypatch.setattr(h, "s3_client", lambda: fake_s3)
-
-    routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
-        base="main",
-        slug="add-healthz",
-        run_id="run-xyz",
-    )
-    patch_client(httpx.MockTransport(_route_with(routes)))
+    patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {
-            "input": {
-                "op": "open_spec_pr",
-                "repo": "o/r",
-                "spec_slug": "add-healthz",
-                "spec_s3_prefix": "specs/add-healthz/",
-                "run_id": "run-xyz",
-            },
-        },
+        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 42}},
         ctx(),
     )
     assert out["ok"] is True
-    assert out["op"] == "open_spec_pr"
-    assert out["result"]["pr_url"] == "https://github.com/o/r/pull/5"
-    assert out["result"]["pr_number"] == 5
-    assert out["result"]["branch"] == "aidlc/spec/add-healthz"
-    assert {key for _, key in fake_s3.requested} == set(SPEC_DOCS_S3)
+    assert out["op"] == "get_check_state"
+    assert out["result"]["state"] == "passed"
+    assert out["result"]["head_sha"] == "abcdef0"
+    assert out["result"]["run_count"] == 2
+    assert out["result"]["suite_count"] == 1
 
 
-def test_open_spec_pr_includes_source_issue_url_in_body(
+def test_get_check_state_returns_failed_on_any_failure(
     patch_client: Callable[[httpx.MockTransport], None],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the run was triggered by an issue, the URL goes into the PR body.
+    """One failed run trips the aggregate to failed regardless of others."""
 
-    Gives GitHub a backlink between the source issue and the spec PR
-    without using a closing keyword (the issue stays open until task
-    PRs are merged).
-    """
-    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
-    monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
-    captured: dict[str, str] = {}
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/o/r/pulls/1":
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path == "/repos/o/r/commits/abc/check-runs":
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {"id": 1, "status": "completed", "conclusion": "success"},
+                        {"id": 2, "status": "completed", "conclusion": "failure"},
+                    ],
+                },
+            )
+        if request.url.path == "/repos/o/r/commits/abc/check-suites":
+            return httpx.Response(200, json={"check_suites": []})
+        msg = f"unexpected request: {request.method} {request.url.path}"
+        raise AssertionError(msg)
 
-    def open_pr_capture(req: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(req.content)["body"]
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["state"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "conclusion",
+    ["failure", "timed_out", "cancelled", "action_required", "stale"],
+)
+def test_get_check_state_treats_all_failure_modes_as_failed(
+    patch_client: Callable[[httpx.MockTransport], None],
+    conclusion: str,
+) -> None:
+    """Every conclusion in CHECK_FAILED_CONCLUSIONS aggregates to failed."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [{"id": 1, "status": "completed", "conclusion": conclusion}],
+                },
+            )
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["state"] == "failed"
+
+
+def test_get_check_state_returns_pending_on_incomplete_run(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Any run still in_progress / queued → pending."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {"id": 1, "status": "completed", "conclusion": "success"},
+                        {"id": 2, "status": "in_progress", "conclusion": None},
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["state"] == "pending"
+
+
+def test_get_check_state_returns_pending_when_no_checks(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Empty check lists → pending (no reports yet)."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(200, json={"check_runs": []})
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert out["result"]["state"] == "pending"
+
+
+def test_get_check_state_validates_repo_format() -> None:
+    out = h.handler(
+        {"input": {"op": "get_check_state", "repo": "no-slash", "pr_number": 1}},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "validation_error"
+
+
+def test_get_check_state_failure_in_suite_wins_over_passing_run(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """Suite-level failure trips the aggregate even when runs are green."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [{"id": 1, "status": "completed", "conclusion": "success"}],
+                },
+            )
         return httpx.Response(
-            201,
-            json={"number": 5, "html_url": "https://github.com/o/r/pull/5", "state": "open"},
+            200,
+            json={
+                "check_suites": [
+                    {"id": 9, "status": "completed", "conclusion": "failure"},
+                ],
+            },
         )
 
-    routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
-        base="main",
-        slug="add-healthz",
-        run_id="run-xyz",
-    )
-    routes[("POST", "/repos/o/r/pulls")] = open_pr_capture
-    patch_client(httpx.MockTransport(_route_with(routes)))
+    patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {
-            "input": {
-                "op": "open_spec_pr",
-                "repo": "o/r",
-                "spec_slug": "add-healthz",
-                "spec_s3_prefix": "specs/add-healthz/",
-                "run_id": "run-xyz",
-                "source_issue_url": "https://github.com/o/r/issues/33",
-            },
-        },
+        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
         ctx(),
     )
     assert out["ok"] is True
-    assert "Source issue: https://github.com/o/r/issues/33" in captured["body"]
-    # No closing keyword — the issue stays open until task PRs land.
-    assert "fixes" not in captured["body"].lower()
-    assert "closes" not in captured["body"].lower()
+    assert out["result"]["state"] == "failed"
 
 
-def _existing_branch_routes() -> dict[
-    tuple[str, str],
-    Callable[[httpx.Request], httpx.Response],
-]:
-    """Routes for the ``branch already exists`` happy path."""
-    branch_ref = "/repos/o/r/git/refs/heads/aidlc/spec/x"
-    return {
-        ("GET", branch_ref): lambda _: httpx.Response(
-            200,
-            json={"object": {"sha": "branchhead"}},
-        ),
-        ("GET", "/repos/o/r/git/commits/branchhead"): lambda _: httpx.Response(
-            200,
-            json={"tree": {"sha": "tree"}},
-        ),
-        ("POST", "/repos/o/r/git/blobs"): lambda _: httpx.Response(201, json={"sha": "blob"}),
-        ("POST", "/repos/o/r/git/trees"): lambda _: httpx.Response(201, json={"sha": "newtree"}),
-        ("POST", "/repos/o/r/git/commits"): lambda _: httpx.Response(
-            201,
-            json={"sha": "newcommit"},
-        ),
-        ("PATCH", branch_ref): lambda _: httpx.Response(
-            200,
-            json={"object": {"sha": "newcommit"}},
-        ),
-        # Default: no existing open PR for the branch.
-        ("GET", "/repos/o/r/pulls"): lambda _: httpx.Response(200, json=[]),
-        ("POST", "/repos/o/r/pulls"): lambda _: httpx.Response(
-            201,
-            json={
-                "number": 7,
-                "html_url": "https://github.com/o/r/pull/7",
-                "state": "open",
-            },
-        ),
-    }
-
-
-def test_open_spec_pr_short_circuits_when_tree_unchanged(
-    patch_client: Callable[[httpx.MockTransport], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When ``create_tree`` returns the base tree SHA, skip commit + PR.
-
-    A re-run that produces docs identical to a previously-merged spec
-    yields the same tree on the GitHub side. ``open_spec_pr`` returns
-    ``no_change: true`` so the state-router can advance straight to
-    ``spec_approved`` instead of opening a 0-file-change PR.
-    """
-    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
-    monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
-
-    def tree_returns_base(_: httpx.Request) -> httpx.Response:
-        # Same SHA as ``_ok_base_commit`` returns for the tree → no diff.
-        return httpx.Response(201, json={"sha": "basetree"})
-
-    routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
-        base="main",
-        slug="add-healthz",
-        run_id="run-xyz",
-    )
-    routes[("POST", "/repos/o/r/git/trees")] = tree_returns_base
-
-    def fail_if_called(req: httpx.Request) -> httpx.Response:
-        msg = f"unexpected request after no_change short-circuit: {req.method} {req.url.path}"
-        raise AssertionError(msg)
-
-    routes[("POST", "/repos/o/r/git/commits")] = fail_if_called
-    routes[("PATCH", "/repos/o/r/git/refs/heads/aidlc/spec/add-healthz")] = fail_if_called
-    routes[("POST", "/repos/o/r/pulls")] = fail_if_called
-
-    patch_client(httpx.MockTransport(_route_with(routes)))
-    out = h.handler(
-        {
-            "input": {
-                "op": "open_spec_pr",
-                "repo": "o/r",
-                "spec_slug": "add-healthz",
-                "spec_s3_prefix": "specs/add-healthz/",
-                "run_id": "run-xyz",
-            },
-        },
-        ctx(),
-    )
-    assert out["ok"] is True
-    assert out["result"] == {
-        "no_change": True,
-        "spec_slug": "add-healthz",
-        "branch": "aidlc/spec/add-healthz",
-        "base_commit_sha": "mainsha",
-    }
-
-
-def test_open_spec_pr_reuses_existing_open_pr(
-    patch_client: Callable[[httpx.MockTransport], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Iteration: an open PR for ``head:branch`` already exists.
-
-    The architect re-ran on the same branch and added a new commit; the
-    existing PR auto-updates. ``open_spec_pr`` must NOT POST /pulls
-    again — that would 422 with ``A pull request already exists for ...``.
-    """
-    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
-    monkeypatch.setattr(h, "s3_client", lambda: _FakeS3(SPEC_DOCS_S3))
-
-    routes = _spec_pr_routes(
-        branch="aidlc/spec/add-healthz",
-        base="main",
-        slug="add-healthz",
-        run_id="run-xyz",
-    )
-    routes[("GET", "/repos/o/r/pulls")] = lambda _: httpx.Response(
-        200,
-        json=[
-            {
-                "number": 53,
-                "html_url": "https://github.com/o/r/pull/53",
-                "state": "open",
-                "head": {"ref": "aidlc/spec/add-healthz"},
-            },
-        ],
-    )
-
-    def fail_if_called(req: httpx.Request) -> httpx.Response:
-        msg = "POST /pulls must NOT be called when an open PR for the branch exists"
-        raise AssertionError(msg)
-
-    routes[("POST", "/repos/o/r/pulls")] = fail_if_called
-    patch_client(httpx.MockTransport(_route_with(routes)))
-    out = h.handler(
-        {
-            "input": {
-                "op": "open_spec_pr",
-                "repo": "o/r",
-                "spec_slug": "add-healthz",
-                "spec_s3_prefix": "specs/add-healthz/",
-                "run_id": "run-xyz",
-            },
-        },
-        ctx(),
-    )
-    assert out["ok"] is True
-    assert out["result"]["pr_number"] == 53
-    assert out["result"]["pr_url"] == "https://github.com/o/r/pull/53"
-    assert out["result"]["iteration"] is True
-
-
-def test_open_spec_pr_reuses_existing_branch(
-    patch_client: Callable[[httpx.MockTransport], None],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If the branch ref already exists, ``open_spec_pr`` reuses it."""
-    monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", "test-artifacts")
-
-    class FakeBody:
-        def read(self) -> bytes:
-            return b"# doc\n"
-
-    class FakeS3:
-        def get_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
-            return {"Body": FakeBody()}
-
-    monkeypatch.setattr(h, "s3_client", FakeS3)
-    patch_client(httpx.MockTransport(_route_with(_existing_branch_routes())))
-    out = h.handler(
-        {
-            "input": {
-                "op": "open_spec_pr",
-                "repo": "o/r",
-                "spec_slug": "x",
-                "spec_s3_prefix": "specs/x/",
-                "run_id": "rid",
-            },
-        },
-        ctx(),
-    )
-    assert out["ok"] is True
-    assert out["result"]["pr_number"] == 7
+def test_open_spec_pr_op_no_longer_registered() -> None:
+    """The legacy spec PR opcode was removed in the single-PR-per-issue refactor."""
+    out = h.handler({"input": {"op": "open_spec_pr"}}, ctx())
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "unknown_op"

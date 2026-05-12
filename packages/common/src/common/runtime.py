@@ -7,23 +7,23 @@ that handles the contract for us — we just supply an entrypoint coroutine.
 This module collects the small shared scaffolding — input/output models —
 so each agent's ``app.py`` stays under 80 lines.
 
-The pipeline is spec-driven:
+The pipeline is single-PR-per-issue:
 
-  * The **Architect** receives an :class:`ArchitectInput` (intent + retry
-    feedback) and returns an :class:`ArchitectResult` (spec_s3_prefix +
-    summaries + task count).
-  * The **Critic** receives a :class:`CriticInput` (spec_s3_prefix + intent)
+  * The **Architect** receives an :class:`ArchitectInput` (intent +
+    optional triggering comment) and returns an :class:`ArchitectResult`
+    (plan_s3_key + summary). Plan is a single markdown document.
+  * The **Critic** receives a :class:`CriticInput` (plan_s3_key + intent)
     and returns a :class:`CriticResult` (critique_s3_key + severity counts).
-    Advisory only — does not gate the pipeline.
-  * The **Implementer** is invoked once per task and receives an
-    :class:`ImplementerInput` (spec_slug + task_id + retry feedback),
-    returning an :class:`ImplementerResult` (pr_url + diff_summary).
-  * The **Reviewer** receives a :class:`ReviewerInput` (pr_url + diff_summary
-    + spec context) and returns a :class:`ReviewerResult` (verdict + comment
-    counts + severity). Advisory only.
-  * The **Tester** receives a :class:`TesterInput` (pr_url + diff_summary)
-    and returns a :class:`TesterResult` (gap counts + suggested test count).
     Advisory only.
+  * The **Implementer** is invoked once in ``mode=implementation`` and
+    receives an :class:`ImplementerInput` (plan_s3_key + critique_s3_key
+    + source issue refs), returning an :class:`ImplementerResult`
+    (pr_url + diff_summary). On reviewer/CI/mention feedback it runs
+    again in ``mode=revision``.
+  * **Reviewer**, **Tester**, **Code-Critic** run in parallel against
+    the impl PR. Code-Critic specifically reviews the implementation
+    against the **original GitHub issue**, so its input includes the
+    issue title + body + URL.
 """
 
 from __future__ import annotations
@@ -66,16 +66,18 @@ class _UsageMixin(_Frozen):
 class ArchitectInput(_Frozen):
     """Input passed to the Architect's ``/invocations`` endpoint.
 
-    Step Functions sends this body when invoking the architect runtime,
-    populating ``prior_feedback`` if this is a retry after rejection.
-    ``requestor_sub`` and ``target_repo`` are threaded through every agent's
-    input so downstream agents (Implementer, Reviewer, Tester) can act on
-    behalf of the user against the right repo.
+    The Architect produces a single ``plan.md`` document at
+    ``s3://artifacts/runs/{run_id}/plan.md`` structured like a
+    Claude Code plan-mode plan: Context, Assumptions, Approach, Files,
+    Reuse, Implementation steps, Verification, Out of scope.
 
     ``triggering_comment_body`` carries the user's free-text guidance
-    when the run was minted by an issue comment (`/aidlc go <text>` or
-    `@aidlc-bot <text>`), with the control prefix stripped. Distinct
-    from ``prior_feedback`` (reviewer feedback after a rejected spec).
+    when the run was minted by an issue comment (``@aidlc-bot <text>``),
+    with the bot mention stripped.
+
+    ``source_issue_url``/``source_issue_title``/``source_issue_body``
+    are the GitHub issue context the run was minted from. The Architect
+    reads these to ground its plan.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -83,29 +85,25 @@ class ArchitectInput(_Frozen):
     run_id: str
     correlation_id: str
     actor_id: str = "system"
-    prior_feedback: str | None = None
     triggering_comment_body: Annotated[str | None, Field(default=None, max_length=8192)] = None
     requestor_sub: str | None = None
     target_repo: str | None = None
+    source_issue_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+        ]
+        | None
+    ) = None
+    source_issue_title: Annotated[str, Field(max_length=512)] | None = None
+    source_issue_body: Annotated[str, Field(max_length=16384)] | None = None
 
 
 class ArchitectResult(_UsageMixin):
-    """Result the Architect returns. Becomes the SPEC.READY payload.
+    """Result the Architect returns. Becomes the DESIGN.READY payload."""
 
-    ``one_way_task_count`` is the number of tasks the Architect classified
-    as one-way doors. Step Functions reads it (along with the Critic's
-    ``high_severity_count``) to decide whether the spec gate can auto-approve
-    or has to wait for a human.
-    """
-
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
-    requirements_summary: Annotated[str, Field(max_length=1024)]
-    design_summary: Annotated[str, Field(max_length=1024)]
-    task_count: Annotated[int, Field(ge=1)]
-    task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
-    task_depends_on: dict[str, list[str]] = Field(default_factory=dict)
-    one_way_task_count: Annotated[int, Field(ge=0)] = 0
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
+    summary: Annotated[str, Field(max_length=2048)]
     proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
     session_id: str
 
@@ -113,25 +111,33 @@ class ArchitectResult(_UsageMixin):
 class CriticInput(_Frozen):
     """Input passed to the Critic's ``/invocations`` endpoint.
 
-    Step Functions sends this body after the Architect produces a spec; the
-    Critic reads the spec from S3 and emits an adversarial review.
+    The Critic reads the architect's ``plan.md`` from S3 and emits an
+    adversarial review focusing on missing edge cases, weak assumptions,
+    architectural risk, and gaps in the plan's verification section.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     intent: Annotated[str, Field(min_length=1, max_length=4096)]
     run_id: str
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
     target_repo: str | None = None
+    source_issue_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+        ]
+        | None
+    ) = None
+    source_issue_title: Annotated[str, Field(max_length=512)] | None = None
+    source_issue_body: Annotated[str, Field(max_length=16384)] | None = None
 
 
 class CriticResult(_UsageMixin):
     """Result the Critic returns. Becomes the CRITIQUE.READY payload."""
 
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     critique_s3_key: str
     issue_count: Annotated[int, Field(ge=0)]
     high_severity_count: Annotated[int, Field(ge=0)] = 0
@@ -192,31 +198,28 @@ type FeedbackItem = Annotated[
 
 
 class ImplementerInput(_Frozen):
-    """Input passed to the Implementer's ``/invocations`` endpoint, per task.
+    """Input passed to the Implementer's ``/invocations`` endpoint.
 
-    ``target_repo`` (``owner/name``) is required for the Implementer — it's
-    the repo the Implementer clones, commits to, and opens a PR on. When
-    ``requestor_sub`` is set, the Implementer fetches that user's GitHub
-    OAuth token via AgentCore Identity and configures git author identity
-    accordingly so commits attribute to the requestor.
+    The implementer runs in one of two modes:
 
-    On iteration runs (``iteration_count > 0``) the state-router fills
-    ``iteration_feedback`` and ``pr_url`` so the implementer pushes a fix
-    commit on the existing PR branch rather than starting from ``main``.
+    * ``mode="implementation"`` — first run for a run_id. Reads
+      ``plan_s3_key`` and ``critique_s3_key`` from S3, executes the
+      whole issue on a single branch ``aidlc/impl/{run_id}``, opens
+      the impl PR, emits ``IMPL_PR.OPENED``.
+    * ``mode="revision"`` — subsequent runs. Reads validator artifacts
+      (and any CI failure / human-mention context) from S3, applies
+      fixes directly on the impl branch, emits ``REVISION.READY``.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)] | None = None
     run_id: str
     correlation_id: str
     actor_id: str = "system"
-    mode: Literal["task", "revision"] = "task"
-    iteration_count: Annotated[int, Field(ge=0, le=16)] = 0
-    iteration_feedback: Annotated[list[FeedbackItem], Field(max_length=32)] | None = None
+    mode: Literal["implementation", "revision"] = "implementation"
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)] | None = None
+    critique_s3_key: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     revision_number: Annotated[int, Field(ge=0, le=16)] = 0
-    # Set by the state_router on iteration dispatches so the implementer
+    # Set by the state_router on revision dispatches so the implementer
     # can post inline replies + status updates against the existing PR.
     # ``None`` on the first dispatch (PR doesn't exist yet — implementer
     # opens it).
@@ -227,6 +230,10 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
+    # Aggregated feedback items the implementer should address on a
+    # revision pass. Populated by the state router from CI failures,
+    # human @-mentions, and changes_requested reviews.
+    revision_feedback: Annotated[list[FeedbackItem], Field(max_length=32)] | None = None
     requestor_sub: str | None = None
     target_repo: (
         Annotated[
@@ -235,9 +242,8 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
-    # Provenance refs threaded into the implementation PR body so reviewers
-    # can hop straight from the task PR to the originating issue and the
-    # merged spec PR without lookups.
+    # Provenance: implementer writes ``Closes <url>`` in the PR body so
+    # merging auto-closes the originating issue.
     source_issue_url: (
         Annotated[
             str,
@@ -245,39 +251,30 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
-    spec_pr_url: (
-        Annotated[
-            str,
-            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
-        ]
-        | None
-    ) = None
 
 
 class ImplementerResult(_UsageMixin):
-    """Result the Implementer returns.
+    """Result the Implementer returns from ``mode=implementation`` runs.
 
-    The implementer no longer opens its own PR — it merges the task
-    branch into the run's impl branch via GitHub's merge API. The
-    unified impl PR is opened by the state router on the first task
-    event. ``blocked_reason`` is set when the agent could not produce
-    a real implementation or could not reconcile a merge conflict;
-    the runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY``.
+    The implementer opens the unified impl PR (a single PR for the
+    whole run) and reports its URL.
     """
 
-    task_id: str | None = None
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
-    blocked_reason: Annotated[str, Field(max_length=2048)] | None = None
 
 
 class ImplementerRevisionResult(_UsageMixin):
     """Result the Implementer returns from ``mode=revision`` runs.
 
     Revision mode applies aggregated reviewer + tester + code-critic
-    feedback directly onto the impl branch (no task branch). On
-    success the runtime emits ``REVISION.READY``; the state-router
-    sends the run back into the validation pass.
+    feedback (plus any CI failures or human-mention context) directly
+    onto the impl branch. The runtime emits ``REVISION.READY`` and the
+    state-router sends the run back into the validation pass.
     """
 
     pr_url: str
@@ -289,15 +286,14 @@ class ImplementerRevisionResult(_UsageMixin):
 class ReviewerInput(_Frozen):
     """Input passed to the Reviewer's ``/invocations`` endpoint.
 
-    Targets the unified impl PR after all tasks have merged into the
-    impl branch. ``revision_number`` is 0 for the first validation pass
-    and increments each time the reviewer requests changes and the
-    implementer revises.
+    Targets the unified impl PR. Runs in parallel with the tester and
+    the code-critic. ``revision_number`` is 0 for the first validation
+    pass and increments each time the reviewer requests changes and
+    the implementer revises.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     pr_url: str
     run_id: str
     correlation_id: str
@@ -322,13 +318,11 @@ class ReviewerResult(_UsageMixin):
 class TesterInput(_Frozen):
     """Input passed to the Tester's ``/invocations`` endpoint.
 
-    Targets the unified impl PR after all tasks have merged into the
-    impl branch — same model as :class:`ReviewerInput`.
+    Targets the unified impl PR — runs in parallel with reviewer + code-critic.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     pr_url: str
     run_id: str
     correlation_id: str
@@ -350,20 +344,30 @@ class TesterResult(_UsageMixin):
 class CodeCriticInput(_Frozen):
     """Input passed to the Code-Critic's ``/invocations`` endpoint.
 
-    Targets the unified impl PR — same model as :class:`ReviewerInput`.
-    Code-Critic is the adversarial reviewer of the integrated diff:
-    logical gaps, missing edge cases, drift from the spec's intent.
+    Targets the unified impl PR — runs in parallel with reviewer + tester.
+    The Code-Critic specifically reviews **how well the implementation
+    addresses the original GitHub issue** (not just the architect's
+    plan). It receives the issue title + body + URL so it can compare
+    the PR diff against the user's original ask.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     pr_url: str
     run_id: str
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
     revision_number: Annotated[int, Field(ge=0)] = 0
+    source_issue_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+        ]
+        | None
+    ) = None
+    source_issue_title: Annotated[str, Field(max_length=512)] | None = None
+    source_issue_body: Annotated[str, Field(max_length=16384)] | None = None
 
 
 class CodeCriticResult(_UsageMixin):
@@ -385,8 +389,8 @@ class TriageInput(_Frozen):
     Built by the GitHub-issue webhook handler when the bot is assigned
     to an issue (and re-built when the issue receives a new comment
     while triage is awaiting an answer). The agent reads this payload,
-    decides whether to ``proceed`` / ``ask`` / ``defer`` / ``decline``,
-    and returns a :class:`TriageResult` carrying the structured decision.
+    decides whether to ``proceed`` / ``ask`` / ``defer`` / ``decline`` /
+    ``research``, and returns a :class:`TriageResult`.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -415,15 +419,14 @@ class TriageResult(_Frozen):
     """Result the Triage agent returns. Becomes the ISSUE.TRIAGED payload.
 
     ``decision_s3_key`` points at the full :class:`common.triage.TriageDecision`
-    JSON in S3; the flattened fields below are what the Step Functions
-    ``Choice`` state branches on without having to fetch the artifact.
-    ``workflow_kind`` is set only when ``action == "proceed"``;
-    ``missing_information_count`` is non-zero only when ``action == "ask"``.
+    JSON in S3; the flattened fields below are what downstream branches on
+    without having to fetch the artifact. ``proceed`` runs the
+    Architect → Critic → Implementer pipeline; ``research`` branches to
+    the Proposer; ``ask`` / ``defer`` / ``decline`` terminate the run.
     """
 
     decision_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
-    action: Literal["proceed", "ask", "defer", "decline"]
-    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"] | None = None
+    action: Literal["proceed", "ask", "defer", "decline", "research"]
     rationale: Annotated[str, Field(min_length=1, max_length=2048)]
     missing_information_count: Annotated[int, Field(ge=0, le=8)] = 0
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0
@@ -446,10 +449,6 @@ class ProposerInput(_Frozen):
     trigger_reason: Literal["research"] = "research"
     intent: Annotated[str, Field(max_length=8192)] | None = None
     issue_number: Annotated[int, Field(ge=1)] | None = None
-    # Set when the run was triggered by a follow-up ``@aidlc-bot``
-    # comment on the issue. The agent reads the body to interpret the
-    # human's free-form ask alongside the original issue. Empty on
-    # runs minted from the initial issue assignment.
     triggering_comment_body: Annotated[str, Field(max_length=8192)] = ""
     triggering_commenter: Annotated[str, Field(max_length=64)] = ""
     run_id: str
@@ -478,28 +477,17 @@ class RetrospectorInput(_Frozen):
     agent reads the closed PR / issue + comments, looks at the
     project's ``MEMORY.md``, and decides whether the trace contains
     a reusable lesson worth persisting.
-
-    ``pr_url`` and ``issue_url`` are mutually exclusive in practice:
-    PR-close events fill ``pr_url`` (and ``spec_slug`` / ``task_id``
-    when known); issue-close events fill ``issue_url``. Both empty
-    means the dispatcher sent a malformed event and the agent should
-    bail.
     """
 
     event_type: Literal[
-        "SPEC.APPROVED",
-        "SPEC.REJECTED",
-        "TASK.APPROVED",
-        "TASK.REJECTED",
+        "RUN.COMPLETED",
+        "RUN.FAILED",
         "RUN.CANCEL_REQUESTED",
     ]
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
     pr_url: Annotated[str, Field(max_length=512)] = ""
     issue_url: Annotated[str, Field(max_length=512)] = ""
-    spec_slug: Annotated[str, Field(max_length=128)] = ""
-    task_id: Annotated[str, Field(max_length=64)] = ""
-    reviewer: Annotated[str, Field(max_length=128)] = ""
     reason: Annotated[str, Field(max_length=2048)] = ""
     run_id: str
     correlation_id: str
@@ -513,9 +501,8 @@ def default_retry_strategy(model_id: str) -> Any:
     ``ModelThrottledException`` with 6 attempts and 4s→128s exponential
     backoff. Haiku tolerates fewer attempts and a tighter cap because it
     runs in higher-volume contexts (Triage, Tester) where a long backoff
-    chain blocks the Step Functions task more than it helps. Opus and
-    Sonnet keep the default — Opus throttles are stickier, so we want
-    the full 6 attempts.
+    chain blocks the dispatch more than it helps. Opus and Sonnet keep
+    the default — Opus throttles are stickier, so we want the full 6 attempts.
 
     The return type is :class:`Any` so this module stays importable from
     Implementer code that doesn't pull in Strands.
@@ -578,7 +565,7 @@ def usage_from_strands(agent: Any, *, model_id: str) -> dict[str, Any]:
     Returns a dict ready to splat into a ``*Result`` constructor::
 
         result = ArchitectResult(
-            spec_slug=...,
+            plan_s3_key=...,
             **usage_from_strands(agent, model_id=...),
         )
 

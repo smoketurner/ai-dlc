@@ -4,7 +4,6 @@ The handler walks the action returned by :func:`~.dispatch.decide`
 and dispatches by type via :data:`EXECUTORS`. Each executor wraps
 one of the AWS primitives in :mod:`state_router.aws` (``advance_state``
 for state moves, ``dispatch_to_runtime`` for AgentCore invokes,
-``ddb`` for direct writes, ``s3`` for synthetic-spec uploads,
 ``lambda_client`` for repo_helper invokes).
 
 Both :class:`~.actions.InvokeAgent` and :class:`~.actions.InvokeRepoHelper`
@@ -21,44 +20,30 @@ instead of wedging.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from typing import Any
 
 from aws_lambda_powertools import Logger, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
-from botocore.exceptions import ClientError
 
-from common.ddb import PutBuilder, TransactWriteItemsBuilder, UpdateBuilder
 from common.event_emit import publish
-from common.ids import new_event_id
 from state_router import circuit_breaker
 from state_router.actions import (
     Action,
     AdvanceState,
     CompoundAction,
-    DedupedAdvisors,
     EmitEvent,
-    GuardedAdvance,
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
-    OpenImplPr,
-    SeedTasks,
-    WriteSyntheticSpec,
 )
 from state_router.aws import (
-    OUTBOX_TTL_SECONDS,
-    ddb,
     dispatch_to_runtime,
     lambda_client,
     now_iso,
-    s3,
     transactional_advance,
 )
 from state_router.config import (
-    artifacts_bucket,
     repo_helper_function_name,
-    runs_table,
 )
 from state_router.model import Run
 
@@ -100,14 +85,14 @@ def execute_invoke_agent(run: Run, action: InvokeAgent) -> None:
 
     When ``advance_from`` / ``advance_to`` / ``target_pk`` / ``target_sk``
     are all set, the advance is the per-invoke race guard. When all
-    four are ``None`` the agent fires unconditionally — used for
-    advisors gated by an outer :class:`GuardedAdvance`.
+    four are ``None`` the agent fires unconditionally (used for the
+    parallel validators in ``handle_impl_pr_open``; the surrounding
+    AdvanceState owns the race guard for the whole compound).
 
     Before any of that, the per-row dispatch circuit breaker is
     checked: when ``dispatch_failure_count >= MAX_DISPATCH_FAILURES``
-    on the addressed row, the dispatch is suppressed and the
-    appropriate breaker event (``TASK.BLOCKED`` or ``RUN.FAILED``) is
-    emitted instead. This bounds the rollback-redeliver loop that
+    on the addressed row, the dispatch is suppressed and ``RUN.FAILED``
+    is emitted instead. This bounds the rollback-redeliver loop that
     would otherwise burn cost on a deterministically-failing agent.
 
     If :func:`~.aws.dispatch_to_runtime` reports a synchronous
@@ -140,7 +125,7 @@ def try_advance(run: Run, action: InvokeAgent) -> bool:
 
     Returns ``True`` when the agent should fire — either because the
     advance succeeded or because the action carries no advance fields
-    (gated by an outer :class:`GuardedAdvance`).
+    (gated by an outer AdvanceState in the same compound).
     """
     if (
         action.target_pk is None
@@ -230,38 +215,6 @@ def rollback_after_failure(run: Run, action: InvokeAgent) -> None:
         )
 
 
-def execute_guarded_advance(run: Run, action: Action) -> None:
-    """Atomic state advance; on success, run ``on_success`` actions.
-
-    The advance is the race guard. If a concurrent router already
-    advanced the state (the conditional update fails), we skip the
-    follow-ups — the winning router will run them. Idempotent across
-    redelivered beacons.
-    """
-    if not isinstance(action, GuardedAdvance):
-        return
-    won = transactional_advance(
-        run_id=run.run_id,
-        project_slug=run.project_slug,
-        target_pk=action.target_pk,
-        target_sk=action.target_sk,
-        advance_from=action.advance_from,
-        advance_to=action.advance_to,
-    )
-    if not won:
-        logger.info(
-            "lost guarded advance, skipping on_success",
-            extra={
-                "target_sk": action.target_sk,
-                "advance_from": action.advance_from,
-                "advance_to": action.advance_to,
-            },
-        )
-        return
-    for sub in action.on_success:
-        execute(run, sub)
-
-
 def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
     """Synchronous Lambda invoke; advance state on success, retry on failure.
 
@@ -324,7 +277,8 @@ def record_repo_helper_failure(run: Run, action: InvokeRepoHelper) -> None:
     Informational ops without ``target_pk`` / ``advance_from``
     (``comment_issue`` / ``label_issue``) skip entirely — there's no
     race guard to use as a conditional check, and they're chained with
-    a follow-up action that fires regardless.
+    a follow-up action that fires regardless of whether the GitHub call
+    succeeded.
     """
     if not action.target_pk or not action.target_sk or not action.advance_from:
         return
@@ -354,10 +308,11 @@ def record_repo_helper_failure(run: Run, action: InvokeRepoHelper) -> None:
 def pick_advance_to(action: InvokeRepoHelper, body: dict[str, Any]) -> str | None:
     """Choose the advance target based on the op result.
 
-    When the result carries ``no_change: true`` (currently only
-    ``open_spec_pr`` emits this — same docs already on ``base``), use
+    When the result carries ``no_change: true``, use
     ``advance_on_no_change_to`` if set; otherwise fall through to the
-    normal ``advance_to``.
+    normal ``advance_to``. (No router op currently emits ``no_change``
+    in the single-PR-per-issue world — the field is kept for forward
+    compatibility.)
     """
     result = body.get("result") or {}
     if isinstance(result, dict) and result.get("no_change") and action.advance_on_no_change_to:
@@ -381,37 +336,6 @@ def build_extra_attrs(action: InvokeRepoHelper, body: dict[str, Any]) -> dict[st
     return dict.fromkeys(action.record_pr_url_attrs, pr_url)
 
 
-def execute_write_synthetic_spec(run: Run, action: WriteSyntheticSpec) -> None:
-    """Upload the three synthetic-spec docs to S3, then advance state."""
-    bucket = artifacts_bucket()
-    s3().put_object(
-        Bucket=bucket,
-        Key=f"{action.s3_key_prefix}requirements.md",
-        Body=action.requirements_md.encode("utf-8"),
-        ContentType="text/markdown",
-    )
-    s3().put_object(
-        Bucket=bucket,
-        Key=f"{action.s3_key_prefix}design.md",
-        Body=action.design_md.encode("utf-8"),
-        ContentType="text/markdown",
-    )
-    s3().put_object(
-        Bucket=bucket,
-        Key=f"{action.s3_key_prefix}tasks.md",
-        Body=action.tasks_md.encode("utf-8"),
-        ContentType="text/markdown",
-    )
-    transactional_advance(
-        run_id=run.run_id,
-        project_slug=run.project_slug,
-        target_pk=action.target_pk,
-        target_sk=action.target_sk,
-        advance_from=action.advance_from,
-        advance_to=action.advance_to,
-    )
-
-
 def execute_advance_state(run: Run, action: AdvanceState) -> None:
     """Pure conditional state advance (no other side effect)."""
     transactional_advance(
@@ -424,203 +348,6 @@ def execute_advance_state(run: Run, action: AdvanceState) -> None:
     )
 
 
-def execute_deduped_advisors(run: Run, action: DedupedAdvisors) -> None:
-    """Fire advisor invokes only when the impl PR head SHA has moved.
-
-    Fetches the impl PR's current head SHA via ``repo_helper.get_pr_head_sha``.
-    When equal to ``run.last_advisor_sha`` the advisors are skipped
-    entirely — sibling task merges keep moving the SHA, but on a
-    repeat beacon for the same SHA there's no new diff for
-    reviewer / tester to evaluate. On a fresh SHA, the advisors fire
-    and ``last_advisor_sha`` is updated.
-    """
-    head_sha = fetch_pr_head_sha(action)
-    if head_sha is None:
-        return
-    if head_sha == run.last_advisor_sha:
-        logger.info(
-            "advisors deduped — SHA unchanged",
-            extra={"run_id": run.run_id, "head_sha": head_sha},
-        )
-        return
-    record_advisor_sha(run.run_id, head_sha)
-    for invoke in action.advisors:
-        execute_invoke_agent(run, invoke)
-
-
-def fetch_pr_head_sha(action: DedupedAdvisors) -> str | None:
-    """Resolve the impl PR's current head SHA via ``repo_helper.get_pr_head_sha``."""
-    fn = repo_helper_function_name()
-    if not fn:
-        logger.warning("repo_helper not wired", extra={"op": "get_pr_head_sha"})
-        return None
-    pr_number = pr_number_from_url(action.pr_url)
-    if pr_number is None:
-        return None
-    response = lambda_client().invoke(
-        FunctionName=fn,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(
-            {"input": {"op": "get_pr_head_sha", "repo": action.repo, "pr_number": pr_number}},
-        ).encode("utf-8"),
-    )
-    body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
-    if not body.get("ok"):
-        logger.warning("get_pr_head_sha failed", extra={"body": body})
-        return None
-    result = body.get("result") or {}
-    head_sha = result.get("head_sha") if isinstance(result, dict) else None
-    return str(head_sha) if head_sha else None
-
-
-def pr_number_from_url(pr_url: str) -> int | None:
-    """Extract ``{n}`` from ``https://github.com/owner/repo/pull/{n}``."""
-    tail = pr_url.rsplit("/", 1)[-1]
-    try:
-        return int(tail)
-    except ValueError:
-        return None
-
-
-def record_advisor_sha(run_id: str, head_sha: str) -> None:
-    """Write ``last_advisor_sha = head_sha`` on the run's STATE row."""
-    try:
-        ddb().update_item(
-            TableName=runs_table(),
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            UpdateExpression="SET last_advisor_sha = :s",
-            ExpressionAttributeValues={":s": {"S": head_sha}},
-        )
-    except ClientError as exc:
-        logger.warning(
-            "record_advisor_sha failed",
-            extra={"run_id": run_id, "head_sha": head_sha, "err": repr(exc)},
-        )
-
-
-def execute_open_impl_pr(run: Run, action: OpenImplPr) -> None:
-    """Open the impl PR via repo_helper, then write ``pr_url`` to STATE + every TASK row.
-
-    ``repo_helper.open_pr`` is idempotent — a re-run that finds the PR
-    already open returns its URL without creating a duplicate. The
-    backfill writes STATE + all TASK rows in one ``TransactWriteItems``
-    so either all rows carry ``pr_url`` or none do; partial state
-    can't leak. On retry (next beacon), ``run.pr_url`` is still empty
-    and we re-open + re-backfill via the same path.
-    """
-    fn = repo_helper_function_name()
-    if not fn:
-        logger.warning("repo_helper not wired", extra={"op": "open_pr"})
-        return
-    payload = {
-        "input": {
-            "op": "open_pr",
-            "repo": action.repo,
-            "head": action.head,
-            "base": action.base,
-            "title": action.title,
-            "body": action.body,
-        },
-    }
-    response = lambda_client().invoke(
-        FunctionName=fn,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(payload).encode("utf-8"),
-    )
-    body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
-    if not body.get("ok"):
-        logger.warning("open_impl_pr repo_helper failed", extra={"body": body})
-        return
-    result = body.get("result") or {}
-    pr_url = result.get("pr_url") if isinstance(result, dict) else None
-    if not isinstance(pr_url, str) or not pr_url:
-        logger.warning("open_impl_pr returned no pr_url", extra={"body": body})
-        return
-    backfill_impl_pr_url(
-        run_id=run.run_id,
-        project_slug=run.project_slug,
-        task_ids=action.task_ids,
-        pr_url=pr_url,
-    )
-
-
-def backfill_impl_pr_url(
-    *,
-    run_id: str,
-    project_slug: str,
-    task_ids: tuple[str, ...],
-    pr_url: str,
-) -> None:
-    """Atomically write ``pr_url`` to STATE + every TASK row + enqueue a beacon.
-
-    One ``TransactWriteItems`` call: the STATE row, each TASK row, and
-    an OUTBOX row. The OUTBOX row is what triggers the next beacon —
-    without it, advisor dispatch for the first task would Noop (it
-    saw empty pr_url at the start of this beacon's dispatch) and the
-    run would wedge until another event arrived.
-    """
-    table = runs_table()
-    pk = f"RUN#{run_id}"
-    transaction = TransactWriteItemsBuilder()
-    transaction.update(
-        UpdateBuilder(table=table, key={"pk": pk, "sk": "STATE"}).set("pr_url", pr_url),
-    )
-    for task_id in task_ids:
-        task_key = {"pk": pk, "sk": f"TASK#{task_id}"}
-        transaction.update(UpdateBuilder(table=table, key=task_key).set("pr_url", pr_url))
-    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
-    transaction.put(
-        PutBuilder(
-            table=table,
-            item={
-                "pk": pk,
-                "sk": f"OUTBOX#{new_event_id()}",
-                "run_id": run_id,
-                "project_slug": project_slug,
-                "expire_at": expire_at,
-            },
-        ).condition_not_exists("sk"),
-    )
-    try:
-        transaction.commit(ddb())
-    except ClientError as exc:
-        logger.warning(
-            "backfill_impl_pr_url transaction failed",
-            extra={"run_id": run_id, "task_count": len(task_ids), "err": repr(exc)},
-        )
-
-
-def execute_seed_tasks(action: SeedTasks) -> None:
-    """Write one TASK row per id in ``status=pending``.
-
-    Conditional on ``attribute_not_exists(pk)`` so a redelivered beacon
-    (or a router that lost the dispatch race) doesn't clobber a row that
-    already advanced beyond ``pending``. ``ConditionalCheckFailedException``
-    is treated as success — the row exists, that's what we wanted.
-    """
-    ts = now_iso()
-    for task_id in action.task_ids:
-        try:
-            ddb().put_item(
-                TableName=runs_table(),
-                Item={
-                    "pk": {"S": f"RUN#{action.run_id}"},
-                    "sk": {"S": f"TASK#{task_id}"},
-                    "status": {"S": "pending"},
-                    "iteration_count": {"N": "0"},
-                    "project_slug": {"S": action.project_slug},
-                    "spec_slug": {"S": action.spec_slug},
-                    "created_at": {"S": ts},
-                    "updated_at": {"S": ts},
-                },
-                ConditionExpression="attribute_not_exists(pk)",
-            )
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-                continue
-            raise
-
-
 # Lambda values defer the function lookup so executors defined below
 # this dict can be referenced (forward ref). Every state-mutating
 # executor takes ``run`` so it can write the OUTBOX row alongside
@@ -630,10 +357,5 @@ EXECUTORS: dict[type[Action], Any] = {
     InvokeAgent: lambda run, a: execute_invoke_agent(run, a),  # noqa: PLW0108
     EmitEvent: execute_emit_event,
     InvokeRepoHelper: lambda run, a: execute_invoke_repo_helper(run, a),  # noqa: PLW0108
-    DedupedAdvisors: lambda run, a: execute_deduped_advisors(run, a),  # noqa: PLW0108
-    OpenImplPr: lambda run, a: execute_open_impl_pr(run, a),  # noqa: PLW0108
-    WriteSyntheticSpec: lambda run, a: execute_write_synthetic_spec(run, a),  # noqa: PLW0108
-    SeedTasks: lambda _run, a: execute_seed_tasks(a),
     AdvanceState: lambda run, a: execute_advance_state(run, a),  # noqa: PLW0108
-    GuardedAdvance: lambda run, a: execute_guarded_advance(run, a),  # noqa: PLW0108
 }
