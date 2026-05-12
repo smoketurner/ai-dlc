@@ -48,6 +48,11 @@ def repo_helper_function_name() -> str:
     return os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME", "")
 
 
+def lint_gate_function_name() -> str:
+    """Lambda function name for ``lint_gate`` invocations."""
+    return os.environ.get("AIDLC_LINT_GATE_FUNCTION_NAME", "")
+
+
 def github_bot_login() -> str:
     """GitHub login of the App's bot user (e.g., ``ai-dlc[bot]``).
 

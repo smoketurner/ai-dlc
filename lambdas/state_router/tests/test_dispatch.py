@@ -184,6 +184,7 @@ class TestRunWaitingStates:
             RunState.architect_running,
             RunState.critic_running,
             RunState.spec_pr_open,
+            RunState.lint_gate_running,
         ],
     )
     def test_waiting_states_return_noop(self, state: RunState) -> None:
@@ -363,13 +364,48 @@ class TestRunTasksInProgress:
 
 
 class TestRunTasksComplete:
-    def test_dispatches_validators_and_advances_to_validation_running(self) -> None:
-        """All three validators fire in parallel against the integrated impl PR."""
+    def test_dispatches_lint_gate_and_advances_to_lint_gate_running(self) -> None:
+        """tasks_complete dispatches the lint gate Lambda, not validators directly."""
         run = make_run(
             state=RunState.tasks_complete,
             spec_slug="demo",
             pr_url="https://github.com/owner/repo/pull/9",
             tasks=(make_task(TaskState.pr_open), make_task(TaskState.pr_open, task_id="T-002")),
+        )
+        action = decide(run)
+        assert isinstance(action, InvokeRepoHelper)
+        assert action.op == "run_lint_gate"
+        assert action.function_name == "ai-dlc-lint-gate"
+        assert action.advance_from == RunState.tasks_complete.value
+        assert action.advance_to == RunState.lint_gate_running.value
+
+    def test_noop_when_impl_pr_not_yet_opened(self) -> None:
+        """No pr_url yet — wait for impl PR to be opened by tasks_in_progress."""
+        run = make_run(state=RunState.tasks_complete, spec_slug="demo", pr_url=None)
+        action = decide(run)
+        assert isinstance(action, Noop)
+
+    def test_noop_when_lint_gate_not_provisioned(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("AIDLC_LINT_GATE_FUNCTION_NAME")
+        run = make_run(
+            state=RunState.tasks_complete,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
+        )
+        action = decide(run)
+        assert isinstance(action, Noop)
+
+
+class TestRunValidationRunning:
+    def test_dispatches_validators_in_parallel(self) -> None:
+        """validation_running fires reviewer + tester + code_critic."""
+        run = make_run(
+            state=RunState.validation_running,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
         )
         action = decide(run)
         assert isinstance(action, CompoundAction)
@@ -378,14 +414,23 @@ class TestRunTasksComplete:
         assert any("reviewer" in arn for arn in runtimes)
         assert any("tester" in arn for arn in runtimes)
         assert any("code_critic" in arn for arn in runtimes)
-        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
-        assert len(advances) == 1
-        assert advances[0].advance_from == RunState.tasks_complete.value
-        assert advances[0].advance_to == RunState.validation_running.value
 
-    def test_noop_when_impl_pr_not_yet_opened(self) -> None:
-        """No pr_url yet — wait for impl PR to be opened by tasks_in_progress."""
-        run = make_run(state=RunState.tasks_complete, spec_slug="demo", pr_url=None)
+    def test_noop_when_impl_pr_missing(self) -> None:
+        run = make_run(state=RunState.validation_running, spec_slug="demo", pr_url=None)
+        action = decide(run)
+        assert isinstance(action, Noop)
+
+    def test_noop_when_no_validator_runtimes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        for agent in ("reviewer", "tester", "code_critic"):
+            monkeypatch.delenv(f"AIDLC_{agent.upper()}_RUNTIME_ARN")
+        run = make_run(
+            state=RunState.validation_running,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
+        )
         action = decide(run)
         assert isinstance(action, Noop)
 
