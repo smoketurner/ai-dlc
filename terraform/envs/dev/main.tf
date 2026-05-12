@@ -44,6 +44,7 @@ locals {
   # add the agent here and re-apply (creates the runtime).
   agent_image_tags = {
     architect    = "latest"
+    code_critic  = "latest"
     critic       = "latest"
     implementer  = "latest"
     proposer     = "latest"

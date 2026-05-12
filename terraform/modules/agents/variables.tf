@@ -38,6 +38,12 @@ variable "agents" {
       targets          = ["artifact_tool"]
       bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
     }
+    code_critic = {
+      description      = "Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
+      targets          = ["artifact_tool", "repo_helper"]
+      features         = ["code_interpreter"]
+      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+    }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
       targets          = ["artifact_tool", "repo_helper"]

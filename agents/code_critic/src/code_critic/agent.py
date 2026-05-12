@@ -1,6 +1,6 @@
 """Strands Agent factory for the Code-Critic.
 
-The Code-Critic uses Claude Opus 4.7 on Bedrock to adversarially
+The Code-Critic uses Claude Opus 4.6 on Bedrock to adversarially
 review the integrated impl PR — logical gaps, missing edge cases,
 drift from the spec's intent, integration-level concerns the
 reviewer's task-level scan might miss. Emits a :class:`Critique` via
@@ -27,7 +27,7 @@ from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from common.sandbox import get_pr_diff
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-7-v1"
+DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 
 get_pr_diff_tool = tool(get_pr_diff)
 

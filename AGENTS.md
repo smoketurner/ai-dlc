@@ -5,8 +5,8 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 ## Tech stack
 
 - **Python 3.14** with the Astral toolchain (`uv` workspace, `ruff`, `ty`).
-- **Agents**: Strands Agents (Architect, Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
-- **Models**: Architect / Critic → Claude Opus 4.7. Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
+- **Agents**: Strands Agents (Architect, Critic, Code-Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
+- **Models**: Architect / Critic / Code-Critic / Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
 - **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run/task state.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
@@ -22,9 +22,10 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), boto3 helpers (`ddb.py`, `s3.py`, `runs.py`), `MEMORY.md` utility (`memory_md.py`), settings (`settings.py`). |
 | `agents/architect/` | Strands agent — writes the three-doc spec bundle (requirements + design + tasks). |
 | `agents/critic/` | Strands agent — adversarially reviews the spec (advisory). |
-| `agents/implementer/` | Claude Agent SDK agent — opens code PRs. |
-| `agents/reviewer/` | Strands agent — code-reviews each task PR (advisory). |
-| `agents/tester/` | Strands agent — flags test gaps in each task PR (advisory). |
+| `agents/code_critic/` | Strands agent — adversarially reviews the integrated impl PR (advisory; runs in parallel with reviewer + tester). |
+| `agents/implementer/` | Claude Agent SDK agent — opens code PRs; also runs `mode=revision` to apply validator feedback directly onto the impl branch. |
+| `agents/reviewer/` | Strands agent — code-reviews the unified impl PR once tasks are complete. Its verdict gates the run. |
+| `agents/tester/` | Strands agent — flags test gaps in the unified impl PR (advisory). |
 | `agents/triage/` | Strands agent — classifies issue-driven runs (`proceed` / `ask` / `defer` / `decline`). |
 | `agents/proposer/` | Strands agent — research-driven (issue → triage classifies as `research`); opens PRs proposing prompt or MEMORY.md edits. |
 | `agents/retrospector/` | Strands agent — fires on every terminal event (PR merge, PR close, issue close); appends lessons to `MEMORY.md` via PR. |
@@ -80,12 +81,35 @@ stateDiagram-v2
 
     spec_approved --> tasks_in_progress
     tasks_in_progress --> tasks_complete
-    tasks_complete --> done: RUN.COMPLETED
+    tasks_complete --> validation_running: dispatch reviewer + tester + code-critic
+    validation_running --> validation_complete: REVIEW.READY
+    validation_complete --> awaiting_human_merge: verdict=approve / comment
+    validation_complete --> revising: verdict=request_changes (under cap)
+    validation_complete --> failed: verdict=request_changes (cap hit)
+    revising --> validation_running: REVISION.READY
+    awaiting_human_merge --> done: RUN.COMPLETED (impl PR merged)
 
     proposer_running --> done: RUN.COMPLETED
 ```
 
-`RUN.FAILED` and `RUN.CANCEL_REQUESTED` are wildcard transitions: they advance any non-terminal state to `failed` or `cancelled` respectively. `TaskState` is the per-task cursor (`pending → implementer_running → pr_open → reviewer_running → tester_running → iterating → pending_approval → merged / closed / failed / blocked`) that the run-level `tasks_in_progress` state iterates over.
+`RUN.FAILED` and `RUN.CANCEL_REQUESTED` are wildcard transitions: they advance any non-terminal state to `failed` or `cancelled` respectively. `TaskState` is the per-task cursor (`pending → implementer_running → pr_open → iterating → merged / closed / failed / blocked`) that the run-level `tasks_in_progress` state iterates over. Per-task advisors are gone — reviewer/tester/code-critic now run **once per validation pass** against the integrated impl PR.
+
+### Validation lifecycle
+
+Once every task has reached `pr_open` (its commit is on the impl branch), the run advances to `tasks_complete` and the state-router dispatches three validators in parallel against the unified impl PR:
+
+- **Reviewer** (Sonnet 4.6) — code review with a binary verdict. Drives the next state transition.
+- **Tester** (Haiku 4.5) — test-gap analysis. Advisory; informs the reviewer + implementer.
+- **Code-Critic** (Opus 4.6) — adversarial review for integration-level gaps, drift from spec intent. Advisory.
+
+All three write Markdown artifacts to `s3://{artifacts_bucket}/runs/{run_id}/validation/{kind}-r{N}.md` where `N` is the revision number (0 for the first pass, 1+ after each implementer revision).
+
+Reviewer's `REVIEW.READY` carries a `verdict`:
+
+- `approve` / `comment` → `awaiting_human_merge`. The human merges PR → `RUN.COMPLETED` → `done`.
+- `request_changes` → `revising`. The state-router invokes the implementer in `mode=revision`: clone the repo, check out the impl branch directly (no task branch), read all three validator artifacts from S3, commit fixes onto the impl branch, push. Emits `REVISION.READY` → back to `validation_running`.
+
+The revision loop is capped at `MAX_REVISIONS = 3` (in `dispatch_run.py`); exceeding the cap emits `RUN.FAILED` rather than spending tokens indefinitely. Human intervention (mention `@aidlc-bot` or merge anyway) takes over from there.
 
 ## Adding a new agent
 
