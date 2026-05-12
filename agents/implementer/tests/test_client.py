@@ -10,7 +10,28 @@ import pytest
 from common.runtime import ImplementerInput
 from implementer import client
 from implementer.finish import FinishReport
+from implementer.lint_gate import LintGateResult
 from implementer.repo_ops import RepoSession
+
+
+def _gate_pass() -> LintGateResult:
+    return LintGateResult(
+        gate_pass=True,
+        ruff_exit_code=0,
+        ty_exit_code=0,
+        ruff_output="",
+        ty_output="",
+    )
+
+
+def _gate_fail(ruff_diag: str = "src/foo.py:1:1: E501 line too long") -> LintGateResult:
+    return LintGateResult(
+        gate_pass=False,
+        ruff_exit_code=1,
+        ty_exit_code=0,
+        ruff_output=ruff_diag,
+        ty_output="",
+    )
 
 
 @pytest.fixture
@@ -50,7 +71,7 @@ def spec_dir_with_tasks(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def install_common_mocks(
+def install_common_mocks(  # noqa: PLR0913
     monkeypatch: pytest.MonkeyPatch,
     *,
     fake_session: RepoSession,
@@ -60,6 +81,7 @@ def install_common_mocks(
     has_uncommitted_changes: bool,
     merge_results: list[dict[str, Any]] | None = None,
     run_cancelled: bool = False,
+    lint_gate_results: list[LintGateResult] | None = None,
 ) -> dict[str, list[Any]]:
     """Wire the side-effecting helpers in ``execute_task`` to fakes.
 
@@ -76,8 +98,10 @@ def install_common_mocks(
         "commit_changes": [],
         "push_branch": [],
         "invoke_repo_helper": [],
+        "drive_agent": [],
     }
     merges = list(merge_results or [{"merged": True, "merge_commit_sha": "deadbeef"}])
+    gate_queue = list(lint_gate_results or [_gate_pass()])
 
     def fake_commit_changes(msg: str) -> str:
         calls["commit_changes"].append(msg)
@@ -118,14 +142,22 @@ def install_common_mocks(
     usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
 
     async def fake_drive_agent(
-        _prompt: str,
+        prompt: str,
         *,
         run_id: str,
     ) -> tuple[FinishReport | None, dict[str, Any]]:
         del run_id
+        calls["drive_agent"].append(prompt)
         return drive_agent_report, usage
 
+    def fake_run_lint_gate(_cwd: Path) -> LintGateResult:
+        if gate_queue:
+            return gate_queue.pop(0)
+        return _gate_pass()
+
     monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
+    monkeypatch.setattr(client, "repo_path", lambda: spec_dir)
     return calls
 
 
@@ -304,3 +336,105 @@ async def test_execute_task_merge_conflict_exhausts_to_blocked(
 
     assert result.blocked_reason is not None
     assert "conflict" in result.blocked_reason
+
+
+# ---------------------------------------------------------------------------
+# AC-004 — lint gate fails then passes on retry → no blocked_reason, drive_agent called twice
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_passes_on_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Lint gate fails once, then passes → no blocked_reason; drive_agent called twice."""
+    report = FinishReport(summary="Done.", status="done")
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+        lint_gate_results=[_gate_fail(), _gate_pass()],
+    )
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is None
+    # initial drive_agent call + one lint-fix retry
+    assert len(calls["drive_agent"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# AC-005 — lint-fix prompt contains the exact ruff/ty diagnostics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lint_fix_prompt_contains_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Retry prompt passed to drive_agent contains the ruff diagnostic output."""
+    report = FinishReport(summary="Done.", status="done")
+    diag = "src/foo.py:3:5: E501 line too long (120 > 100)"
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+        lint_gate_results=[_gate_fail(ruff_diag=diag), _gate_pass()],
+    )
+
+    await client.execute_task(payload)
+
+    # second call is the lint-fix prompt
+    assert len(calls["drive_agent"]) == 2
+    retry_prompt = calls["drive_agent"][1]
+    assert diag in retry_prompt
+
+
+# ---------------------------------------------------------------------------
+# AC-006 — retries exhausted → blocked_reason contains lint errors
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_exhausted_sets_blocked_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Gate fails MAX_LINT_RETRIES+1 times → blocked_reason contains lint errors."""
+    report = FinishReport(summary="Done.", status="done")
+    diag = "src/foo.py:1:1: E501 always failing"
+    # fail on every gate call (initial + MAX_LINT_RETRIES retries)
+    gate_results = [_gate_fail(ruff_diag=diag)] * (client.MAX_LINT_RETRIES + 1)
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+        lint_gate_results=gate_results,
+    )
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is not None
+    assert diag in result.blocked_reason
+    # initial + MAX_LINT_RETRIES retries
+    assert len(calls["drive_agent"]) == client.MAX_LINT_RETRIES + 1
+    # no merge attempted when blocked
+    merges = [c for c in calls["invoke_repo_helper"] if c["op"] == "merge_branch"]
+    assert merges == []

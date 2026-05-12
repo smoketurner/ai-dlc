@@ -40,8 +40,9 @@ from common.runtime import (
     ReviewCommentMentionFeedback,
 )
 from implementer.finish import FinishReport, FinishSink
+from implementer.lint_gate import LintGateResult, run_lint_gate
 from implementer.options import build_options, build_resolver_options
-from implementer.prompts import RESOLVER_USER_TEMPLATE
+from implementer.prompts import LINT_FIX_PROMPT_TEMPLATE, RESOLVER_USER_TEMPLATE
 from implementer.repo_ops import (
     abort_merge,
     agent_made_real_changes,
@@ -76,6 +77,9 @@ logger = structlog.get_logger()
 
 MAX_CONFLICT_RESOLVE_ATTEMPTS = 2
 """How many times the resolver agent runs before we declare BLOCKED."""
+
+MAX_LINT_RETRIES = 2
+"""How many times the lint gate re-invokes the agent before declaring BLOCKED."""
 
 
 @dataclass(frozen=True)
@@ -128,6 +132,13 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
     blocked_reason = compute_blocked_reason(payload, report, base=impl_branch)
     if blocked_reason is None and run_cancelled(payload.run_id):
         blocked_reason = "run cancelled"
+
+    if blocked_reason is None:
+        blocked_reason, report, usage = await _run_lint_retry_loop(
+            payload=payload,
+            report=report,
+            usage=usage,
+        )
 
     finalize_task_branch(
         spec_slug=payload.spec_slug,
@@ -226,6 +237,13 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     if blocked_reason is None and run_cancelled(payload.run_id):
         blocked_reason = "run cancelled"
 
+    if blocked_reason is None:
+        blocked_reason, report, usage = await _run_lint_retry_loop(
+            payload=payload,
+            report=report,
+            usage=usage,
+        )
+
     finalize_iteration_branch(
         spec_slug=payload.spec_slug,
         task_id=payload.task_id,
@@ -271,6 +289,50 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
         blocked_reason=blocked_reason,
         **usage,
     )
+
+
+async def _run_lint_retry_loop(
+    *,
+    payload: ImplementerInput,
+    report: FinishReport | None,
+    usage: dict[str, Any],
+) -> tuple[str | None, FinishReport | None, dict[str, Any]]:
+    """Run the lint gate; re-invoke drive_agent on failure up to MAX_LINT_RETRIES times.
+
+    Returns ``(blocked_reason, report, usage)`` — ``blocked_reason`` is
+    ``None`` when the gate eventually passes.
+    """
+    lint_retry_count = 0
+    while True:
+        gate_result: LintGateResult = run_lint_gate(repo_path())
+        logger.info(
+            "lint gate result",
+            run_id=payload.run_id,
+            task_id=payload.task_id,
+            gate_pass=gate_result.gate_pass,
+            retry_count=lint_retry_count,
+            ruff_exit_code=gate_result.ruff_exit_code,
+            ty_exit_code=gate_result.ty_exit_code,
+        )
+        if gate_result.gate_pass:
+            return None, report, usage
+        if lint_retry_count >= MAX_LINT_RETRIES:
+            header = f"lint/type gate failed after {MAX_LINT_RETRIES} retries:\n"
+            blocked = (header + gate_result.error_summary)[:4096]
+            return blocked, report, usage
+        lint_retry_count += 1
+        fix_prompt = LINT_FIX_PROMPT_TEMPLATE.format(
+            error_summary=gate_result.error_summary[:4096]
+        )
+        report, retry_usage = await drive_agent(fix_prompt, run_id=payload.run_id)
+        for key in ("token_in", "token_out"):
+            usage[key] = int(usage.get(key, 0)) + int(retry_usage.get(key, 0))
+        usage["cost_usd"] = float(usage.get("cost_usd", 0.0)) + float(
+            retry_usage.get("cost_usd", 0.0)
+        )
+        usage["duration_ms"] = int(usage.get("duration_ms", 0)) + int(
+            retry_usage.get("duration_ms", 0)
+        )
 
 
 def load_task(payload: ImplementerInput) -> Any:

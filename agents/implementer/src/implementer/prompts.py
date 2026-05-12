@@ -32,6 +32,16 @@ For each conflict region:
 """
 
 
+LINT_FIX_PROMPT_TEMPLATE = """\
+The lint/type gate failed after your last edits. Fix only the reported \
+issues — do not refactor unrelated code.
+
+{error_summary}
+
+Run lint/format/type checks again to confirm the issues are resolved, then \
+call the ``finish`` tool to complete your session.
+"""
+
 RESOLVER_USER_TEMPLATE = """\
 Sibling task(s) landed on the impl branch and conflict with your task.
 
