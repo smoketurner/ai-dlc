@@ -68,6 +68,7 @@ from common.event_emit import publish
 from common.events import (
     EventEnvelope,
     RunCancelRequested,
+    RunCompleted,
     SpecApproved,
     SpecIterationRequested,
     SpecRejected,
@@ -405,11 +406,40 @@ def emit_impl_pr_close(
     targets = non_terminal_task_rows(task_rows)
     for row in targets:
         emit_task_close_event(row, pr_url=pr_url, merged=True, reviewer=reviewer)
+    if state_row is not None:
+        emit_run_completed_for_impl_merge(state_row, task_count=len(targets))
     return {
         "ok": True,
         "decision": "tasks_approved",
         "fanned_out": [task_id_of(row) for row in targets],
     }
+
+
+def emit_run_completed_for_impl_merge(
+    state_row: dict[str, Any],
+    *,
+    task_count: int,
+) -> None:
+    """Emit ``RUN.COMPLETED`` so the projector advances ``awaiting_human_merge → done``.
+
+    Fired alongside the per-task ``TASK.APPROVED`` fan-out when the
+    human merges the impl PR. Without this, the run sits in
+    ``awaiting_human_merge`` forever — tasks reach ``merged`` but the
+    run-level cursor has no advancer.
+    """
+    emit(
+        envelope_for(
+            event_type="RUN.COMPLETED",
+            run_id=run_id_of(state_row),
+            correlation_id=attr(state_row, "correlation_id"),
+            actor="webhook",
+            payload=RunCompleted(
+                project_slug=attr(state_row, "project_slug"),
+                spec_slug=attr(state_row, "spec_slug"),
+                tasks_completed=task_count,
+            ),
+        ),
+    )
 
 
 def emit_task_close_event(

@@ -66,7 +66,7 @@ def make_report(*, with_findings: bool = True) -> Report:
         else []
     )
     return Report(
-        task_id="T-001",
+        run_id="r-1",
         summary=ReportSummary(
             context="Adds a /healthz liveness route on the dashboard service.",
             coverage_gap="No test exercises the unauthenticated or database-down paths.",
@@ -83,7 +83,7 @@ def make_report(*, with_findings: bool = True) -> Report:
 
 def test_minimal_report_validates() -> None:
     report = make_report()
-    assert report.task_id == "T-001"
+    assert report.run_id == "r-1"
     assert gap_count(report) == 2
     assert suggestion_count(report) == 2
 
@@ -127,7 +127,7 @@ def test_suggestion_requires_at_least_one_cover() -> None:
 
 def test_render_report_includes_gaps_and_suggestions() -> None:
     out = render_report(make_report())
-    assert "# Test report — `T-001`" in out
+    assert "# Test report — run `r-1`" in out
     assert "**2** gap(s) · **2** suggestion(s)" in out
     assert "- **Context:** Adds a /healthz liveness route" in out
     assert "- **Coverage gap:** No test exercises the unauthenticated" in out
@@ -154,4 +154,4 @@ def test_render_report_skips_sections_when_empty() -> None:
 def test_report_is_frozen() -> None:
     report = make_report()
     with pytest.raises(ValidationError):
-        report.task_id = "T-002"  # type: ignore[misc]  # frozen=True forbids assignment
+        report.run_id = "r-2"  # type: ignore[misc]  # frozen=True forbids assignment

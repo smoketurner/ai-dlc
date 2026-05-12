@@ -13,14 +13,11 @@ from typing import Any
 
 import pytest
 
-from common.events import RunCompleted
 from common.state import RunState, TaskState
 from state_router.actions import (
     AdvanceState,
     CompoundAction,
-    DedupedAdvisors,
     EmitEvent,
-    GuardedAdvance,
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
@@ -50,6 +47,8 @@ def make_run(  # noqa: PLR0913
     triggering_comment_body: str | None = None,
     pr_url: str | None = None,
     spec_pr_url: str | None = None,
+    reviewer_verdict: str = "",
+    revision_count: int = 0,
 ) -> Run:
     """Build a Run with sane defaults for tests."""
     return Run(
@@ -75,6 +74,8 @@ def make_run(  # noqa: PLR0913
         task_ids=task_ids,
         tasks=tasks,
         triggering_comment_body=triggering_comment_body,
+        reviewer_verdict=reviewer_verdict,
+        revision_count=revision_count,
     )
 
 
@@ -362,17 +363,87 @@ class TestRunTasksInProgress:
 
 
 class TestRunTasksComplete:
-    def test_emits_run_completed(self) -> None:
+    def test_dispatches_validators_and_advances_to_validation_running(self) -> None:
+        """All three validators fire in parallel against the integrated impl PR."""
         run = make_run(
             state=RunState.tasks_complete,
             spec_slug="demo",
-            tasks=(make_task(TaskState.merged), make_task(TaskState.merged, task_id="T-002")),
+            pr_url="https://github.com/owner/repo/pull/9",
+            tasks=(make_task(TaskState.pr_open), make_task(TaskState.pr_open, task_id="T-002")),
+        )
+        action = decide(run)
+        assert isinstance(action, CompoundAction)
+        invokes = [a for a in action.actions if isinstance(a, InvokeAgent)]
+        runtimes = {invoke.runtime_arn for invoke in invokes}
+        assert any("reviewer" in arn for arn in runtimes)
+        assert any("tester" in arn for arn in runtimes)
+        assert any("code_critic" in arn for arn in runtimes)
+        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
+        assert len(advances) == 1
+        assert advances[0].advance_from == RunState.tasks_complete.value
+        assert advances[0].advance_to == RunState.validation_running.value
+
+    def test_noop_when_impl_pr_not_yet_opened(self) -> None:
+        """No pr_url yet — wait for impl PR to be opened by tasks_in_progress."""
+        run = make_run(state=RunState.tasks_complete, spec_slug="demo", pr_url=None)
+        action = decide(run)
+        assert isinstance(action, Noop)
+
+
+class TestRunValidationComplete:
+    def test_approve_advances_to_awaiting_human_merge(self) -> None:
+        run = make_run(
+            state=RunState.validation_complete,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
+            reviewer_verdict="approve",
+        )
+        action = decide(run)
+        assert isinstance(action, AdvanceState)
+        assert action.advance_to == RunState.awaiting_human_merge.value
+
+    def test_comment_advances_to_awaiting_human_merge(self) -> None:
+        run = make_run(
+            state=RunState.validation_complete,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
+            reviewer_verdict="comment",
+        )
+        action = decide(run)
+        assert isinstance(action, AdvanceState)
+        assert action.advance_to == RunState.awaiting_human_merge.value
+
+    def test_request_changes_invokes_implementer_revision(self) -> None:
+        run = make_run(
+            state=RunState.validation_complete,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
+            reviewer_verdict="request_changes",
+            revision_count=0,
+        )
+        action = decide(run)
+        assert isinstance(action, CompoundAction)
+        invokes = [a for a in action.actions if isinstance(a, InvokeAgent)]
+        assert len(invokes) == 1
+        assert "implementer" in invokes[0].runtime_arn
+        assert invokes[0].payload["mode"] == "revision"
+        assert invokes[0].payload["revision_number"] == 1
+        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
+        assert len(advances) == 1
+        assert advances[0].advance_to == RunState.revising.value
+
+    def test_request_changes_fails_run_after_revision_cap(self) -> None:
+        """Hitting MAX_REVISIONS emits RUN.FAILED instead of looping further."""
+        run = make_run(
+            state=RunState.validation_complete,
+            spec_slug="demo",
+            pr_url="https://github.com/owner/repo/pull/9",
+            reviewer_verdict="request_changes",
+            revision_count=3,
         )
         action = decide(run)
         assert isinstance(action, EmitEvent)
-        assert action.envelope.type == "RUN.COMPLETED"
-        assert isinstance(action.envelope.payload, RunCompleted)
-        assert action.envelope.payload.tasks_completed == 2
+        assert action.envelope.type == "RUN.FAILED"
 
 
 class TestRunTerminalStates:
@@ -404,29 +475,10 @@ class TestTaskDispatch:
         assert "implementer" in action.runtime_arn
         assert action.advance_to == TaskState.implementer_running.value
 
-    def test_pr_open_dispatches_advisors(self) -> None:
+    def test_pr_open_is_noop_waiting_for_run_level_validation(self) -> None:
+        """Per-task advisors removed — validation runs at run level after tasks_complete."""
         run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")
         task = make_task(TaskState.pr_open, pr_url="https://github.com/o/r/pull/1")
-        action = decide_task(run, task)
-        # The GuardedAdvance flips pr_open → pending_approval; only the
-        # winning router fires the inner DedupedAdvisors which gates
-        # reviewer + tester behind a PR-head-SHA dedupe.
-        assert isinstance(action, GuardedAdvance)
-        assert action.advance_from == TaskState.pr_open.value
-        assert action.advance_to == TaskState.pending_approval.value
-        deduped = [a for a in action.on_success if isinstance(a, DedupedAdvisors)]
-        assert len(deduped) == 1
-        runtimes = [invoke.runtime_arn for invoke in deduped[0].advisors]
-        assert any("reviewer" in arn for arn in runtimes)
-        assert any("tester" in arn for arn in runtimes)
-        # Each gated invoke fires unconditionally — the GuardedAdvance + SHA
-        # dedupe are the race guard / dedupe layers.
-        assert all(a.advance_from is None and a.advance_to is None for a in deduped[0].advisors)
-
-    def test_pr_open_without_pr_url_is_noop(self) -> None:
-        """Waits for state_router to backfill the impl PR URL on its first open."""
-        run = make_run(state=RunState.tasks_in_progress, spec_slug="demo")
-        task = make_task(TaskState.pr_open, pr_url=None)
         action = decide_task(run, task)
         assert isinstance(action, Noop)
 

@@ -1,0 +1,23 @@
+[project]
+name = "code-critic"
+version = "0.0.0"
+description = "ai-dlc Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "aws-opentelemetry-distro==0.17.0",
+    "bedrock-agentcore==1.9.0",
+    "boto3==1.43.6",
+    "common",
+    "jinja2==3.1.6",
+    "playwright==1.59.0",
+    "pydantic==2.13.4",
+    "strands-agents==1.38.0",
+    "structlog==25.5.0",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.11"]
+build-backend = "uv_build"

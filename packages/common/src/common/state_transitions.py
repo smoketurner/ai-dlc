@@ -43,7 +43,9 @@ RUN_TRANSITIONS: Mapping[tuple[EventType, RunState | None], RunState] = {
     ("SPEC.APPROVED", RunState.spec_pr_open): RunState.spec_approved,
     ("SPEC.REJECTED", RunState.spec_pr_open): RunState.failed,
     ("SPEC.ITERATION_REQUESTED", RunState.spec_pr_open): RunState.spec_pending,
-    ("RUN.COMPLETED", RunState.tasks_complete): RunState.done,
+    ("REVIEW.READY", RunState.validation_running): RunState.validation_complete,
+    ("REVISION.READY", RunState.revising): RunState.validation_running,
+    ("RUN.COMPLETED", RunState.awaiting_human_merge): RunState.done,
     ("RUN.COMPLETED", RunState.proposer_running): RunState.done,
 }
 """Run-level state transitions keyed by (event_type, current_state)."""
@@ -77,8 +79,10 @@ TASK_TRANSITIONS: Mapping[tuple[EventType, TaskState], TaskState] = {
     ("TASK.ITERATION_REQUESTED", TaskState.pr_open): TaskState.iterating,
     ("TASK.ITERATION_REQUESTED", TaskState.pending_approval): TaskState.iterating,
     ("TASK.ITERATION_REQUESTED", TaskState.blocked): TaskState.iterating,
+    ("TASK.APPROVED", TaskState.pr_open): TaskState.merged,
     ("TASK.APPROVED", TaskState.pending_approval): TaskState.merged,
     ("TASK.APPROVED", TaskState.blocked): TaskState.merged,
+    ("TASK.REJECTED", TaskState.pr_open): TaskState.closed,
     ("TASK.REJECTED", TaskState.pending_approval): TaskState.closed,
     ("TASK.REJECTED", TaskState.blocked): TaskState.closed,
 }

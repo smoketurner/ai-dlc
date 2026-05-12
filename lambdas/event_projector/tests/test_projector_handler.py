@@ -1242,7 +1242,7 @@ def test_run_completed_writes_outbox_for_terminal_cleanup() -> None:
         Item={
             "pk": {"S": "RUN#run-1"},
             "sk": {"S": "STATE"},
-            "current_state": {"S": "tasks_complete"},
+            "current_state": {"S": "awaiting_human_merge"},
         },
     )
     completed = envelope(

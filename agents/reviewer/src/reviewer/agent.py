@@ -70,21 +70,22 @@ def review_pr(
     *,
     project_slug: str,
     spec_slug: str,
-    task_id: str,
+    run_id: str,
     pr_url: str,
-    diff_summary: str,
+    revision_number: int,
 ) -> Review:
     """Run the agent and return the validated Review.
 
-    Caller constructs the agent (via :func:`build_agent`) so the caller
-    can read usage metrics off it after this returns.
+    Targets the integrated impl PR — the reviewer reads ``get_pr_diff``
+    for the full diff (every task plus any prior revision) and produces
+    a single coherent verdict.
     """
     user_message = compose_message(
         project_slug=project_slug,
         spec_slug=spec_slug,
-        task_id=task_id,
+        run_id=run_id,
         pr_url=pr_url,
-        diff_summary=diff_summary,
+        revision_number=revision_number,
     )
     return run_for_structured_output(agent, output_model=Review, prompt=user_message)
 
@@ -93,25 +94,35 @@ def compose_message(
     *,
     project_slug: str,
     spec_slug: str,
-    task_id: str,
+    run_id: str,
     pr_url: str,
-    diff_summary: str,
+    revision_number: int,
 ) -> str:
     """Compose the user-message prompt for the reviewer."""
+    revision_context = (
+        "This is the first validation pass."
+        if revision_number == 0
+        else (
+            f"This is revision pass #{revision_number} — the implementer revised "
+            "the impl branch in response to your prior request_changes verdict. "
+            "Check whether the previously-flagged issues are resolved; flag any "
+            "new ones introduced by the fixes."
+        )
+    )
     parts = [
-        agent_memory_preamble(project_slug=project_slug, query=diff_summary),
+        agent_memory_preamble(project_slug=project_slug, query=spec_slug),
         f"Project: {project_slug}",
         f"Spec slug: {spec_slug}",
-        f"Task id: {task_id}",
-        f"PR: {pr_url}",
+        f"Run id: {run_id}",
+        f"Impl PR: {pr_url}",
+        f"Revision number: {revision_number}",
         "",
-        "Diff summary the Implementer produced:",
-        diff_summary.strip(),
+        revision_context,
         "",
         f"Read the project's MEMORY.md (project_slug={project_slug}) to apply "
         f"its conventions. Read the three spec documents (spec_slug={spec_slug}) "
-        f"to know what the task is supposed to accomplish — focus your review "
-        f"on whether the diff implements task {task_id} correctly. Return a "
-        "Review JSON object.",
+        f"to know what the run is supposed to accomplish. Fetch the impl PR "
+        f"diff with ``get_pr_diff`` and produce a single coherent verdict over "
+        "the integrated diff. Return a Review JSON object.",
     ]
     return "\n".join(parts)

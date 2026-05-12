@@ -35,6 +35,7 @@ from common.runtime import (
     FeedbackItem,
     ImplementerInput,
     ImplementerResult,
+    ImplementerRevisionResult,
     IssueCommentMentionFeedback,
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
@@ -100,8 +101,126 @@ async def execute_task(payload: ImplementerInput) -> ImplementerResult:
     return await execute_initial(payload)
 
 
+async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResult:
+    """Revision flow: aggregate reviewer + tester + code-critic feedback, fix on impl branch.
+
+    Runs after the reviewer's verdict was ``request_changes``. The
+    implementer clones the repo, checks out the run's impl branch
+    directly (no task branch — fixes land as commits on the impl
+    branch itself), reads the three validation artifacts from S3
+    (``review-r{N-1}.md``, ``test_report-r{N-1}.md``,
+    ``critique-r{N-1}.md`` where ``N`` is the new revision number),
+    composes a unified prompt, drives the agent, commits + pushes.
+    The runtime emits ``REVISION.READY`` and the state-router fires
+    the validators again on the updated diff.
+    """
+    target_repo = resolve_target_repo(payload)
+    session = make_session(target_repo=target_repo, requestor_sub=payload.requestor_sub)
+    impl_branch = impl_branch_name(payload.spec_slug, payload.run_id)
+    revision_number = payload.revision_number or 1
+    prior_revision = revision_number - 1
+    logger.info(
+        "implementer revision session opened",
+        run_id=payload.run_id,
+        revision_number=revision_number,
+        target_repo=session.target_repo,
+        impl_branch=impl_branch,
+    )
+
+    clone_repo(session)
+    checkout_impl_branch(impl_branch)
+    fetch_spec(payload.spec_s3_prefix)
+
+    findings = fetch_validation_findings(
+        run_id=payload.run_id,
+        revision_number=prior_revision,
+    )
+    user_prompt = compose_revision_prompt(
+        payload,
+        revision_number=revision_number,
+        findings=findings,
+    )
+    _report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
+
+    if has_uncommitted_changes():
+        commit_changes(
+            f"revision r{revision_number}: address reviewer + tester + code-critic feedback",
+        )
+    push_branch(impl_branch)
+
+    pr_url = payload.pr_url or ""
+    return ImplementerRevisionResult(
+        pr_url=pr_url,
+        diff_summary=short_diff_summary()[:4096],
+        revision_number=revision_number,
+        session_id=f"{payload.run_id}-revision-r{revision_number}",
+        **usage,
+    )
+
+
+def fetch_validation_findings(*, run_id: str, revision_number: int) -> dict[str, str]:
+    """Read the three validation artifacts from S3 for revision context.
+
+    Each key is best-effort: a missing artifact (validator crashed,
+    not yet wired) maps to an empty string rather than raising. The
+    revision can still proceed with whichever findings are available.
+    """
+    s3 = boto3.client("s3")
+    bucket = os.environ.get("AIDLC_ARTIFACTS_BUCKET", "")
+    findings: dict[str, str] = {}
+    for name, key_suffix in (
+        ("review", f"review-r{revision_number}.md"),
+        ("test_report", f"test_report-r{revision_number}.md"),
+        ("critique", f"critique-r{revision_number}.md"),
+    ):
+        key = f"runs/{run_id}/validation/{key_suffix}"
+        try:
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            findings[name] = obj["Body"].read().decode("utf-8")
+        except Exception:
+            findings[name] = ""
+    return findings
+
+
+def compose_revision_prompt(
+    payload: ImplementerInput,
+    *,
+    revision_number: int,
+    findings: dict[str, str],
+) -> str:
+    """Compose the user-message prompt for a revision pass."""
+    parts = [
+        agent_memory_preamble(project_slug=payload.project_slug, query=payload.spec_slug),
+        f"Project: {payload.project_slug}",
+        f"Spec slug: {payload.spec_slug}",
+        f"Run id: {payload.run_id}",
+        f"Impl PR: {payload.pr_url}",
+        f"Revision number: {revision_number}",
+        "",
+        "You are working **directly on the impl branch** — no task branch. "
+        "Apply the aggregated feedback below as fix commits on the impl "
+        "branch. Keep changes minimal: address each finding precisely, "
+        "no incidental refactors. After the fixes land, validators "
+        "re-run on the integrated diff; if they still request changes "
+        "the loop continues (capped at 3 revisions).",
+        "",
+        "## Reviewer findings",
+        findings.get("review", "(none)") or "(none)",
+        "",
+        "## Tester findings",
+        findings.get("test_report", "(none)") or "(none)",
+        "",
+        "## Code-critic findings",
+        findings.get("critique", "(none)") or "(none)",
+    ]
+    return "\n".join(parts)
+
+
 async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
     """First-pass flow: branch off impl, agent edits, merge into impl branch."""
+    if payload.task_id is None:
+        msg = "execute_initial requires task_id; got None"
+        raise ValueError(msg)
     target_repo = resolve_target_repo(payload)
     session = make_session(target_repo=target_repo, requestor_sub=payload.requestor_sub)
     impl_branch = impl_branch_name(payload.spec_slug, payload.run_id)
@@ -176,6 +295,9 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     the resolver agent reconciles; otherwise the agent runs against a
     current view of the run's shared state.
     """
+    if payload.task_id is None:
+        msg = "execute_iteration requires task_id; got None"
+        raise ValueError(msg)
     target_repo = resolve_target_repo(payload)
     session = make_session(target_repo=target_repo, requestor_sub=payload.requestor_sub)
     impl_branch = impl_branch_name(payload.spec_slug, payload.run_id)
@@ -275,6 +397,9 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
 
 def load_task(payload: ImplementerInput) -> Any:
     """Read tasks.md from the workspace and return the matching task."""
+    if payload.task_id is None:
+        msg = "load_task requires task_id; got None"
+        raise ValueError(msg)
     tasks_md = (spec_path() / "tasks.md").read_text(encoding="utf-8")
     task = find_task(parse_tasks(tasks_md), payload.task_id)
     if task is None:
@@ -371,6 +496,9 @@ def iteration_blocked(
     task_branch: str,
 ) -> ImplementerResult:
     """Build a blocked result without running the agent (pre-flight merge failed)."""
+    if payload.task_id is None:
+        msg = "iteration_blocked requires task_id; got None"
+        raise ValueError(msg)
     write_blocked_md(
         spec_slug=payload.spec_slug,
         task_id=payload.task_id,

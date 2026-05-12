@@ -168,12 +168,11 @@ def test_review_ready_verdict_literal_pinned() -> None:
         ReviewReady(
             project_slug="demo",
             spec_slug="add-healthz",
-            task_id="T-001",
             pr_url="https://github.com/x/y/pull/1",
             verdict="lgtm",  # ty: ignore[invalid-argument-type]
             comment_count=0,
             summary="x",
-            session_id="r1-T-001-reviewer",
+            session_id="r1-reviewer",
         )
 
 
@@ -181,12 +180,11 @@ def test_test_report_ready_round_trip() -> None:
     payload = TestReportReady(
         project_slug="demo",
         spec_slug="add-healthz",
-        task_id="T-001",
         pr_url="https://github.com/x/y/pull/1",
         gap_count=2,
         suggested_test_count=4,
         summary="Missing tests for empty input + auth failure paths.",
-        session_id="r1-T-001-tester",
+        session_id="r1-tester",
     )
     env = EventEnvelope[TestReportReady](
         type="TEST_REPORT.READY",

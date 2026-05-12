@@ -70,21 +70,22 @@ def analyze_gaps(
     *,
     project_slug: str,
     spec_slug: str,
-    task_id: str,
+    run_id: str,
     pr_url: str,
-    diff_summary: str,
+    revision_number: int,
 ) -> Report:
     """Run the agent and return the validated Report.
 
-    Caller constructs the agent (via :func:`build_agent`) so the caller
-    can read usage metrics off it after this returns.
+    Targets the integrated impl PR — the tester reads the full diff
+    via ``get_pr_diff`` and identifies missing coverage across the
+    entire run's contribution.
     """
     user_message = compose_message(
         project_slug=project_slug,
         spec_slug=spec_slug,
-        task_id=task_id,
+        run_id=run_id,
         pr_url=pr_url,
-        diff_summary=diff_summary,
+        revision_number=revision_number,
     )
     return run_for_structured_output(agent, output_model=Report, prompt=user_message)
 
@@ -93,26 +94,35 @@ def compose_message(
     *,
     project_slug: str,
     spec_slug: str,
-    task_id: str,
+    run_id: str,
     pr_url: str,
-    diff_summary: str,
+    revision_number: int,
 ) -> str:
     """Compose the user-message prompt for the tester."""
+    revision_context = (
+        "This is the first validation pass."
+        if revision_number == 0
+        else (
+            f"This is revision pass #{revision_number} — the implementer revised "
+            "the impl branch in response to the reviewer's prior verdict. Check "
+            "whether new test gaps were introduced by the fixes."
+        )
+    )
     parts = [
-        agent_memory_preamble(project_slug=project_slug, query=diff_summary),
+        agent_memory_preamble(project_slug=project_slug, query=spec_slug),
         f"Project: {project_slug}",
         f"Spec slug: {spec_slug}",
-        f"Task id: {task_id}",
-        f"PR: {pr_url}",
+        f"Run id: {run_id}",
+        f"Impl PR: {pr_url}",
+        f"Revision number: {revision_number}",
         "",
-        "Diff summary the Implementer produced:",
-        diff_summary.strip(),
+        revision_context,
         "",
         f"Read the project's MEMORY.md (project_slug={project_slug}) for "
         f"testing conventions. Read the three spec documents "
-        f"(spec_slug={spec_slug}) — focus on the acceptance criteria the "
-        f"task ({task_id}) claims to implement. Map each AC to a test that "
-        "exercises it. Where no such test exists, list a gap and suggest a "
-        "concrete test. Return a Report JSON object.",
+        f"(spec_slug={spec_slug}). Fetch the impl PR diff with "
+        "``get_pr_diff``. Map each acceptance criterion across all tasks to "
+        "a test that exercises it; where no such test exists, list a gap and "
+        "suggest a concrete test. Return a Report JSON object.",
     ]
     return "\n".join(parts)

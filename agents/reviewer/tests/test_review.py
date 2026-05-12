@@ -50,7 +50,7 @@ def make_review(*, with_comments: bool = True, verdict: str = "request_changes")
         else []
     )
     return Review(
-        task_id="T-001",
+        run_id="01999999-9999-7999-9999-999999999999",
         verdict=verdict,  # ty: ignore[invalid-argument-type]
         summary=ReviewSummary(
             context="Adds a /healthz liveness route on the dashboard service.",
@@ -67,14 +67,14 @@ def make_review(*, with_comments: bool = True, verdict: str = "request_changes")
 
 def test_minimal_review_validates() -> None:
     review = make_review()
-    assert review.task_id == "T-001"
+    assert review.run_id == "01999999-9999-7999-9999-999999999999"
     assert len(review.comments) == 2
 
 
 def test_invalid_verdict_rejected() -> None:
     with pytest.raises(ValidationError):
         Review(
-            task_id="T-001",
+            run_id="r-1",
             verdict="lgtm",  # ty: ignore[invalid-argument-type]
             summary=ReviewSummary(context="x", impact="x"),
         )
@@ -117,7 +117,7 @@ def test_severity_counts_zero_for_empty_review() -> None:
 
 def test_render_review_includes_verdict_and_comments() -> None:
     out = render_review(make_review())
-    assert "# Review — `T-001`" in out
+    assert "# Review — run `01999999-9999-7999-9999-999999999999`" in out
     assert "Verdict: **request_changes**" in out
     assert "1 high · 1 medium · 0 low" in out
     assert "- **Context:** Adds a /healthz liveness route" in out
@@ -143,7 +143,7 @@ def test_render_review_skips_comments_section_when_empty() -> None:
 def test_render_review_omits_optional_summary_fields() -> None:
     """An ``approve`` review may have no Issue / Actual-vs-expected bullets."""
     review = Review(
-        task_id="T-001",
+        run_id="r-1",
         verdict="approve",
         summary=ReviewSummary(
             context="Adds a /healthz liveness route.",
@@ -160,7 +160,7 @@ def test_render_review_omits_optional_summary_fields() -> None:
 def test_render_review_omits_code_blocks_when_not_provided() -> None:
     """Comments without language/code_excerpt render as prose only."""
     review = Review(
-        task_id="T-001",
+        run_id="r-1",
         verdict="comment",
         summary=ReviewSummary(context="Minor cleanup.", impact="None."),
         comments=[
@@ -180,4 +180,4 @@ def test_render_review_omits_code_blocks_when_not_provided() -> None:
 def test_review_is_frozen() -> None:
     review = make_review()
     with pytest.raises(ValidationError):
-        review.task_id = "T-002"  # type: ignore[misc]  # frozen=True forbids assignment
+        review.run_id = "r-2"  # type: ignore[misc]  # frozen=True forbids assignment

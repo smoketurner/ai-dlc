@@ -294,7 +294,12 @@ async def test_pr_merged_skips_terminal_task_rows(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
 ) -> None:
-    """Tasks already in merged/closed/failed don't get re-approved."""
+    """Tasks already in merged/closed/failed don't get re-approved.
+
+    The impl-PR merge fans out ``TASK.APPROVED`` to every non-terminal
+    task and also emits one ``RUN.COMPLETED`` so the projector
+    advances ``awaiting_human_merge → done``.
+    """
     stub_unified_pr_lookup(
         monkeypatch,
         task_states={"T-001": "pr_open", "T-002": "merged"},
@@ -309,8 +314,8 @@ async def test_pr_merged_skips_terminal_task_rows(
     }
     out = await post_webhook(event_type="pull_request", payload=payload)
     assert out["fanned_out"] == ["T-001"]
-    assert len(captured_events) == 1
-    assert captured_events[0].type == "TASK.APPROVED"
+    types = [e.type for e in captured_events]
+    assert types == ["TASK.APPROVED", "RUN.COMPLETED"]
 
 
 @pytest.mark.asyncio

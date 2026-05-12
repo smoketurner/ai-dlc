@@ -1,7 +1,11 @@
-"""Strands tools the Tester uses to read context and post the report.
+"""Strands tools the Code-Critic uses to read the spec and write its critique.
 
-The tester runs in the AgentCore Runtime container with IAM credentials
-scoped to the artifacts + memory_md S3 buckets. Tools speak directly to S3.
+The code-critic runs in the AgentCore Runtime container with IAM
+credentials scoped to the artifacts + memory_md S3 buckets. Tools speak
+directly to S3.
+
+Each operation has a plain Python function plus a Strands ``@tool``
+wrapper with a ``_tool`` suffix.
 """
 
 from __future__ import annotations
@@ -14,8 +18,7 @@ import boto3
 from strands import tool
 
 from common.agentcore_browser import browse_url
-from common.memory_md import read_stack_profile_md
-from common.sandbox import get_pr_diff, run_pr_in_sandbox
+from common.memory_md import read_memory_md, read_stack_profile_md
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -30,30 +33,8 @@ def s3_client() -> S3Client:
 
 
 def artifacts_bucket() -> str:
-    """Bucket holding run artifacts."""
+    """Bucket holding run artifacts (specs, ADRs, critiques)."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
-
-
-def memory_md_bucket() -> str:
-    """Bucket holding per-project MEMORY.md snapshots."""
-    return os.environ["AIDLC_MEMORY_MD_BUCKET"]
-
-
-def read_memory_md(project_slug: str) -> str:
-    """Read the canonical MEMORY.md for a project.
-
-    Args:
-        project_slug: Project identifier — e.g., ``ai-dlc``.
-
-    Returns:
-        The Markdown body, or an empty string if no MEMORY.md exists yet.
-    """
-    key = f"projects/{project_slug}/MEMORY.md"
-    try:
-        obj = s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
-    except Exception:
-        return ""
-    return obj["Body"].read().decode("utf-8")
 
 
 def read_spec_doc(spec_slug: str, doc: str) -> str:
@@ -74,21 +55,20 @@ def read_spec_doc(spec_slug: str, doc: str) -> str:
     return obj["Body"].read().decode("utf-8")
 
 
-def write_report(*, run_id: str, revision_number: int, content: str) -> str:
-    """Upload the rendered test report Markdown for an impl-PR validation pass.
+def write_critique(*, run_id: str, revision_number: int, content: str) -> str:
+    """Upload the rendered code-critique Markdown for one validation pass.
 
     Args:
         run_id: The run UUID7 string.
         revision_number: 0 for the first validation pass, 1+ after each
-            implementer revision. Lets a single run accumulate multiple
-            report artifacts without collision.
+            implementer revision.
         content: Markdown body to upload.
 
     Returns:
         The full ``s3://...`` URI of the uploaded object.
     """
     bucket = artifacts_bucket()
-    key = report_s3_key(run_id=run_id, revision_number=revision_number)
+    key = critique_s3_key(run_id=run_id, revision_number=revision_number)
     s3_client().put_object(
         Bucket=bucket,
         Key=key,
@@ -98,15 +78,13 @@ def write_report(*, run_id: str, revision_number: int, content: str) -> str:
     return f"s3://{bucket}/{key}"
 
 
-def report_s3_key(*, run_id: str, revision_number: int) -> str:
-    """S3 key under the artifacts bucket for a run's test report."""
-    return f"runs/{run_id}/validation/test_report-r{revision_number}.md"
+def critique_s3_key(*, run_id: str, revision_number: int) -> str:
+    """S3 key under the artifacts bucket for a run's code-critique artifact."""
+    return f"runs/{run_id}/validation/critique-r{revision_number}.md"
 
 
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
 read_stack_profile_md_tool = tool(read_stack_profile_md)
 read_spec_doc_tool = tool(read_spec_doc)
-get_pr_diff_tool = tool(get_pr_diff)
-run_pr_in_sandbox_tool = tool(run_pr_in_sandbox)
 browse_url_tool = tool(browse_url)

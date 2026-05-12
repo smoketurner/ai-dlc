@@ -208,12 +208,14 @@ class ImplementerInput(_Frozen):
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     spec_s3_prefix: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    task_id: Annotated[str, Field(min_length=1, max_length=32)] | None = None
     run_id: str
     correlation_id: str
     actor_id: str = "system"
+    mode: Literal["task", "revision"] = "task"
     iteration_count: Annotated[int, Field(ge=0, le=16)] = 0
     iteration_feedback: Annotated[list[FeedbackItem], Field(max_length=32)] | None = None
+    revision_number: Annotated[int, Field(ge=0, le=16)] = 0
     # Set by the state_router on iteration dispatches so the implementer
     # can post inline replies + status updates against the existing PR.
     # ``None`` on the first dispatch (PR doesn't exist yet — implementer
@@ -263,31 +265,50 @@ class ImplementerResult(_UsageMixin):
     the runtime emits ``TASK.BLOCKED`` instead of ``TASK.READY``.
     """
 
-    task_id: str
+    task_id: str | None = None
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
     blocked_reason: Annotated[str, Field(max_length=2048)] | None = None
 
 
+class ImplementerRevisionResult(_UsageMixin):
+    """Result the Implementer returns from ``mode=revision`` runs.
+
+    Revision mode applies aggregated reviewer + tester + code-critic
+    feedback directly onto the impl branch (no task branch). On
+    success the runtime emits ``REVISION.READY``; the state-router
+    sends the run back into the validation pass.
+    """
+
+    pr_url: str
+    diff_summary: Annotated[str, Field(max_length=4096)]
+    revision_number: Annotated[int, Field(ge=1)]
+    session_id: str
+
+
 class ReviewerInput(_Frozen):
-    """Input passed to the Reviewer's ``/invocations`` endpoint, per task PR."""
+    """Input passed to the Reviewer's ``/invocations`` endpoint.
+
+    Targets the unified impl PR after all tasks have merged into the
+    impl branch. ``revision_number`` is 0 for the first validation pass
+    and increments each time the reviewer requests changes and the
+    implementer revises.
+    """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     spec_s3_prefix: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
-    diff_summary: Annotated[str, Field(max_length=4096)]
     run_id: str
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
+    revision_number: Annotated[int, Field(ge=0)] = 0
 
 
 class ReviewerResult(_UsageMixin):
     """Result the Reviewer returns. Becomes the REVIEW.READY payload."""
 
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
     verdict: Literal["approve", "request_changes", "comment"]
     comment_count: Annotated[int, Field(ge=0)]
@@ -299,27 +320,61 @@ class ReviewerResult(_UsageMixin):
 
 
 class TesterInput(_Frozen):
-    """Input passed to the Tester's ``/invocations`` endpoint, per task PR."""
+    """Input passed to the Tester's ``/invocations`` endpoint.
+
+    Targets the unified impl PR after all tasks have merged into the
+    impl branch — same model as :class:`ReviewerInput`.
+    """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
     spec_s3_prefix: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
-    diff_summary: Annotated[str, Field(max_length=4096)]
     run_id: str
     correlation_id: str
     actor_id: str = "system"
     requestor_sub: str | None = None
+    revision_number: Annotated[int, Field(ge=0)] = 0
 
 
 class TesterResult(_UsageMixin):
     """Result the Tester returns. Becomes the TEST_REPORT.READY payload."""
 
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
     gap_count: Annotated[int, Field(ge=0)]
     suggested_test_count: Annotated[int, Field(ge=0)]
+    summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
+class CodeCriticInput(_Frozen):
+    """Input passed to the Code-Critic's ``/invocations`` endpoint.
+
+    Targets the unified impl PR — same model as :class:`ReviewerInput`.
+    Code-Critic is the adversarial reviewer of the integrated diff:
+    logical gaps, missing edge cases, drift from the spec's intent.
+    """
+
+    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
+    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
+    spec_s3_prefix: str
+    pr_url: str
+    run_id: str
+    correlation_id: str
+    actor_id: str = "system"
+    requestor_sub: str | None = None
+    revision_number: Annotated[int, Field(ge=0)] = 0
+
+
+class CodeCriticResult(_UsageMixin):
+    """Result the Code-Critic returns. Becomes the CODE_CRITIQUE.READY payload."""
+
+    pr_url: str
+    critique_s3_key: str
+    issue_count: Annotated[int, Field(ge=0)]
+    high_severity_count: Annotated[int, Field(ge=0)] = 0
+    medium_severity_count: Annotated[int, Field(ge=0)] = 0
+    low_severity_count: Annotated[int, Field(ge=0)] = 0
     summary: Annotated[str, Field(max_length=2048)]
     session_id: str
 

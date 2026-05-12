@@ -55,19 +55,21 @@ def read_spec_doc(spec_slug: str, doc: str) -> str:
     return obj["Body"].read().decode("utf-8")
 
 
-def write_review(*, run_id: str, task_id: str, content: str) -> str:
-    """Upload the rendered review Markdown for a task PR.
+def write_review(*, run_id: str, revision_number: int, content: str) -> str:
+    """Upload the rendered review Markdown for an impl-PR validation pass.
 
     Args:
         run_id: The run UUID7 string.
-        task_id: The task identifier (e.g., ``T-001``).
+        revision_number: 0 for the first validation pass, 1+ after each
+            implementer revision. Lets a single run accumulate multiple
+            review artifacts without collision.
         content: Markdown body to upload.
 
     Returns:
         The full ``s3://...`` URI of the uploaded object.
     """
     bucket = artifacts_bucket()
-    key = review_s3_key(run_id=run_id, task_id=task_id)
+    key = review_s3_key(run_id=run_id, revision_number=revision_number)
     s3_client().put_object(
         Bucket=bucket,
         Key=key,
@@ -77,9 +79,9 @@ def write_review(*, run_id: str, task_id: str, content: str) -> str:
     return f"s3://{bucket}/{key}"
 
 
-def review_s3_key(*, run_id: str, task_id: str) -> str:
-    """S3 key under the artifacts bucket for a task review."""
-    return f"runs/{run_id}/tasks/{task_id}/review.md"
+def review_s3_key(*, run_id: str, revision_number: int) -> str:
+    """S3 key under the artifacts bucket for a run's review artifact."""
+    return f"runs/{run_id}/validation/review-r{revision_number}.md"
 
 
 # Strands wrappers — added to the agent's tool list.

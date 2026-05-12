@@ -26,10 +26,14 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
 from common.event_emit import publish
-from common.events import EventEnvelope, RunFailed, TaskBlocked, TaskReady
+from common.events import EventEnvelope, RevisionReady, RunFailed, TaskBlocked, TaskReady
 from common.ids import CorrelationId, RunId, new_event_id
-from common.runtime import ImplementerInput, ImplementerResult
-from implementer.client import execute_task
+from common.runtime import (
+    ImplementerInput,
+    ImplementerResult,
+    ImplementerRevisionResult,
+)
+from implementer.client import execute_revision, execute_task
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
@@ -74,22 +78,53 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 def run_implementer(payload: ImplementerInput, async_task_id: int) -> None:
     """Body of the implementer run — invokes Claude Agent SDK, emits event.
 
-    Runs in a daemon thread spawned from :func:`handler`. ``execute_task``
-    is async (the Claude Agent SDK driver is awaitable), so the body
-    runs it under :func:`asyncio.run`.
+    Routes on ``payload.mode``: ``task`` (initial or iteration) emits
+    TASK.READY / TASK.BLOCKED; ``revision`` emits REVISION.READY.
     """
     try:
-        result = asyncio.run(execute_task(payload))
-        emit_terminal_event(payload, result)
+        if payload.mode == "revision":
+            revision_result = asyncio.run(execute_revision(payload))
+            emit_revision_ready(payload, revision_result)
+        else:
+            result = asyncio.run(execute_task(payload))
+            emit_terminal_event(payload, result)
     except Exception as exc:
         logger.exception(
             "implementer run failed",
             run_id=payload.run_id,
             task_id=payload.task_id,
+            mode=payload.mode,
         )
         publish_run_failed(payload, exc)
     finally:
         app.complete_async_task(async_task_id)
+
+
+def emit_revision_ready(
+    payload: ImplementerInput,
+    result: ImplementerRevisionResult,
+) -> None:
+    """Emit REVISION.READY so the projector advances ``revising → validation_running``."""
+    envelope = EventEnvelope[RevisionReady](
+        event_id=new_event_id(),
+        type="REVISION.READY",
+        run_id=RunId(payload.run_id),
+        correlation_id=CorrelationId(payload.correlation_id),
+        actor_id="implementer",
+        payload=RevisionReady(
+            project_slug=payload.project_slug,
+            spec_slug=payload.spec_slug,
+            pr_url=result.pr_url,
+            diff_summary=result.diff_summary,
+            revision_number=result.revision_number,
+            session_id=result.session_id,
+            token_in=result.token_in,
+            token_out=result.token_out,
+            cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+        ),
+    )
+    publish(envelope)
 
 
 def emit_terminal_event(payload: ImplementerInput, result: ImplementerResult) -> None:
@@ -119,6 +154,9 @@ def emit_terminal_event(payload: ImplementerInput, result: ImplementerResult) ->
 
 def emit_task_ready(payload: ImplementerInput, result: ImplementerResult) -> None:
     """Emit TASK.READY so the projector advances the task to ``pr_open``."""
+    if payload.task_id is None:
+        msg = "emit_task_ready called without task_id"
+        raise ValueError(msg)
     envelope = EventEnvelope[TaskReady](
         event_id=new_event_id(),
         type="TASK.READY",
@@ -144,6 +182,9 @@ def emit_task_blocked(payload: ImplementerInput, result: ImplementerResult) -> N
     """Emit TASK.BLOCKED so the projector advances the task to ``blocked``."""
     if result.blocked_reason is None:
         msg = "emit_task_blocked called without blocked_reason"
+        raise ValueError(msg)
+    if payload.task_id is None:
+        msg = "emit_task_blocked called without task_id"
         raise ValueError(msg)
     envelope = EventEnvelope[TaskBlocked](
         event_id=new_event_id(),

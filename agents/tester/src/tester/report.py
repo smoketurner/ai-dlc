@@ -2,11 +2,13 @@
 
 The Tester produces a :class:`Report` whose Markdown rendering lands at:
 
-  s3://{artifacts_bucket}/runs/{run_id}/tasks/{task_id}/test_report.md
+  s3://{artifacts_bucket}/runs/{run_id}/validation/test_report-r{N}.md
 
-Each :class:`Gap` is a behaviour or acceptance criterion the diff exercises
-without test coverage. Each :class:`Suggestion` is a concrete proposed test
-the implementer can write to close one or more gaps.
+where ``N`` is the revision number (0 for the first validation pass).
+Each :class:`Gap` is a behaviour or acceptance criterion the integrated
+impl PR exercises without test coverage. Each :class:`Suggestion` is a
+concrete proposed test the implementer can write to close one or more
+gaps.
 """
 
 from __future__ import annotations
@@ -83,9 +85,9 @@ class Suggestion(_Frozen):
 
 
 class Report(_Frozen):
-    """The full test gap report produced by the Tester per task PR."""
+    """The full test gap report produced by the Tester per impl-PR validation pass."""
 
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    run_id: Annotated[str, Field(min_length=1, max_length=64)]
     summary: ReportSummary
     gaps: Annotated[NoneSafeList[Gap], Field(max_length=64)] = Field(default_factory=list)
     suggestions: Annotated[NoneSafeList[Suggestion], Field(max_length=64)] = Field(
