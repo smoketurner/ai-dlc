@@ -1,29 +1,37 @@
-# Requirements — Deterministic lint/typecheck gates between agent steps
+# Requirements — Deterministic lint/typecheck gate between agent steps
 
 > **Spec slug:** `lint-gate`
 
 ## Summary
 
-Add deterministic lint, format, type-check, and test gates inside the Implementer agent's execution flow so that `make lint`, `make format`, `make type`, and `make test` run automatically after the agent finishes editing — before the PR is committed and pushed. If the gate fails, the agent receives the error output as structured feedback and gets one in-process retry to fix the issues, eliminating the slow CI→webhook→iteration round-trip for trivially fixable errors.
+Add a deterministic (non-LLM) lint and typecheck gate that runs between the implementer's task completion and the LLM-based validation pass. The gate executes `ruff check`, `ruff format --check`, and `ty check` against the integrated impl branch in a Code Interpreter sandbox. On failure, the implementer is dispatched in revision mode to fix lint/type errors before validators fire.
 
 ## User stories
 
-- **R-001** — As a platform operator, I want lint, format, type-check, and test errors caught inside the Implementer session so that PRs never land with trivially fixable lint/type/test violations.
-- **R-002** — As a platform operator, I want the Implementer to self-correct gate failures within the same session so that CI iteration cycles are not wasted on deterministic errors.
-- **R-003** — As a platform operator, I want visibility into whether the lint gate passed or required a retry so that I can monitor agent quality over time.
+- **R-001** — As a platform operator, I want have the state machine enforce lint and typecheck cleanliness on the impl branch before LLM validators fire so that broken code never reaches the reviewer/tester/code-critic agents, saving token spend on obviously-fixable issues.
+- **R-002** — As a platform operator, I want see lint gate pass/fail status on the run's DynamoDB row and in EventBridge events so that I can monitor gate outcomes and debug failures via the same observability stack as other state transitions.
+- **R-003** — As a implementer agent (downstream consumer), I want receive structured lint/type error output as revision feedback when the gate fails so that I can fix the exact errors without guessing what went wrong.
 
 ## Acceptance criteria
 
-- **AC-001** (R-001) — WHEN the Implementer agent calls finish with status='done' and has made real changes, THE SYSTEM SHALL run `make lint`, `make format`, `make type`, and `make test` sequentially against the repo working tree from the repo root before committing.
-- **AC-002** (R-002) — WHEN the lint gate reports one or more command failures (non-zero exit code), THE SYSTEM SHALL feed the combined stdout/stderr of all failed commands back to the Claude Agent SDK session as a follow-up user message and resume the agent for one additional pass.
-- **AC-003** (R-002) — IF the lint gate fails on the retry pass (second consecutive failure), THEN THE SYSTEM SHALL proceed with commit and push (allowing CI to catch the residual) and record the failure in the ImplementerResult lint_gate field with passed=False.
-- **AC-004** (R-001) — THE SYSTEM SHALL run the lint gate commands via `make` (not direct `uv run` invocations) so that the Makefile remains the single source of truth for tool versions and flags.
-- **AC-005** (R-003) — WHEN the lint gate completes (pass or fail), THE SYSTEM SHALL include a `lint_gate` field in the ImplementerResult carrying pass/fail status, retry count, and truncated error output per command.
-- **AC-006** (R-001) — WHILE the Implementer is running an iteration (iteration_count > 0), THE SYSTEM SHALL apply the same lint gate before pushing the fix commit.
+- **AC-001** (R-001) — WHEN the run reaches `tasks_complete` and the state_router dispatches the next step, THE SYSTEM SHALL invoke the lint_gate Lambda (advancing the run to `lint_gate_running`) before any LLM validator is dispatched.
+- **AC-002** (R-001) — WHEN the lint_gate Lambda completes with all checks passing (exit code 0 for each), THE SYSTEM SHALL emit a `LINT_GATE.PASSED` event on the platform EventBridge bus carrying the impl PR head SHA and the list of commands that ran.
+- **AC-003** (R-001) — WHEN the lint_gate Lambda completes with any check failing (non-zero exit code), THE SYSTEM SHALL emit a `LINT_GATE.FAILED` event on the platform EventBridge bus carrying the failing command, its stderr output (tail 4 KiB), and the impl PR head SHA.
+- **AC-004** (R-001) — WHEN the event_projector receives `LINT_GATE.PASSED` while the run is in `lint_gate_running`, THE SYSTEM SHALL advance the run state from `lint_gate_running` to `validation_running`.
+- **AC-005** (R-001) — WHEN the event_projector receives `LINT_GATE.FAILED` while the run is in `lint_gate_running`, THE SYSTEM SHALL advance the run state from `lint_gate_running` to `revising` with the lint errors stored as `pending_revision_feedback` on the STATE row.
+- **AC-006** (R-001) — THE SYSTEM SHALL run exactly three commands in order inside the sandbox: `ruff check .`, `ruff format --check .`, `ty check`; stop at the first non-zero exit.
+- **AC-007** (R-001) — IF the lint_gate Lambda fails to start a Code Interpreter session or the sandbox extract step fails, THEN THE SYSTEM SHALL emit `LINT_GATE.FAILED` with `error_class="infrastructure"` so the circuit breaker retries on the next beacon.
+- **AC-008** (R-002) — WHEN `LINT_GATE.PASSED` or `LINT_GATE.FAILED` is projected by the event_projector, THE SYSTEM SHALL write `lint_gate_result`, `lint_gate_sha`, and `lint_gate_at` (ISO timestamp) onto the run's STATE row.
+- **AC-009** (R-003) — WHEN the state_router dispatches the implementer in revision mode after a lint gate failure, THE SYSTEM SHALL include the lint gate's stderr output and failing command in the `pending_revision_feedback` list so the implementer receives the exact errors.
 
 ## Out of scope
 
-- Modifying the CI workflow itself
-- Adding lint gates to non-Implementer agents (Architect, Critic, etc.)
-- Running integration or live-AWS tests as part of the gate
-- Changing the Makefile targets themselves
+- Per-task lint gates (running lint after each individual task before it merges into the impl branch)
+- Customizable lint commands per target repo (always uses the workspace-root ruff + ty)
+- Dashboard UI for lint gate results (observability via DDB + EventBridge is sufficient for now)
+- Running pytest as part of the lint gate (tests are the tester agent's domain)
+
+## Open questions
+
+- Should the lint gate also run `pip-audit` (the CI `audit` step)? Defaulting to no — audit is slow and catches supply-chain issues, not code quality.
+- Should infrastructure failures (sandbox crash) count toward the circuit breaker's `dispatch_failure_count`? Defaulting to yes — same pattern as agent dispatch failures.
