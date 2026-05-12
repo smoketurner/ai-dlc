@@ -98,8 +98,9 @@ jobs:
       - name: Pull SAM Lambda build image
         # The lambda module v8 calls `docker images` against this tag and
         # falls back to BUILDING the image (not pulling) when missing.
-        # Pre-pulling avoids the build-fallback path entirely.
-        run: docker pull public.ecr.aws/sam/build-python3.13:latest-arm64
+        # Pre-pulling avoids the build-fallback path entirely. Tag must
+        # match the ``docker_image`` set in terraform/modules/pipeline/lambdas.tf.
+        run: docker pull public.ecr.aws/sam/build-python3.14:latest-arm64
         working-directory: .
 
       - name: Terraform init
