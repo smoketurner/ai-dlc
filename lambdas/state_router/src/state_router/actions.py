@@ -135,14 +135,7 @@ class CompoundAction:
     actions: tuple[Action, ...]
 
 
-type Action = (
-    Noop
-    | InvokeAgent
-    | EmitEvent
-    | InvokeRepoHelper
-    | AdvanceState
-    | CompoundAction
-)
+type Action = Noop | InvokeAgent | EmitEvent | InvokeRepoHelper | AdvanceState | CompoundAction
 
 
 def impl_branch_name(run_id: str) -> str:

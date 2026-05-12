@@ -92,9 +92,7 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
     if report is not None and report.status == "blocked":
-        msg = (
-            f"implementer blocked: {report.blocked_reason or 'agent reported blocked'}"
-        )
+        msg = f"implementer blocked: {report.blocked_reason or 'agent reported blocked'}"
         raise RuntimeError(msg)
     if not repo_made_real_changes():
         msg = "implementer produced no diff — nothing to PR"

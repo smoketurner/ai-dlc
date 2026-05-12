@@ -375,10 +375,13 @@ class RunCompleted(Payload):
     """
 
     project_slug: str
-    pr_url: Annotated[
-        str,
-        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
-    ] | None = None
+    pr_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+        ]
+        | None
+    ) = None
 
 
 class RunFailed(Payload):

@@ -456,10 +456,7 @@ def repo_pr_from_payload(
     a PR — those don't belong to a run).
     """
     holder = (
-        payload.get("check_run")
-        or payload.get("check_suite")
-        or payload.get("workflow_run")
-        or {}
+        payload.get("check_run") or payload.get("check_suite") or payload.get("workflow_run") or {}
     )
     pull_requests = holder.get("pull_requests") or []
     if not pull_requests:
