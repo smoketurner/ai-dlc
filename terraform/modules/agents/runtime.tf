@@ -130,21 +130,29 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
-  statement {
-    sid    = "S3Artifacts"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:PutObject",
-      "s3:DeleteObject",
-      "s3:ListBucket",
-    ]
-    resources = [
-      var.artifacts_bucket_arn,
-      "${var.artifacts_bucket_arn}/*",
-      var.memory_md_bucket_arn,
-      "${var.memory_md_bucket_arn}/*",
-    ]
+  # S3 access for direct (non-gateway) tool readers/writers. Critic has
+  # moved fully onto the gateway: it reads MEMORY.md / stack profile /
+  # spec docs via ``artifact_tool`` MCP and uploads its critique the
+  # same way. No agent role needs direct S3 once it migrates; drop the
+  # statement entirely for migrated agents.
+  dynamic "statement" {
+    for_each = each.key == "critic" ? [] : [1]
+    content {
+      sid    = "S3Artifacts"
+      effect = "Allow"
+      actions = [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket",
+      ]
+      resources = [
+        var.artifacts_bucket_arn,
+        "${var.artifacts_bucket_arn}/*",
+        var.memory_md_bucket_arn,
+        "${var.memory_md_bucket_arn}/*",
+      ]
+    }
   }
 
   statement {
@@ -167,6 +175,29 @@ data "aws_iam_policy_document" "runtime_inline" {
       "bedrock-agentcore:ListGatewayTargets",
     ]
     resources = [aws_bedrockagentcore_gateway.agent[each.key].gateway_arn]
+  }
+
+  # AgentCore Identity M2M token exchange — every agent fetches a
+  # Cognito M2M JWT via this API to authenticate against its own
+  # gateway. ``GetResourceOauth2Token`` resolves the credential
+  # provider name to its stored client_id/secret and runs the
+  # client_credentials flow against Cognito. Scoped to wildcard
+  # because the API itself enforces the workload identity that owns
+  # the call.
+  statement {
+    sid       = "AgentCoreGatewayM2MToken"
+    actions   = ["bedrock-agentcore:GetResourceOauth2Token"]
+    resources = ["*"]
+  }
+
+  # AgentCore Identity stores the M2M (and GitHub) provider client
+  # secrets in its private Secrets Manager vault prefix. The runtime
+  # needs read access to the vault entry so the M2M exchange can
+  # complete.
+  statement {
+    sid       = "ReadAgentCoreIdentityVault"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = ["arn:${local.aws_partition}:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
   }
 
   # AgentCore Browser — resource-bound lifecycle / session-management
@@ -229,9 +260,10 @@ data "aws_iam_policy_document" "runtime_inline" {
   # call tools via the gateway (which has its own role) — this is the
   # escape hatch for agents that orchestrate Lambdas directly (e.g., the
   # Proposer calling repo_helper to commit + open a PR). The set is
-  # already bounded by `targets`, so least-privilege still holds.
+  # already bounded by `targets`, so least-privilege still holds. Critic
+  # is fully gateway-mediated; it gets no direct invoke.
   dynamic "statement" {
-    for_each = length(each.value.targets) > 0 ? [1] : []
+    for_each = length(each.value.targets) > 0 && each.key != "critic" ? [1] : []
     content {
       sid       = "DirectInvokeToolLambdas"
       actions   = ["lambda:InvokeFunction"]
@@ -244,7 +276,9 @@ data "aws_iam_policy_document" "runtime_inline" {
   # mint user-on-behalf-of GitHub tokens directly (Implementer for
   # git CLI auth). The wildcard resource is intentional: AgentCore
   # itself enforces scope via the workload identity + credential
-  # provider configuration.
+  # provider configuration. ``GetResourceOauth2Token`` lives in the
+  # universal ``AgentCoreGatewayM2MToken`` statement above; this
+  # statement only adds the OBO-specific workload exchanges.
   dynamic "statement" {
     for_each = contains(each.value.targets, "repo_helper") && var.github_app_secret_name != null ? [1] : []
     content {
@@ -252,22 +286,8 @@ data "aws_iam_policy_document" "runtime_inline" {
       actions = [
         "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
         "bedrock-agentcore:GetWorkloadAccessTokenForJWT",
-        "bedrock-agentcore:GetResourceOauth2Token",
       ]
       resources = ["*"]
-    }
-  }
-
-  # AgentCore Identity uses Forward-Access Session to read its own
-  # internal credential-vault secret (the user's cached GitHub OAuth
-  # token, keyed by Cognito sub). Without this perm, GetResourceOauth2Token
-  # raises AccessDeniedException at the secretsmanager layer.
-  dynamic "statement" {
-    for_each = contains(each.value.targets, "repo_helper") && var.github_app_secret_name != null ? [1] : []
-    content {
-      sid       = "ReadAgentCoreIdentitySecret"
-      actions   = ["secretsmanager:GetSecretValue"]
-      resources = ["arn:${local.aws_partition}:secretsmanager:*:*:secret:bedrock-agentcore-identity!default/*"]
     }
   }
 
@@ -393,6 +413,13 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
       AIDLC_MEMORY_ID               = aws_bedrockagentcore_memory.this.id
       AIDLC_AGENT_GATEWAY_URL       = aws_bedrockagentcore_gateway.agent[each.key].gateway_url
       AIDLC_BEDROCK_MODEL_ID        = var.agents[each.key].bedrock_model_id
+
+      # AgentCore Identity M2M provider that mints the Cognito JWT the
+      # agent uses as the Bearer when calling its gateway. Scope is the
+      # full ``<resource>/<scope>`` string Cognito's token endpoint
+      # expects in the ``scope`` parameter.
+      AIDLC_GATEWAY_OAUTH_PROVIDER_NAME = aws_bedrockagentcore_oauth2_credential_provider.cognito_gateway_m2m.name
+      AIDLC_GATEWAY_OAUTH_SCOPE         = var.cognito_gateway_m2m_scope
     },
     # Every agent emits its completion event on the platform bus when
     # finished — wire the bus name into the runtime env so each container

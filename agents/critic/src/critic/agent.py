@@ -1,11 +1,12 @@
 """Strands Agent factory for the Critic.
 
 The Critic uses Claude Opus 4.7 on Bedrock with a strict-JSON output
-contract: the agent loop runs with the spec-reading tools and finishes
-by emitting a :class:`Critique` via Strands' ``structured_output_model``
-parameter — that constrains the Bedrock model to produce JSON matching
-the schema while still letting the agent call ``read_memory_md`` and
-``read_spec_doc`` to ground its critique.
+contract: the agent loop runs with the gateway-routed spec-reading
+tools plus :func:`browse_url` and finishes by emitting a
+:class:`Critique` via Strands' ``structured_output_model`` parameter
+— that constrains the Bedrock model to produce JSON matching the
+schema while still letting the agent call ``artifact_tool`` (via the
+gateway) and ``browse_url`` to ground its critique.
 """
 
 from __future__ import annotations
@@ -14,18 +15,15 @@ import os
 
 from strands import Agent
 from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
 
+from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from critic.critique import Critique
 from critic.hooks import build_hooks
-from critic.tools import (
-    browse_url_tool,
-    read_memory_md_tool,
-    read_spec_doc_tool,
-    read_stack_profile_md_tool,
-)
+from critic.tools import browse_url_tool
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-opus-4-6-v1"
 
@@ -35,8 +33,14 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> Agent:
+def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
     """Build a fresh Strands Agent for one critic invocation.
+
+    The caller is responsible for starting ``mcp_client`` (typically via
+    ``with gateway_mcp_client(token=...) as mcp_client:``) and keeping
+    it open for the lifetime of the agent call. Tool definitions from
+    the gateway catalogue are spliced into the agent's tool list
+    alongside the local :func:`browse_url` tool.
 
     Prompt variant routed via :func:`common.routing.pick_variant`.
     """
@@ -52,9 +56,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("critic", variant),
         tools=[
-            read_memory_md_tool,
-            read_stack_profile_md_tool,
-            read_spec_doc_tool,
+            *gateway_tools(mcp_client),
             browse_url_tool,
         ],
         hooks=build_hooks(),

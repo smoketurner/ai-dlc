@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -100,3 +101,46 @@ def test_validation_error_on_missing_field() -> None:
     out = invoke({"op": "put_artifact", "key": "x"})  # missing content
     assert out["ok"] is False
     assert out["error"]["kind"] == "validation_error"
+
+
+def test_read_stack_profile_md_missing_returns_empty() -> None:
+    out = invoke({"op": "read_stack_profile_md", "project_slug": "demo"})
+    assert out["ok"] is True
+    assert out["result"] == {"project_slug": "demo", "content": ""}
+
+
+def test_read_stack_profile_md_corrupt_json_returns_empty() -> None:
+    boto3.client("s3").put_object(
+        Bucket=MEMORY_MD,
+        Key="projects/demo/stack_profile.json",
+        Body=b"not-json",
+    )
+    out = invoke({"op": "read_stack_profile_md", "project_slug": "demo"})
+    assert out["ok"] is True
+    assert out["result"] == {"project_slug": "demo", "content": ""}
+
+
+def test_read_stack_profile_md_happy_path() -> None:
+    """A real StackProfile JSON object is rendered to Markdown."""
+    profile = {
+        "primary_language": "python",
+        "components": [
+            {
+                "path": ".",
+                "language": "python",
+                "version": "3.14",
+                "package_manager": "uv",
+                "manifest": "pyproject.toml",
+            },
+        ],
+    }
+    boto3.client("s3").put_object(
+        Bucket=MEMORY_MD,
+        Key="projects/demo/stack_profile.json",
+        Body=json.dumps(profile).encode("utf-8"),
+    )
+    out = invoke({"op": "read_stack_profile_md", "project_slug": "demo"})
+    assert out["ok"] is True
+    body = out["result"]["content"]
+    assert body  # non-empty
+    assert "python" in body.lower()

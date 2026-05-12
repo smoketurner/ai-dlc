@@ -107,8 +107,10 @@ module "agents" {
   memory_md_bucket     = module.state.memory_md_bucket
   memory_md_bucket_arn = module.state.memory_md_bucket_arn
 
-  cognito_discovery_url = module.auth.discovery_url
-  cognito_audience      = [module.auth.client_id]
+  cognito_discovery_url             = module.auth.discovery_url
+  cognito_gateway_m2m_client_id     = module.auth.gateway_m2m_client_id
+  cognito_gateway_m2m_client_secret = module.auth.gateway_m2m_client_secret
+  cognito_gateway_m2m_scope         = module.auth.gateway_m2m_scope
 
   ecr_repository_urls = module.registry.repository_urls
 

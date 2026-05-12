@@ -4,7 +4,8 @@ The Gateway invokes this Lambda for each MCP `invokeTool` call. The event
 shape is the standard AgentCore Gateway → Lambda payload: an envelope with
 the tool name, the structured input, and request context. We dispatch on
 the ``op`` field of the input to one of: ``put_artifact``, ``get_artifact``,
-``list_artifacts``, ``read_memory_md``, ``write_memory_md``.
+``list_artifacts``, ``read_memory_md``, ``write_memory_md``,
+``read_stack_profile_md``.
 
 The Lambda is intentionally thin — it owns the S3 contract for the artifacts
 and memory_md buckets, nothing else. Bucket names come from environment
@@ -22,6 +23,9 @@ import boto3
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from common.memory_md import stack_profile_key
+from common.stack_discovery import StackProfile, render_stack_profile
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -93,6 +97,13 @@ class WriteMemoryMdInput(BaseOp):
     content: str = Field(max_length=2_000_000)
 
 
+class ReadStackProfileMdInput(BaseOp):
+    """Read the rendered Markdown summary of a project's stack profile."""
+
+    op: Literal["read_stack_profile_md"]
+    project_slug: str = Field(min_length=1, max_length=64)
+
+
 def put_text(bucket: str, key: str, content: str) -> None:
     """UTF-8 PUT to ``bucket``/``key`` (bucket default SSE applies)."""
     s3().put_object(
@@ -148,12 +159,32 @@ def write_memory_md(req: WriteMemoryMdInput) -> dict[str, Any]:
     }
 
 
+def read_stack_profile_md(req: ReadStackProfileMdInput) -> dict[str, Any]:
+    """Read the project's stack profile JSON and render it as Markdown.
+
+    Matches the in-process ``common.memory_md.read_stack_profile_md``
+    contract: returns an empty ``content`` string when no snapshot
+    exists or the stored JSON fails to validate.
+    """
+    key = stack_profile_key(req.project_slug)
+    try:
+        obj = s3().get_object(Bucket=memory_md_bucket(), Key=key)
+    except s3().exceptions.NoSuchKey:
+        return {"project_slug": req.project_slug, "content": ""}
+    try:
+        profile = StackProfile.model_validate_json(obj["Body"].read().decode("utf-8"))
+    except ValueError:
+        return {"project_slug": req.project_slug, "content": ""}
+    return {"project_slug": req.project_slug, "content": render_stack_profile(profile)}
+
+
 DISPATCH: dict[str, tuple[type[BaseOp], Any]] = {
     "put_artifact": (PutArtifactInput, put_artifact),
     "get_artifact": (GetArtifactInput, get_artifact),
     "list_artifacts": (ListArtifactsInput, list_artifacts),
     "read_memory_md": (ReadMemoryMdInput, read_memory_md),
     "write_memory_md": (WriteMemoryMdInput, write_memory_md),
+    "read_stack_profile_md": (ReadStackProfileMdInput, read_stack_profile_md),
 }
 
 

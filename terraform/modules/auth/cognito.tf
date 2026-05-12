@@ -106,3 +106,39 @@ resource "aws_cognito_user_pool_client" "this" {
   id_token_validity      = 60
   refresh_token_validity = 30
 }
+
+# Resource server + M2M (client_credentials) app client for agent →
+# AgentCore Gateway calls. The agent runtime exchanges its workload
+# identity token for an M2M JWT via AgentCore Identity, which holds the
+# client_id / client_secret in its token vault.
+resource "aws_cognito_resource_server" "gateway" {
+  identifier   = local.gateway_resource
+  name         = "${local.pool_name}-gateway-rs"
+  user_pool_id = aws_cognito_user_pool.this.id
+
+  scope {
+    scope_name        = local.gateway_scope_name
+    scope_description = "Invoke an AgentCore Gateway as the agent runtime."
+  }
+}
+
+resource "aws_cognito_user_pool_client" "gateway_m2m" {
+  name                                 = "${local.pool_name}-gateway-m2m"
+  user_pool_id                         = aws_cognito_user_pool.this.id
+  generate_secret                      = true
+  allowed_oauth_flows_user_pool_client = true
+  allowed_oauth_flows                  = ["client_credentials"]
+  # Reference the resource server resource directly so terraform orders
+  # the resource-server create before the client create. Using the
+  # ``local.gateway_full_scope`` string alone leaves the client without
+  # a dependency edge and Cognito rejects the scope as unknown.
+  allowed_oauth_scopes = [
+    "${aws_cognito_resource_server.gateway.identifier}/${local.gateway_scope_name}",
+  ]
+  supported_identity_providers = ["COGNITO"]
+
+  token_validity_units {
+    access_token = "minutes"
+  }
+  access_token_validity = 60
+}

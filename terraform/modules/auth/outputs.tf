@@ -36,3 +36,19 @@ output "issuer_url" {
 output "discovery_url" {
   value = "https://cognito-idp.${local.aws_region}.amazonaws.com/${aws_cognito_user_pool.this.id}/.well-known/openid-configuration"
 }
+
+output "gateway_m2m_client_id" {
+  description = "Cognito M2M (client_credentials) app client id used by agents to call their AgentCore Gateway."
+  value       = aws_cognito_user_pool_client.gateway_m2m.id
+}
+
+output "gateway_m2m_client_secret" {
+  description = "Cognito M2M (client_credentials) app client secret. Wired into AgentCore Identity's token vault."
+  value       = aws_cognito_user_pool_client.gateway_m2m.client_secret
+  sensitive   = true
+}
+
+output "gateway_m2m_scope" {
+  description = "Full OAuth2 scope string the agent requests on its Cognito M2M token."
+  value       = local.gateway_full_scope
+}

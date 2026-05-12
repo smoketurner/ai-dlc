@@ -141,13 +141,34 @@ variable "memory_md_bucket_arn" {
 }
 
 variable "cognito_discovery_url" {
-  description = "Cognito OpenID Connect discovery URL — used by the per-agent gateway JWT authorizer."
+  description = <<-EOT
+    Cognito OpenID Connect discovery URL. The per-agent AgentCore Gateway
+    authorizer validates Cognito-issued JWTs against this URL. The agent
+    runtime obtains those JWTs from AgentCore Identity via the M2M
+    (client_credentials) credential provider configured below.
+  EOT
   type        = string
 }
 
-variable "cognito_audience" {
-  description = "Allowed audience values (Cognito app client IDs) for the per-agent gateway JWT authorizer."
-  type        = list(string)
+variable "cognito_gateway_m2m_client_id" {
+  description = <<-EOT
+    Cognito M2M (client_credentials) app client id. The AgentCore Gateway
+    authorizer accepts JWTs whose ``client_id`` claim matches this value;
+    AgentCore Identity mints those JWTs through the OAuth2 credential
+    provider configured below.
+  EOT
+  type        = string
+}
+
+variable "cognito_gateway_m2m_client_secret" {
+  description = "Cognito M2M app client secret. Stored in AgentCore Identity's token vault."
+  type        = string
+  sensitive   = true
+}
+
+variable "cognito_gateway_m2m_scope" {
+  description = "OAuth2 scope the agent requests when fetching its Cognito M2M token (full ``<resource>/<scope>`` string)."
+  type        = string
 }
 
 variable "memory_event_expiry_days" {

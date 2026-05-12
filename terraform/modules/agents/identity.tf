@@ -84,3 +84,29 @@ resource "aws_bedrockagentcore_oauth2_credential_provider" "github" {
     prevent_destroy = true
   }
 }
+
+# Cognito M2M (client_credentials) credential provider. The agent
+# runtime fetches a Cognito JWT through this provider via
+# ``IdentityClient.get_resource_oauth2_token`` (or the SDK's
+# ``@requires_access_token(auth_flow="M2M")`` decorator) and uses it
+# as the Bearer header against its AgentCore Gateway.
+resource "aws_bedrockagentcore_oauth2_credential_provider" "cognito_gateway_m2m" {
+  name                       = "${local.prefix}-cognito-gateway-m2m"
+  credential_provider_vendor = "CustomOauth2"
+
+  oauth2_provider_config {
+    custom_oauth2_provider_config {
+      client_id     = var.cognito_gateway_m2m_client_id
+      client_secret = var.cognito_gateway_m2m_client_secret
+
+      oauth_discovery {
+        discovery_url = var.cognito_discovery_url
+      }
+    }
+  }
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-cognito-gateway-m2m"
+    Component = "agents"
+  })
+}

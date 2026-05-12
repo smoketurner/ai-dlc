@@ -1,7 +1,12 @@
 ################################################################################
 # Per-agent AgentCore Gateway. Each agent gets:
 #   * its own gateway role (assume by bedrock-agentcore.amazonaws.com)
-#   * its own gateway with Cognito JWT auth
+#   * its own gateway with a Cognito CUSTOM_JWT authorizer. The agent
+#     runtime exchanges its workload identity token for a Cognito-issued
+#     M2M JWT via AgentCore Identity (M2M / client_credentials grant) and
+#     forwards that JWT as the Bearer header on MCP tool calls. The
+#     authorizer accepts JWTs whose ``client_id`` matches the M2M app
+#     client provisioned in module.auth.
 #   * one gateway target per tool the agent is allowed to call
 #
 # AWS recommends a separate gateway per agent (clean blast radius, separate
@@ -46,8 +51,8 @@ resource "aws_bedrockagentcore_gateway" "agent" {
 
   authorizer_configuration {
     custom_jwt_authorizer {
-      discovery_url    = var.cognito_discovery_url
-      allowed_audience = var.cognito_audience
+      discovery_url   = var.cognito_discovery_url
+      allowed_clients = [var.cognito_gateway_m2m_client_id]
     }
   }
 
@@ -97,7 +102,7 @@ resource "aws_bedrockagentcore_gateway_target" "artifact_tool" {
               property {
                 name        = "op"
                 type        = "string"
-                description = "Operation: put_artifact | get_artifact | list_artifacts | read_memory_md | write_memory_md."
+                description = "Operation: put_artifact | get_artifact | list_artifacts | read_memory_md | write_memory_md | read_stack_profile_md."
                 required    = true
               }
               property {
