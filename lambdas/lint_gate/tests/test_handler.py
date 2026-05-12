@@ -282,10 +282,6 @@ def test_run_gate_infrastructure_failure_sandbox_error_field(
 # ---------------------------------------------------------------------------
 
 
-def _collect_published() -> list[Any]:
-    return []
-
-
 def test_handler_emits_passed_event(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(handler_mod, "invoke_repo_helper", _fake_repo_helper)
     published: list[Any] = []

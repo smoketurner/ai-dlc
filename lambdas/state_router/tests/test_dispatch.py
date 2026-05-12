@@ -19,6 +19,7 @@ from state_router.actions import (
     CompoundAction,
     EmitEvent,
     InvokeAgent,
+    InvokeLambda,
     InvokeRepoHelper,
     Noop,
     OpenImplPr,
@@ -373,8 +374,7 @@ class TestRunTasksComplete:
             tasks=(make_task(TaskState.pr_open), make_task(TaskState.pr_open, task_id="T-002")),
         )
         action = decide(run)
-        assert isinstance(action, InvokeRepoHelper)
-        assert action.op == "run_lint_gate"
+        assert isinstance(action, InvokeLambda)
         assert action.function_name == "ai-dlc-lint-gate"
         assert action.advance_from == RunState.tasks_complete.value
         assert action.advance_to == RunState.lint_gate_running.value

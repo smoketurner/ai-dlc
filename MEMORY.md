@@ -16,7 +16,7 @@ ai-dlc is the agentic SDLC platform itself. Eight agents (Architect, Critic, Imp
 - Replace, don't deprecate: when a new implementation supersedes an old one, remove the old one entirely.
 - **Spec-driven**: every feature ships as a three-document spec under `docs/specs/{slug}/{requirements,design,tasks}.md`. The Architect writes the spec; reviewers approve it as a bundle (one HITL gate). The Implementer works the `tasks.md` checklist, opening **one PR per task**.
 - Markdown everywhere: requirements, design, tasks, ADRs, MEMORY.md.
-- Every Python Lambda depends on `aws-lambda-powertools==3.28.0` and uses its `Logger` / `Tracer` / `Metrics` / `event_source` primitives in place of stdlib `logging`.
+- Every Python Lambda depends on `aws-lambda-powertools==3.29.0` and uses its `Logger` / `Tracer` / `Metrics` / `event_source` primitives in place of stdlib `logging`.
 - Prefer `terraform-aws-modules/*/aws` community modules over bespoke wrappers for AWS resources. Bespoke code only where the community module doesn't cover the surface (e.g., project-specific security-group rules, the EventBridge schema registry).
 - In every Terraform module: `data` blocks live in `data.tf`, `locals` in `locals.tf`. Resource files (`lambdas.tf`, `sqs.tf`, etc.) contain only `resource` blocks.
 - Don't underscore-prefix module-private names by default. Plain names everywhere. Reach for `_` only when it carries real information (`_unused_arg`, shadow-avoidance).

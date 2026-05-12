@@ -30,6 +30,7 @@ from state_router.actions import (
     CompoundAction,
     EmitEvent,
     InvokeAgent,
+    InvokeLambda,
     InvokeRepoHelper,
     Noop,
     OpenImplPr,
@@ -601,8 +602,8 @@ def handle_tasks_complete(run: Run) -> Action:
     fn = lint_gate_function_name()
     if not fn:
         return Noop("lint_gate Lambda not yet provisioned")
-    return InvokeRepoHelper(
-        op="run_lint_gate",
+    return InvokeLambda(
+        function_name=fn,
         args={
             "project_slug": run.project_slug,
             "spec_slug": run.spec_slug,
@@ -610,7 +611,6 @@ def handle_tasks_complete(run: Run) -> Action:
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
         },
-        function_name=fn,
         target_pk=f"RUN#{run.run_id}",
         target_sk="STATE",
         advance_from=RunState.tasks_complete.value,

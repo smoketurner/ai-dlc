@@ -40,6 +40,7 @@ from state_router.actions import (
     EmitEvent,
     GuardedAdvance,
     InvokeAgent,
+    InvokeLambda,
     InvokeRepoHelper,
     Noop,
     OpenImplPr,
@@ -306,6 +307,53 @@ def execute_invoke_repo_helper(run: Run, action: InvokeRepoHelper) -> None:
         advance_from=action.advance_from,
         advance_to=advance_to,
         extra_attrs=extra_attrs,
+    )
+
+
+def execute_invoke_lambda(run: Run, action: InvokeLambda) -> None:
+    """Synchronous Lambda invoke with a raw JSON payload.
+
+    Unlike :func:`execute_invoke_repo_helper`, the payload is the
+    ``action.args`` dict serialised directly — no op-dispatch envelope.
+    The response must carry ``ok: true`` for the state advance to proceed.
+    Failure bumps the run's ``dispatch_failure_count`` and enqueues a retry
+    beacon, matching the repo_helper failure path.
+    """
+    if not action.function_name:
+        logger.warning("invoke_lambda: no function_name")
+        return
+    response = lambda_client().invoke(
+        FunctionName=action.function_name,
+        InvocationType="RequestResponse",
+        Payload=json.dumps(action.args).encode("utf-8"),
+    )
+    body = json.loads(response["Payload"].read().decode("utf-8") or "{}")
+    if not body.get("ok"):
+        logger.warning(
+            "invoke_lambda failed",
+            extra={"function_name": action.function_name, "body": body},
+        )
+        if action.target_pk and action.target_sk and action.advance_from:
+            transactional_advance(
+                run_id=run.run_id,
+                project_slug=run.project_slug,
+                target_pk=action.target_pk,
+                target_sk=action.target_sk,
+                advance_from=action.advance_from,
+                advance_to=action.advance_from,
+                extra_attrs={"last_dispatch_failure_at": now_iso()},
+                extra_increments={"dispatch_failure_count": 1},
+            )
+        return
+    if not action.target_pk or not action.advance_from or not action.advance_to:
+        return
+    transactional_advance(
+        run_id=run.run_id,
+        project_slug=run.project_slug,
+        target_pk=action.target_pk,
+        target_sk=action.target_sk or "STATE",
+        advance_from=action.advance_from,
+        advance_to=action.advance_to,
     )
 
 
@@ -630,6 +678,7 @@ EXECUTORS: dict[type[Action], Any] = {
     InvokeAgent: lambda run, a: execute_invoke_agent(run, a),  # noqa: PLW0108
     EmitEvent: execute_emit_event,
     InvokeRepoHelper: lambda run, a: execute_invoke_repo_helper(run, a),  # noqa: PLW0108
+    InvokeLambda: lambda run, a: execute_invoke_lambda(run, a),  # noqa: PLW0108
     DedupedAdvisors: lambda run, a: execute_deduped_advisors(run, a),  # noqa: PLW0108
     OpenImplPr: lambda run, a: execute_open_impl_pr(run, a),  # noqa: PLW0108
     WriteSyntheticSpec: lambda run, a: execute_write_synthetic_spec(run, a),  # noqa: PLW0108

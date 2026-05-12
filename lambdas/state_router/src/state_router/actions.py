@@ -110,6 +110,24 @@ class InvokeRepoHelper:
 
 
 @dataclass(frozen=True, slots=True)
+class InvokeLambda:
+    """Synchronous Lambda invoke with a raw JSON payload.
+
+    Used for Lambdas that expect a flat input shape (e.g., lint_gate)
+    rather than the repo_helper op-dispatch envelope. The payload is
+    serialised as-is and the response must carry ``ok: true`` for the
+    state advance to proceed.
+    """
+
+    function_name: str
+    args: dict[str, Any]
+    target_pk: str | None = None
+    target_sk: str | None = None
+    advance_from: str | None = None
+    advance_to: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class WriteSyntheticSpec:
     """Upload a 1-task synthetic spec bundle for non-``spec_driven`` workflows.
 
@@ -257,6 +275,7 @@ type Action = (
     | InvokeAgent
     | EmitEvent
     | InvokeRepoHelper
+    | InvokeLambda
     | DedupedAdvisors
     | OpenImplPr
     | WriteSyntheticSpec
