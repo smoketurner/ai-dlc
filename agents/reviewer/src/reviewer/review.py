@@ -10,8 +10,10 @@ comment is attempted on the PR via ``repo_helper.comment_pr``.
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Annotated, Literal
 
+from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.validators import NoneSafeList
@@ -26,6 +28,21 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
 
+class ReviewSummary(_Frozen):
+    """Structured top-of-review summary — bulleted in the rendered output.
+
+    Mirrors the high-quality bug-report pattern: lead with what the diff
+    does, then (if requesting changes) the bug, the actual-vs-expected
+    behaviour, and the impact. ``issue`` and ``actual_vs_expected`` are
+    optional so an ``approve`` review can omit them.
+    """
+
+    context: Annotated[str, Field(min_length=1, max_length=1024)]
+    issue: Annotated[str, Field(max_length=1024)] | None = None
+    actual_vs_expected: Annotated[str, Field(max_length=1024)] | None = None
+    impact: Annotated[str, Field(min_length=1, max_length=1024)]
+
+
 class ReviewComment(_Frozen):
     """One comment the Reviewer would post on the PR.
 
@@ -35,6 +52,12 @@ class ReviewComment(_Frozen):
     class / test name. ``symbol`` and ``line`` are optional because not
     every comment can be pinned to a specific element (e.g., file-level
     notes).
+
+    ``language`` + ``code_excerpt`` render the offending code as a
+    fenced block; ``suggested_code`` renders the proposed fix as a
+    second fenced block. ``references`` is a free-form list of
+    citations — RFC numbers, doc URLs, "see services/X/y.py for the
+    established pattern", etc.
     """
 
     severity: Severity
@@ -43,6 +66,12 @@ class ReviewComment(_Frozen):
     line: Annotated[int, Field(ge=1)] | None = None
     description: Annotated[str, Field(min_length=1, max_length=1024)]
     suggestion: Annotated[str, Field(min_length=1, max_length=1024)]
+    language: Annotated[str, Field(max_length=32)] | None = None
+    code_excerpt: Annotated[str, Field(max_length=4096)] | None = None
+    suggested_code: Annotated[str, Field(max_length=4096)] | None = None
+    references: Annotated[NoneSafeList[str], Field(max_length=8)] = Field(
+        default_factory=list,
+    )
 
 
 class Review(_Frozen):
@@ -50,7 +79,7 @@ class Review(_Frozen):
 
     task_id: Annotated[str, Field(min_length=1, max_length=32)]
     verdict: Verdict
-    summary: Annotated[str, Field(min_length=1, max_length=2048)]
+    summary: ReviewSummary
     comments: Annotated[NoneSafeList[ReviewComment], Field(max_length=64)] = Field(
         default_factory=list,
     )
@@ -73,31 +102,22 @@ def severity_counts(review: Review) -> dict[Severity, int]:
     return counts
 
 
+@cache
+def template_env() -> Environment:
+    """Cached Jinja environment loading templates from ``reviewer/templates/``."""
+    return Environment(
+        loader=PackageLoader("reviewer", "templates"),
+        autoescape=select_autoescape(disabled_extensions=("md", "j2"), default=False),
+        undefined=StrictUndefined,
+    )
+
+
 def render_review(review: Review) -> str:
-    """Render the review as a Markdown document."""
-    counts = severity_counts(review)
-    lines = [
-        f"# Review — `{review.task_id}`",
-        "",
-        f"> Verdict: **{review.verdict}** · "
-        f"{counts['high']} high · {counts['medium']} medium · {counts['low']} low",
-        "",
-        "## Summary",
-        "",
-        review.summary,
-        "",
-    ]
-    if review.comments:
-        lines += ["## Comments", ""]
-        for ix, comment in enumerate(review.comments, start=1):
-            lines.append(f"### {ix}. [{comment.severity}] `{comment_anchor(comment)}`")
-            lines.append("")
-            lines.append(f"**Issue:** {comment.description}")
-            lines.append("")
-            lines.append(f"**Suggestion:** {comment.suggestion}")
-            lines.append("")
-    if review.strengths:
-        lines += ["## Strengths", ""]
-        lines += [f"- {item}" for item in review.strengths]
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    """Render the review as Markdown — used for both the S3 artifact and PR comment."""
+    template = template_env().get_template("review.md.j2")
+    body = template.render(
+        review=review,
+        counts=severity_counts(review),
+        anchor=comment_anchor,
+    )
+    return body.rstrip() + "\n"

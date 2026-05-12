@@ -190,7 +190,7 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     )
 
     clone_repo(session)
-    checkout_task_branch(task_branch)
+    checkout_task_branch(task_branch, impl_branch_fallback=impl_branch)
     fetch_spec(payload.spec_s3_prefix)
     task = load_task(payload)
 

@@ -1,0 +1,59 @@
+# Test report — `{{ report.task_id }}`
+
+> **{{ gap_count }}** gap(s) · **{{ suggestion_count }}** suggestion(s)
+
+## Summary
+
+- **Context:** {{ report.summary.context }}
+- **Coverage gap:** {{ report.summary.coverage_gap }}
+- **Risk:** {{ report.summary.risk }}
+{%- if report.gaps %}
+
+## Gaps
+{%- for gap in report.gaps %}
+
+### {{ loop.index }}. `{{ anchor(gap) }}`
+
+{{ gap.description }}
+{%- if gap.code_excerpt %}
+
+```{{ gap.language or '' }}
+{{ gap.code_excerpt }}
+```
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- if report.suggestions %}
+
+## Suggested tests
+{%- for suggestion in report.suggestions %}
+
+### {{ loop.index }}. `{{ suggestion.name }}` ({{ suggestion.test_kind }})
+
+- **Given** {{ suggestion.given }}
+- **When** {{ suggestion.when }}
+- **Then** {{ suggestion.then }}
+- **Covers:** {% for cover in suggestion.covers %}`{{ cover }}`{% if not loop.last %}, {% endif %}{% endfor %}
+{%- if suggestion.proposed_test_code %}
+
+```{{ suggestion.language or '' }}
+{{ suggestion.proposed_test_code }}
+```
+{%- endif %}
+{%- if suggestion.references %}
+
+**References:**
+{% for ref in suggestion.references -%}
+- {{ ref }}
+{% endfor -%}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- if report.strengths %}
+
+## Strengths
+
+{% for item in report.strengths -%}
+- {{ item }}
+{% endfor -%}
+{%- endif %}

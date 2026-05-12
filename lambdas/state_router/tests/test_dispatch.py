@@ -24,6 +24,7 @@ from state_router.actions import (
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
+    OpenImplPr,
     SeedTasks,
     WriteSyntheticSpec,
 )
@@ -47,6 +48,8 @@ def make_run(  # noqa: PLR0913
     task_ids: tuple[str, ...] = (),
     tasks: tuple[Task, ...] = (),
     triggering_comment_body: str | None = None,
+    pr_url: str | None = None,
+    spec_pr_url: str | None = None,
 ) -> Run:
     """Build a Run with sane defaults for tests."""
     return Run(
@@ -67,6 +70,8 @@ def make_run(  # noqa: PLR0913
         issue_labels=issue_labels,
         spec_slug=spec_slug,
         spec_s3_prefix=spec_s3_prefix,
+        pr_url=pr_url,
+        spec_pr_url=spec_pr_url,
         task_ids=task_ids,
         tasks=tasks,
         triggering_comment_body=triggering_comment_body,
@@ -333,6 +338,27 @@ class TestRunTasksInProgress:
         invokes = [a for a in action.actions if isinstance(a, InvokeAgent)]
         assert len(invokes) == 1
         assert "implementer" in invokes[0].runtime_arn
+
+    def test_opens_impl_pr_when_pr_open_task_has_no_run_pr_url(self) -> None:
+        """First task hits ``pr_open`` → run-level ``OpenImplPr`` fires.
+
+        Regression for the case where the spec PR URL leaked into
+        ``run.pr_url`` and blocked ``impl_pr_actions`` from opening the
+        impl PR. With ``spec_pr_url`` now a separate field, ``pr_url``
+        is empty after SPEC.APPROVED so the open-or-update branch picks
+        ``OpenImplPr``.
+        """
+        run = make_run(
+            state=RunState.tasks_in_progress,
+            spec_slug="demo",
+            spec_pr_url="https://github.com/owner/repo/pull/9",
+            tasks=(make_task(TaskState.pr_open, pr_url=None),),
+        )
+        action = decide(run)
+        assert isinstance(action, CompoundAction)
+        opens = [a for a in action.actions if isinstance(a, OpenImplPr)]
+        assert len(opens) == 1
+        assert opens[0].base == "main"
 
 
 class TestRunTasksComplete:

@@ -32,7 +32,7 @@ from common.events import EventEnvelope, ReviewReady
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ReviewerInput, ReviewerResult, usage_from_strands
 from reviewer.agent import build_agent, model_id, review_pr
-from reviewer.review import Review, render_review, severity_counts
+from reviewer.review import Review, ReviewSummary, render_review, severity_counts
 from reviewer.tools import write_review
 
 if TYPE_CHECKING:
@@ -100,7 +100,7 @@ def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
             high_severity_count=counts["high"],
             medium_severity_count=counts["medium"],
             low_severity_count=counts["low"],
-            summary=review.summary[:2048],
+            summary=event_summary(review.summary),
             session_id=f"{payload.run_id}-{payload.task_id}-reviewer",
             **usage_from_strands(agent, model_id=model_id()),
         )
@@ -125,6 +125,17 @@ def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
 def upload_review(review: Review, *, run_id: str, task_id: str) -> None:
     """Render and upload the review Markdown to S3."""
     write_review(run_id=run_id, task_id=task_id, content=render_review(review))
+
+
+def event_summary(summary: ReviewSummary) -> str:
+    """Flatten the structured summary to a single string for the REVIEW.READY event."""
+    parts = [f"Context: {summary.context}"]
+    if summary.issue:
+        parts.append(f"Issue: {summary.issue}")
+    if summary.actual_vs_expected:
+        parts.append(f"Actual vs. expected: {summary.actual_vs_expected}")
+    parts.append(f"Impact: {summary.impact}")
+    return " | ".join(parts)[:2048]
 
 
 def publish_review_ready(payload: ReviewerInput, result: ReviewerResult) -> None:
@@ -176,7 +187,7 @@ def post_pr_comment(*, payload: ReviewerInput, review: Review) -> None:
     if parsed is None:
         logger.warning("could not parse pr_url for comment", pr_url=payload.pr_url)
         return
-    body = format_comment(review)
+    body = render_review(review)
     try:
         lambda_client().invoke(
             FunctionName=fn,
@@ -195,16 +206,6 @@ def post_pr_comment(*, payload: ReviewerInput, review: Review) -> None:
         )
     except Exception as exc:
         logger.warning("comment_pr failed", err=str(exc), pr_url=payload.pr_url)
-
-
-def format_comment(review: Review) -> str:
-    """Render the Reviewer's PR comment body."""
-    counts = severity_counts(review)
-    header = (
-        f"### ai-dlc reviewer — verdict: **{review.verdict}** "
-        f"({counts['high']} high · {counts['medium']} medium · {counts['low']} low)"
-    )
-    return f"{header}\n\n{review.summary}\n"
 
 
 if __name__ == "__main__":

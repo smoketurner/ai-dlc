@@ -104,7 +104,7 @@ class InvokeRepoHelper:
     advance_from: str | None = None
     advance_to: str | None = None
     advance_on_no_change_to: str | None = None
-    record_pr_url_attr: str | None = None
+    record_pr_url_attrs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from tester.report import (
     Gap,
     Report,
+    ReportSummary,
     Suggestion,
     gap_count,
     render_report,
@@ -43,6 +44,14 @@ def make_report(*, with_findings: bool = True) -> Report:
                 when="I GET /healthz with no Authorization header",
                 then="the response is 200 with body {ok: true}",
                 covers=["AC-R-001-a"],
+                language="python",
+                proposed_test_code=(
+                    "def test_healthz_returns_200_without_auth(client) -> None:\n"
+                    "    resp = client.get('/healthz')\n"
+                    "    assert resp.status_code == 200\n"
+                    "    assert resp.json() == {'ok': True}"
+                ),
+                references=["see services/dashboard/tests/test_health.py — auth-bypass pattern"],
             ),
             Suggestion(
                 name="test_healthz_returns_503_when_db_down",
@@ -58,7 +67,14 @@ def make_report(*, with_findings: bool = True) -> Report:
     )
     return Report(
         task_id="T-001",
-        summary="Coverage exists for the happy path; the unauth + db-down paths are missing.",
+        summary=ReportSummary(
+            context="Adds a /healthz liveness route on the dashboard service.",
+            coverage_gap="No test exercises the unauthenticated or database-down paths.",
+            risk=(
+                "A degraded service would be marked healthy by upstream probes, "
+                "delaying detection of outages."
+            ),
+        ),
         gaps=gaps,
         suggestions=suggestions,
         strengths=["Existing test asserts response schema."],
@@ -113,9 +129,16 @@ def test_render_report_includes_gaps_and_suggestions() -> None:
     out = render_report(make_report())
     assert "# Test report — `T-001`" in out
     assert "**2** gap(s) · **2** suggestion(s)" in out
+    assert "- **Context:** Adds a /healthz liveness route" in out
+    assert "- **Coverage gap:** No test exercises the unauthenticated" in out
+    assert "- **Risk:** A degraded service would be marked healthy" in out
     assert "docs/specs/add-healthz/requirements.md (AC-R-001-a)" in out
     assert "### 1. `test_healthz_returns_200_without_auth` (integration)" in out
     assert "**Covers:** `AC-R-001-a`" in out
+    assert "```python" in out
+    assert "def test_healthz_returns_200_without_auth(client)" in out
+    assert "**References:**" in out
+    assert "- see services/dashboard/tests/test_health.py — auth-bypass pattern" in out
     assert "## Strengths" in out
     assert out.endswith("\n")
 
@@ -125,6 +148,7 @@ def test_render_report_skips_sections_when_empty() -> None:
     assert "## Gaps" not in out
     assert "## Suggested tests" not in out
     assert "## Strengths" in out
+    assert "```" not in out
 
 
 def test_report_is_frozen() -> None:

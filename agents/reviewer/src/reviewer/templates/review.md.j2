@@ -1,0 +1,53 @@
+# Review — `{{ review.task_id }}`
+
+> Verdict: **{{ review.verdict }}** · {{ counts.high }} high · {{ counts.medium }} medium · {{ counts.low }} low
+
+## Summary
+
+- **Context:** {{ review.summary.context }}
+{%- if review.summary.issue %}
+- **Issue:** {{ review.summary.issue }}
+{%- endif %}
+{%- if review.summary.actual_vs_expected %}
+- **Actual vs. expected:** {{ review.summary.actual_vs_expected }}
+{%- endif %}
+- **Impact:** {{ review.summary.impact }}
+{%- if review.comments %}
+
+## Comments
+{%- for comment in review.comments %}
+
+### {{ loop.index }}. [{{ comment.severity }}] `{{ anchor(comment) }}`
+
+**Issue:** {{ comment.description }}
+{%- if comment.code_excerpt %}
+
+```{{ comment.language or '' }}
+{{ comment.code_excerpt }}
+```
+{%- endif %}
+
+**Suggestion:** {{ comment.suggestion }}
+{%- if comment.suggested_code %}
+
+```{{ comment.language or '' }}
+{{ comment.suggested_code }}
+```
+{%- endif %}
+{%- if comment.references %}
+
+**References:**
+{% for ref in comment.references -%}
+- {{ ref }}
+{% endfor -%}
+{%- endif %}
+{%- endfor %}
+{%- endif %}
+{%- if review.strengths %}
+
+## Strengths
+
+{% for item in review.strengths -%}
+- {{ item }}
+{% endfor -%}
+{%- endif %}

@@ -114,7 +114,7 @@ def open_spec_pr_invoke() -> InvokeRepoHelper:
         advance_from=RunState.spec_critiqued.value,
         advance_to=RunState.spec_pr_open.value,
         advance_on_no_change_to=RunState.spec_approved.value,
-        record_pr_url_attr="pr_url",
+        record_pr_url_attrs=("pr_url", "spec_pr_url"),
     )
 
 

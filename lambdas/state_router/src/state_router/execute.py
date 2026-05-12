@@ -372,13 +372,13 @@ def build_extra_attrs(action: InvokeRepoHelper, body: dict[str, Any]) -> dict[st
     ``{"ok": true, "op": ..., "result": {...}}`` — so the PR URL lives
     under ``result.pr_url``, not at the top level.
     """
-    if not action.record_pr_url_attr:
+    if not action.record_pr_url_attrs:
         return {}
     result = body.get("result") or {}
     pr_url = result.get("pr_url") if isinstance(result, dict) else None
     if not isinstance(pr_url, str) or not pr_url:
         return {}
-    return {action.record_pr_url_attr: pr_url}
+    return dict.fromkeys(action.record_pr_url_attrs, pr_url)
 
 
 def execute_write_synthetic_spec(run: Run, action: WriteSyntheticSpec) -> None:

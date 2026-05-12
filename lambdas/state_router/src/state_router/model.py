@@ -58,6 +58,7 @@ class Run:
     triggering_commenter: str | None = None
     spec_slug: str | None = None
     spec_s3_prefix: str | None = None
+    spec_pr_url: str | None = None
     pr_url: str | None = None
     synthetic_spec_slug: str | None = None
     task_ids: tuple[str, ...] = ()
@@ -135,6 +136,7 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         triggering_commenter=data.get("triggering_commenter"),
         spec_slug=data.get("spec_slug"),
         spec_s3_prefix=data.get("spec_s3_prefix"),
+        spec_pr_url=data.get("spec_pr_url"),
         pr_url=data.get("pr_url"),
         synthetic_spec_slug=data.get("synthetic_spec_slug"),
         task_ids=as_str_tuple(data.get("task_ids")),

@@ -32,7 +32,13 @@ from common.events import EventEnvelope, TestReportReady
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TesterInput, TesterResult, usage_from_strands
 from tester.agent import analyze_gaps, build_agent, model_id
-from tester.report import Report, gap_count, render_report, suggestion_count
+from tester.report import (
+    Report,
+    ReportSummary,
+    gap_count,
+    render_report,
+    suggestion_count,
+)
 from tester.tools import write_report
 
 if TYPE_CHECKING:
@@ -96,7 +102,7 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
             pr_url=payload.pr_url,
             gap_count=gap_count(report),
             suggested_test_count=suggestion_count(report),
-            summary=report.summary[:2048],
+            summary=event_summary(report.summary),
             session_id=f"{payload.run_id}-{payload.task_id}-tester",
             **usage_from_strands(agent, model_id=model_id()),
         )
@@ -121,6 +127,13 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
 def upload_report(report: Report, *, run_id: str, task_id: str) -> None:
     """Render and upload the report Markdown to S3."""
     write_report(run_id=run_id, task_id=task_id, content=render_report(report))
+
+
+def event_summary(summary: ReportSummary) -> str:
+    """Flatten the structured summary to a single string for the TEST_REPORT.READY event."""
+    return (
+        f"Context: {summary.context} | Coverage gap: {summary.coverage_gap} | Risk: {summary.risk}"
+    )[:2048]
 
 
 def publish_test_report_ready(payload: TesterInput, result: TesterResult) -> None:
@@ -169,7 +182,7 @@ def post_pr_comment(*, payload: TesterInput, report: Report) -> None:
     if parsed is None:
         logger.warning("could not parse pr_url for comment", pr_url=payload.pr_url)
         return
-    body = format_comment(report)
+    body = render_report(report)
     try:
         lambda_client().invoke(
             FunctionName=fn,
@@ -188,15 +201,6 @@ def post_pr_comment(*, payload: TesterInput, report: Report) -> None:
         )
     except Exception as exc:
         logger.warning("comment_pr failed", err=str(exc), pr_url=payload.pr_url)
-
-
-def format_comment(report: Report) -> str:
-    """Render the Tester's PR comment body."""
-    header = (
-        f"### ai-dlc tester — **{gap_count(report)}** test gap(s) · "
-        f"**{suggestion_count(report)}** suggested test(s)"
-    )
-    return f"{header}\n\n{report.summary}\n"
 
 
 if __name__ == "__main__":

@@ -566,6 +566,8 @@ def apply_run_state_advance(
     if event_type == "SPEC.READY" and mode.from_state == RunState.architect_running:
         update.set("pending_spec_feedback", [])
         update.remove("spec_delivery_ids")
+    if mode.from_state == RunState.spec_pr_open:
+        update.remove("pr_url")
 
 
 def apply_spec_feedback_accumulator(

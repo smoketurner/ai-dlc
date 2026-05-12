@@ -412,15 +412,35 @@ def parse_pr_number(pr_url: str) -> int:
     return int(match.group(1))
 
 
-def checkout_task_branch(branch: str) -> None:
+def checkout_task_branch(branch: str, *, impl_branch_fallback: str | None = None) -> None:
     """Fetch + check out an existing task branch (iteration mode).
 
-    Used when ``iteration_count > 0``. The branch exists on origin from
-    the prior implementer run; we want HEAD to land on top of it (rather
-    than recreating from main, which is what ``create_branch`` does for
-    iteration_count == 0). Idempotent — ``-B`` recreates the local ref.
+    Used when ``iteration_count > 0``. The branch normally exists on
+    origin from the prior implementer run; we want HEAD to land on top
+    of it (rather than recreating from main, which is what
+    ``create_branch`` does for iteration_count == 0). Idempotent —
+    ``-B`` recreates the local ref.
+
+    ``impl_branch_fallback`` handles the post-merge-iteration case: the
+    prior task PR was merged into the impl branch and GitHub auto-
+    deleted the task branch (``delete_head_on_merge=True``). The fetch
+    fails; we recreate the task branch from the impl branch HEAD so
+    iteration can land on top of the merged code. Without the fallback,
+    a missing task branch raises ``RuntimeError`` and aborts the run.
     """
-    run_git("fetch", "origin", branch)
+    try:
+        run_git("fetch", "origin", branch)
+    except RuntimeError:
+        if impl_branch_fallback is None:
+            raise
+        logger.info(
+            "task branch missing on origin; recreating from impl branch",
+            task_branch=branch,
+            impl_branch=impl_branch_fallback,
+        )
+        run_git("fetch", "origin", impl_branch_fallback)
+        run_git("checkout", "-B", branch, f"origin/{impl_branch_fallback}")
+        return
     run_git("checkout", "-B", branch, f"origin/{branch}")
 
 

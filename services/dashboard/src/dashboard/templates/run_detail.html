@@ -136,32 +136,46 @@
   {% endif %}
   <ul class="bg-white shadow-sm rounded divide-y">
     {% for ev in events %}
-    <li class="px-4 py-3 text-sm flex items-baseline gap-3 flex-wrap">
-      <span class="text-slate-400 font-mono text-xs">{{ ev.timestamp }}</span>
-      <span class="font-semibold">{{ ev.type }}</span>
-      <span class="text-slate-600 truncate flex-1 min-w-0" title="{{ ev.payload }}">{{ ev.payload | tojson }}</span>
-      {% if ev.links %}
-      <span class="ml-auto flex items-baseline gap-2">
-        {% for link in ev.links %}
-        <a href="{{ link.url }}" target="_blank" rel="noopener"
-           class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono">{{ link.label }}</a>
-        {% endfor %}
-      </span>
-      {% endif %}
+    <li class="px-4 py-3 text-sm" x-data="{ open: false }">
+      <div class="flex items-baseline gap-3 min-w-0">
+        <span class="text-slate-400 font-mono text-xs shrink-0">{{ ev.timestamp }}</span>
+        <span class="font-semibold shrink-0">{{ ev.type }}</span>
+        <span @click="open = !open"
+              class="text-slate-600 truncate flex-1 min-w-0 cursor-pointer hover:text-slate-900 select-none"
+              :title="open ? 'Click to collapse' : 'Click to expand'">{{ ev.payload | tojson }}</span>
+        {% if ev.links %}
+        <span class="flex items-baseline gap-2 shrink-0">
+          {% for link in ev.links %}
+          <a href="{{ link.url }}" target="_blank" rel="noopener"
+             class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono">{{ link.label }}</a>
+          {% endfor %}
+        </span>
+        {% endif %}
+      </div>
+      <pre x-show="open" x-cloak
+           class="mt-2 whitespace-pre-wrap break-all bg-slate-50 p-2 rounded text-xs font-mono text-slate-700">{{ ev.payload | tojson(indent=2) }}</pre>
     </li>
     {% endfor %}
     <template x-for="ev in liveEvents" :key="ev.event_id">
-      <li class="px-4 py-3 text-sm flex items-baseline gap-3 bg-emerald-50 flex-wrap">
-        <span class="text-slate-400 font-mono text-xs" x-text="ev.timestamp"></span>
-        <span class="font-semibold" x-text="ev.type"></span>
-        <span class="text-slate-600 truncate flex-1 min-w-0" x-text="JSON.stringify(ev.payload)"></span>
-        <span class="ml-auto flex items-baseline gap-2" x-show="ev.links && ev.links.length">
-          <template x-for="link in ev.links" :key="link.url">
-            <a :href="link.url" target="_blank" rel="noopener"
-               x-text="link.label"
-               class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono"></a>
-          </template>
-        </span>
+      <li class="px-4 py-3 text-sm bg-emerald-50" x-data="{ open: false }">
+        <div class="flex items-baseline gap-3 min-w-0">
+          <span class="text-slate-400 font-mono text-xs shrink-0" x-text="ev.timestamp"></span>
+          <span class="font-semibold shrink-0" x-text="ev.type"></span>
+          <span @click="open = !open"
+                class="text-slate-600 truncate flex-1 min-w-0 cursor-pointer hover:text-slate-900 select-none"
+                :title="open ? 'Click to collapse' : 'Click to expand'"
+                x-text="JSON.stringify(ev.payload)"></span>
+          <span class="flex items-baseline gap-2 shrink-0" x-show="ev.links && ev.links.length">
+            <template x-for="link in ev.links" :key="link.url">
+              <a :href="link.url" target="_blank" rel="noopener"
+                 x-text="link.label"
+                 class="px-2 py-0.5 rounded text-xs bg-sky-100 text-sky-800 hover:bg-sky-200 font-mono"></a>
+            </template>
+          </span>
+        </div>
+        <pre x-show="open" x-cloak
+             class="mt-2 whitespace-pre-wrap break-all bg-slate-50 p-2 rounded text-xs font-mono text-slate-700"
+             x-text="JSON.stringify(ev.payload, null, 2)"></pre>
       </li>
     </template>
   </ul>

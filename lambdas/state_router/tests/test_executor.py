@@ -261,7 +261,7 @@ def make_open_spec_pr_action() -> InvokeRepoHelper:
         advance_from=RunState.spec_critiqued.value,
         advance_to=RunState.spec_pr_open.value,
         advance_on_no_change_to=RunState.spec_approved.value,
-        record_pr_url_attr="pr_url",
+        record_pr_url_attrs=("pr_url", "spec_pr_url"),
     )
 
 
@@ -353,7 +353,10 @@ def test_execute_invoke_repo_helper_records_pr_url_on_normal_path() -> None:
         execute_invoke_repo_helper(make_run(), action)
     advance.assert_called_once()
     assert advance.call_args.kwargs["advance_to"] == RunState.spec_pr_open.value
-    assert advance.call_args.kwargs["extra_attrs"] == {"pr_url": "https://github.com/o/r/pull/9"}
+    assert advance.call_args.kwargs["extra_attrs"] == {
+        "pr_url": "https://github.com/o/r/pull/9",
+        "spec_pr_url": "https://github.com/o/r/pull/9",
+    }
 
 
 def test_execute_invoke_repo_helper_failure_bumps_counter_and_enqueues_retry() -> None:
