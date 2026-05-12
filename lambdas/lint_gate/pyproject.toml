@@ -1,0 +1,20 @@
+[project]
+name = "lint-gate"
+version = "0.0.0"
+description = "Deterministic lint/typecheck gate Lambda — runs ruff + ty on the impl branch before LLM validators fire."
+requires-python = ">=3.13,<3.15"
+dependencies = [
+    "aws-lambda-powertools[tracer]==3.29.0",
+    "bedrock-agentcore==1.9.0",
+    "boto3==1.43.6",
+    "botocore==1.43.6",
+    "common",
+    "pydantic==2.13.4",
+]
+
+[tool.uv.sources]
+common = { workspace = true }
+
+[build-system]
+requires = ["uv_build>=0.11"]
+build-backend = "uv_build"
