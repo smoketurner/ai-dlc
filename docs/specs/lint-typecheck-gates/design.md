@@ -4,81 +4,91 @@
 
 ## Approach
 
-Add a `lint_gate` module to the implementer agent that runs deterministic subprocess checks (ruff check, ty check) after the agent session completes. The gate is called from `execute_initial` and `execute_iteration` in `client.py` between the `drive_agent` call and the `finalize_task_branch` / merge step. On failure, the gate returns structured diagnostics; the caller re-invokes `drive_agent` with a lint-fix prompt up to MAX_LINT_RETRIES times. The gate is a pure function of the working tree — no network, no DDB, no state machine changes. The retry loop lives entirely inside the implementer's existing async flow, invisible to the state router.
+Add a quality gate module (`agents/implementer/src/implementer/quality_gate.py`) that runs deterministic static-analysis commands against the working tree after the agent's Claude session completes but before `finalize_task_branch` commits and pushes. The gate reads commands from the target repo's `StackProfile` (already computed by `packages/common/src/common/stack_discovery.py`). On failure, the implementer gets one automatic retry turn (a constrained Claude sub-session with the failure output as context, similar to the existing conflict-resolver pattern). If the retry also fails the gate, the task is blocked.
+
+The gate runs inside the existing implementer container — no new Lambda, no new state machine state, no new EventBridge event. It's a pure in-process check between the agent's edit session and the commit+push step. This keeps the change minimal and avoids adding orchestration complexity.
+
+The gate commands default to the ai-dlc project's own Makefile targets (`uv run ruff check .`, `uv run ruff format --check .`, `uv run ty check`) when the target repo is ai-dlc itself, and fall back to `StackProfile.lint_command` / `StackProfile.format_command` for external repos. A missing profile or missing commands means the gate is skipped.
 
 ## Components
 
-- **LintGate** (`agents/implementer/src/implementer/lint_gate.py`) — Runs ruff check and ty check as subprocesses against the repo working tree; returns a structured LintGateResult (pass/fail, exit codes, truncated diagnostics)
-- **LintGateResult** (`agents/implementer/src/implementer/lint_gate.py`) — Frozen dataclass holding gate_pass, ruff_exit_code, ty_exit_code, ruff_output, ty_output, and a combined error summary for the retry prompt
-- **execute_initial / execute_iteration updates** (`agents/implementer/src/implementer/client.py`) — Wrap the post-agent flow in a retry loop that calls run_lint_gate() and re-invokes drive_agent with a lint-fix prompt on failure
-- **LINT_FIX_PROMPT_TEMPLATE** (`agents/implementer/src/implementer/prompts.py`) — User-prompt template for the lint-fix retry session, containing the exact ruff/ty diagnostics and instructions to fix only the reported issues
-- **lint_gate unit tests** (`agents/implementer/tests/test_lint_gate.py`) — Test the gate subprocess wrapper with mocked subprocess calls, verifying pass/fail/skip behaviour and output truncation
+- **quality_gate** (`agents/implementer/src/implementer/quality_gate.py`) — Runs lint/format/typecheck commands against the working tree and returns structured pass/fail results. Provides the retry prompt composition and the blocked-reason formatter.
+- **gate_commands** (`agents/implementer/src/implementer/gate_commands.py`) — Resolves which commands to run for a given target repo by reading the StackProfile from S3 (already fetched during stack discovery) or falling back to well-known defaults for the ai-dlc repo itself.
+- **client.py (modified)** (`agents/implementer/src/implementer/client.py`) — Integrates the quality gate into execute_initial and execute_iteration flows — calls the gate after drive_agent returns, handles retry, and threads gate failure into blocked_reason.
 
 ## Data model
 
 ```text
 ```
-@dataclass(frozen=True, slots=True)
-class LintGateResult:
-    gate_pass: bool
-    ruff_exit_code: int | None  # None when skipped (not installed)
-    ty_exit_code: int | None    # None when skipped
-    ruff_output: str            # truncated to 4096 chars
-    ty_output: str              # truncated to 4096 chars
+@dataclass(frozen=True)
+class GateCommand:
+    """One lint/typecheck command to run."""
+    name: str          # e.g. "ruff-check", "ruff-format", "ty-check"
+    command: str       # e.g. "uv run ruff check ."
+    category: str      # "lint" | "format" | "typecheck"
 
-    @property
-    def error_summary(self) -> str:
-        """Combined diagnostic output for the retry prompt."""
-        ...
+@dataclass(frozen=True)
+class GateResult:
+    """Result of running one gate command."""
+    command: GateCommand
+    exit_code: int
+    output: str        # combined stdout+stderr, truncated to 4096 chars
+    passed: bool
+
+@dataclass(frozen=True)
+class GateOutcome:
+    """Aggregate result of all gate commands."""
+    results: tuple[GateResult, ...]
+    all_passed: bool
+    retry_prompt: str | None   # composed only when all_passed is False
+    blocked_reason: str | None # composed only on second failure
 ```
 
-No new DDB attributes, no new events, no schema changes. The gate is purely internal to the implementer container.
+No database changes. No new DDB attributes. No new EventBridge events.
 ```
 
 ## Sequence
 
 ```text
-1. `execute_initial` / `execute_iteration` calls `drive_agent(user_prompt)` → agent edits code.
-2. If `compute_blocked_reason` returns non-None → skip gate (already blocked).
-3. Call `run_lint_gate()` → subprocess `uv run ruff check .` + `uv run ty check .` in repo_path().
-4. If `LintGateResult.gate_pass` → proceed to `finalize_task_branch` + merge.
-5. If not pass and `lint_retry_count < MAX_LINT_RETRIES`:
-   a. Increment `lint_retry_count`.
-   b. Compose a lint-fix prompt from `LINT_FIX_PROMPT_TEMPLATE` + `result.error_summary`.
-   c. Call `drive_agent(lint_fix_prompt)` again (same session, same branch).
-   d. Go to step 3.
-6. If not pass and retries exhausted → set `blocked_reason` to the remaining errors.
-7. `finalize_task_branch` / `finalize_iteration_branch` proceeds as before.
+1. `execute_initial` / `execute_iteration` calls `drive_agent(...)` → agent edits code, calls `finish(status='done')`.
+2. If `report.status == 'done'`, call `resolve_gate_commands(target_repo, spec_s3_prefix)` to get the list of `GateCommand`s.
+3. If no commands resolved, skip to step 7.
+4. Call `run_gate(commands, cwd=repo_path())` → returns `GateOutcome`.
+5. If `outcome.all_passed`, skip to step 7.
+6. If first attempt: compose a retry prompt from `outcome.retry_prompt`, run a constrained Claude sub-session (max 8 turns, $1 budget, same tools minus finish) that fixes the violations, then re-run the gate. If second gate run passes, proceed to step 7. If it fails, set `blocked_reason = outcome.blocked_reason`.
+7. Call `finalize_task_branch(...)` (existing flow — commit + push).
 ```
 
 ## Testing strategy
 
-Unit tests in `agents/implementer/tests/test_lint_gate.py`:
-- AC-001/AC-007: mock subprocess.run to return exit 0 for both ruff and ty; assert `gate_pass=True`.
-- AC-002: mock ruff returning exit 1 with diagnostic output; assert `gate_pass=False`, `ruff_output` populated.
-- AC-003: mock ty returning exit 1; assert `gate_pass=False`, `ty_output` populated.
-- AC-005: verify `error_summary` includes file:line:col diagnostics truncated at 4096 chars.
-- AC-009: mock ruff returning FileNotFoundError (command not found); assert `ruff_exit_code=None`, gate still runs ty, logs warning.
-- AC-006: integration-style test in `test_client.py` mocking `drive_agent` + `run_lint_gate` to fail MAX_LINT_RETRIES+1 times; assert `blocked_reason` contains lint errors.
-- AC-004: same setup but gate passes on retry 2; assert `drive_agent` called twice total, no blocked_reason.
-- AC-008: assert structlog output contains the expected gate fields (gate_pass, retry_count, exit codes).
+Unit tests in `agents/implementer/tests/test_quality_gate.py`:
+- `test_run_gate_all_pass`: mock subprocess, verify `GateOutcome.all_passed=True`.
+- `test_run_gate_lint_fails`: mock subprocess with non-zero exit, verify `GateOutcome.all_passed=False` and `retry_prompt` contains the command + output.
+- `test_run_gate_truncates_output`: verify output > 4096 chars is truncated.
+- `test_resolve_gate_commands_from_profile`: supply a `StackProfile` with lint/format commands, verify correct `GateCommand` list.
+- `test_resolve_gate_commands_no_profile`: verify empty list returned when no profile exists.
+- `test_gate_skipped_when_no_commands`: integration-level test that `execute_initial` proceeds without gate when commands list is empty.
 
-All tests use `unittest.mock.patch` on `subprocess.run` — no real ruff/ty execution needed.
+Unit tests in `agents/implementer/tests/test_gate_commands.py`:
+- `test_aidlc_self_commands`: verify the hardcoded ai-dlc commands are returned when `project_slug == 'ai-dlc'`.
+- `test_external_repo_commands`: verify StackProfile-derived commands.
+
+All tests use `subprocess` mocking (no real ruff/ty invocations). Tests live alongside existing implementer tests. Mocks: `subprocess.run` for gate execution, `s3_client().get_object` for profile fetch.
 
 ## Failure modes & mitigations
 
-- ruff or ty binary not available in the container image → gate skips that check (AC-009), logs warning. The base implementer image includes uv + the workspace deps, so ruff/ty are available for ai-dlc itself. For target repos that don't use ruff/ty, the gate degrades gracefully.
-- Subprocess hangs (infinite loop in a ruff plugin) → mitigated by subprocess timeout (30s per tool). On timeout, treat as failure and include timeout message in diagnostics.
-- Agent introduces new lint errors while fixing old ones (whack-a-mole) → bounded by MAX_LINT_RETRIES. After 2 retries the task surfaces as blocked with the remaining errors for human review.
+- Gate command hangs (e.g., ty enters an infinite loop on pathological code): mitigated by subprocess timeout (60s per command). On timeout, treat as failure and compose retry prompt.
+- Target repo has no recognized stack profile: gate is skipped entirely (AC-007), no regression.
+- Retry sub-session introduces new lint violations while fixing old ones: the second gate run catches them and blocks. The human sees both the original and new violations in blocked_reason.
 
 ## Trade-offs
 
-- Running lint/type inside the implementer container adds ~5-15s per gate invocation (two subprocess calls). Acceptable given the alternative is a full CI round-trip (2-5 minutes).
-- Re-invoking the agent on lint failure consumes additional tokens (~$0.10-0.50 per retry). Bounded by MAX_LINT_RETRIES=2 so worst case is 3x the base cost for a single task.
-- The gate only covers Python (ruff + ty). Non-Python repos skip silently. Future work can extend to eslint/tsc for Node repos.
-- The gate runs against the entire repo (not just changed files) to catch transitive type errors. This is slower but more correct — a new import can break a downstream file.
+- Running the gate inside the implementer container means the container must have the target repo's toolchain installed — for ai-dlc this is already true (uv/ruff/ty are in the base image). For external repos, the gate relies on whatever `mise install` or the sandbox bootstrap set up. If the toolchain isn't available, the gate command fails and the task blocks — acceptable because the same failure would happen in CI.
+- One retry turn adds ~$1 of model cost per gate failure. This is much cheaper than a full iteration cycle ($5+ per dispatch) and avoids the 2-5 minute state-machine round-trip.
+- The gate runs synchronously in the implementer's thread, adding 5-15 seconds to the task completion time. Acceptable given the implementer session is already 2-10 minutes.
 
 ## References
 
-- https://docs.astral.sh/ruff/
-- https://docs.astral.sh/ty/
+- agents/implementer/src/implementer/client.py — existing execute_initial/execute_iteration flow
+- packages/common/src/common/stack_discovery.py — StackProfile model and discovery logic
+- agents/implementer/src/implementer/prompts.py — RESOLVER_SYSTEM_PROMPT pattern for constrained sub-sessions
