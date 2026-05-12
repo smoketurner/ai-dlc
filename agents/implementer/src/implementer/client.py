@@ -40,8 +40,10 @@ from common.runtime import (
     ReviewCommentMentionFeedback,
 )
 from implementer.finish import FinishReport, FinishSink
-from implementer.options import build_options, build_resolver_options
+from implementer.gate_commands import resolve_gate_commands
+from implementer.options import build_gate_retry_options, build_options, build_resolver_options
 from implementer.prompts import RESOLVER_USER_TEMPLATE
+from implementer.quality_gate import run_gate
 from implementer.repo_ops import (
     abort_merge,
     agent_made_real_changes,
@@ -125,9 +127,7 @@ async def execute_initial(payload: ImplementerInput) -> ImplementerResult:
     user_prompt = compose_prompt(payload, task_title=task.title, task_done_when=task.done_when)
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    blocked_reason = compute_blocked_reason(payload, report, base=impl_branch)
-    if blocked_reason is None and run_cancelled(payload.run_id):
-        blocked_reason = "run cancelled"
+    blocked_reason = await resolve_blocked_reason(payload, report, base=impl_branch)
 
     finalize_task_branch(
         spec_slug=payload.spec_slug,
@@ -222,9 +222,7 @@ async def execute_iteration(payload: ImplementerInput) -> ImplementerResult:
     )
     report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    blocked_reason = compute_blocked_reason(payload, report, base=impl_branch)
-    if blocked_reason is None and run_cancelled(payload.run_id):
-        blocked_reason = "run cancelled"
+    blocked_reason = await resolve_blocked_reason(payload, report, base=impl_branch)
 
     finalize_iteration_branch(
         spec_slug=payload.spec_slug,
@@ -484,6 +482,82 @@ async def merge_with_resolution(
         push_branch(task_branch)
         resolutions += 1
     return MergeOutcome(success=False, error="merge loop exhausted", resolutions=resolutions)
+
+
+async def resolve_blocked_reason(
+    payload: ImplementerInput,
+    report: FinishReport | None,
+    *,
+    base: str,
+) -> str | None:
+    """Determine the blocked reason after the agent runs.
+
+    Checks agent output, runs the quality gate on success, and checks
+    for run cancellation. Returns ``None`` when the task should proceed.
+    """
+    blocked_reason = compute_blocked_reason(payload, report, base=base)
+    if blocked_reason is None:
+        blocked_reason = await run_gate_with_retry(
+            project_slug=payload.project_slug,
+            run_id=payload.run_id,
+        )
+    if blocked_reason is None and run_cancelled(payload.run_id):
+        blocked_reason = "run cancelled"
+    return blocked_reason
+
+
+async def run_gate_with_retry(
+    *,
+    project_slug: str,
+    run_id: str,
+) -> str | None:
+    """Run the quality gate; on first failure, let a sub-session fix violations.
+
+    Returns ``None`` when the gate passes (or is skipped), or a
+    ``blocked_reason`` string when the gate fails after the retry attempt.
+    """
+    commands = resolve_gate_commands(project_slug)
+    if not commands:
+        return None
+
+    cwd = str(repo_path())
+    outcome = run_gate(commands, cwd=cwd)
+    if outcome.all_passed:
+        logger.info("quality gate passed", run_id=run_id)
+        return None
+
+    logger.info(
+        "quality gate failed on first attempt, running retry sub-session",
+        run_id=run_id,
+        failures=[r.command.name for r in outcome.results if not r.passed],
+    )
+
+    if outcome.retry_prompt is None:
+        return None
+    options = build_gate_retry_options()
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(outcome.retry_prompt)
+        async for msg in client.receive_response():
+            if isinstance(msg, ResultMessage):
+                logger.info(
+                    "gate retry sub-session done",
+                    run_id=run_id,
+                    cost_usd=msg.total_cost_usd,
+                    duration_ms=msg.duration_ms,
+                )
+
+    retry_outcome = run_gate(commands, cwd=cwd)
+    if retry_outcome.all_passed:
+        logger.info("quality gate passed after retry", run_id=run_id)
+        return None
+
+    gate_blocked_reason = retry_outcome.blocked_reason or "quality gate failed after retry"
+    logger.warning(
+        "quality gate failed after retry, blocking task",
+        run_id=run_id,
+        failures=[r.command.name for r in retry_outcome.results if not r.passed],
+    )
+    return gate_blocked_reason
 
 
 async def resolve_conflict_with_agent(

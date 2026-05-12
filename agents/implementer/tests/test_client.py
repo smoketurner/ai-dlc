@@ -126,6 +126,11 @@ def install_common_mocks(
         return drive_agent_report, usage
 
     monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+
+    async def fake_gate(**_kw: Any) -> str | None:
+        return None
+
+    monkeypatch.setattr(client, "run_gate_with_retry", fake_gate)
     return calls
 
 
@@ -304,3 +309,102 @@ async def test_execute_task_merge_conflict_exhausts_to_blocked(
 
     assert result.blocked_reason is not None
     assert "conflict" in result.blocked_reason
+
+
+# ---------------------------------------------------------------------------
+# Quality gate integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gate_skipped_when_no_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """When resolve_gate_commands returns empty list, execute_task proceeds normally."""
+    report = FinishReport(summary="Done.", status="done")
+    install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+    # Override the fake gate to count calls
+    gate_calls: list[Any] = []
+
+    async def tracking_gate(**kw: Any) -> None:
+        gate_calls.append(kw)
+
+    monkeypatch.setattr(client, "run_gate_with_retry", tracking_gate)
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is None
+    assert len(gate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_gate_failure_blocks_without_merge(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """Gate failure after agent succeeds → blocked, no merge attempted."""
+    report = FinishReport(summary="Done.", status="done")
+    calls = install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+
+    async def failing_gate(**_kw: Any) -> str:
+        return "Quality gate failed after retry:\n  [ruff-check] exit=1"
+
+    monkeypatch.setattr(client, "run_gate_with_retry", failing_gate)
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason is not None
+    assert "ruff-check" in result.blocked_reason
+    # No merge should be attempted when the gate blocks
+    merges = [c for c in calls["invoke_repo_helper"] if c["op"] == "merge_branch"]
+    assert merges == []
+
+
+@pytest.mark.asyncio
+async def test_gate_not_called_when_agent_already_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    spec_dir_with_tasks: Path,
+) -> None:
+    """When agent reports blocked, gate is skipped."""
+    report = FinishReport(summary="x", status="blocked", blocked_reason="spec unclear")
+    gate_calls: list[Any] = []
+
+    install_common_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        spec_dir=spec_dir_with_tasks,
+        drive_agent_report=report,
+        agent_made_real_changes=False,
+        has_uncommitted_changes=True,
+    )
+
+    async def tracking_gate(**kw: Any) -> None:
+        gate_calls.append(kw)
+
+    monkeypatch.setattr(client, "run_gate_with_retry", tracking_gate)
+
+    result = await client.execute_task(payload)
+
+    assert result.blocked_reason == "spec unclear"
+    assert gate_calls == []
