@@ -54,9 +54,13 @@ def test_run_state_iterable_for_dispatch_table() -> None:
     every = list(RunState)
     assert RunState.received in every
     assert RunState.tasks_in_progress in every
+    assert RunState.validation_running in every
+    assert RunState.validation_complete in every
+    assert RunState.revising in every
+    assert RunState.awaiting_human_merge in every
     assert RunState.proposer_running in every
     assert RunState.done in every
-    assert len(every) == 16
+    assert len(every) == 20
 
 
 def test_task_state_iterable_for_dispatch_table() -> None:

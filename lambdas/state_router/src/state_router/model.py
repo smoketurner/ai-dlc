@@ -67,6 +67,8 @@ class Run:
     dispatch_failure_count: int = 0
     task_depends_on: dict[str, tuple[str, ...]] = field(default_factory=dict)
     last_advisor_sha: str = ""
+    reviewer_verdict: str = ""
+    revision_count: int = 0
 
 
 def deserialize_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +149,8 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
         task_depends_on=task_depends_on,
         last_advisor_sha=str(data.get("last_advisor_sha") or ""),
+        reviewer_verdict=str(data.get("reviewer_verdict") or ""),
+        revision_count=as_int(data.get("revision_count")) or 0,
     )
 
 

@@ -57,32 +57,32 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     logger.info(
         "tester invoked",
         run_id=payload.run_id,
-        task_id=payload.task_id,
         pr_url=payload.pr_url,
+        revision_number=payload.revision_number,
     )
-    task_id = app.add_async_task(
+    async_task_id = app.add_async_task(
         "tester_run",
-        {"run_id": payload.run_id, "task_id": payload.task_id},
+        {"run_id": payload.run_id, "revision_number": payload.revision_number},
     )
     threading.Thread(
         target=run_tester,
-        args=(payload, task_id),
+        args=(payload, async_task_id),
         daemon=True,
     ).start()
     return {
         "status": "dispatched",
         "run_id": payload.run_id,
-        "task_id": payload.task_id,
-        "async_task_id": task_id,
+        "async_task_id": async_task_id,
     }
 
 
 def run_tester(payload: TesterInput, async_task_id: int) -> None:
-    """Body of the tester run — analyzes PR, posts comment, emits event.
+    """Body of the tester run — analyzes the impl PR, posts comment, emits event.
 
     Tester is advisory; an exception is logged and swallowed. The
-    run continues toward human approval through the normal PR-comment
-    UX without a Tester summary.
+    run still gates on the reviewer's verdict, so a missing tester
+    pass doesn't deadlock — the reviewer simply works without the
+    gap analysis as input.
     """
     try:
         agent = build_agent(payload.run_id)
@@ -90,26 +90,24 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
             agent,
             project_slug=payload.project_slug,
             spec_slug=payload.spec_slug,
-            task_id=payload.task_id,
+            run_id=payload.run_id,
             pr_url=payload.pr_url,
-            diff_summary=payload.diff_summary,
+            revision_number=payload.revision_number,
         )
-        upload_report(report, run_id=payload.run_id, task_id=payload.task_id)
+        upload_report(report, run_id=payload.run_id, revision_number=payload.revision_number)
         post_pr_comment(payload=payload, report=report)
 
         result = TesterResult(
-            task_id=report.task_id,
             pr_url=payload.pr_url,
             gap_count=gap_count(report),
             suggested_test_count=suggestion_count(report),
             summary=event_summary(report.summary),
-            session_id=f"{payload.run_id}-{payload.task_id}-tester",
+            session_id=f"{payload.run_id}-tester-r{payload.revision_number}",
             **usage_from_strands(agent, model_id=model_id()),
         )
         logger.info(
             "test report ready",
             run_id=payload.run_id,
-            task_id=payload.task_id,
             gap_count=result.gap_count,
             suggested_test_count=result.suggested_test_count,
         )
@@ -118,15 +116,18 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
         logger.exception(
             "tester run failed",
             run_id=payload.run_id,
-            task_id=payload.task_id,
         )
     finally:
         app.complete_async_task(async_task_id)
 
 
-def upload_report(report: Report, *, run_id: str, task_id: str) -> None:
+def upload_report(report: Report, *, run_id: str, revision_number: int) -> None:
     """Render and upload the report Markdown to S3."""
-    write_report(run_id=run_id, task_id=task_id, content=render_report(report))
+    write_report(
+        run_id=run_id,
+        revision_number=revision_number,
+        content=render_report(report),
+    )
 
 
 def event_summary(summary: ReportSummary) -> str:
@@ -147,7 +148,6 @@ def publish_test_report_ready(payload: TesterInput, result: TesterResult) -> Non
         payload=TestReportReady(
             project_slug=payload.project_slug,
             spec_slug=payload.spec_slug,
-            task_id=result.task_id,
             pr_url=result.pr_url,
             gap_count=result.gap_count,
             suggested_test_count=result.suggested_test_count,

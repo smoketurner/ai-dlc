@@ -1,11 +1,13 @@
-"""Pydantic models + Markdown renderer for the Reviewer's task-PR review.
+"""Pydantic models + Markdown renderer for the Reviewer's impl-PR review.
 
 The Reviewer produces a :class:`Review` whose Markdown rendering lands at:
 
-  s3://{artifacts_bucket}/runs/{run_id}/tasks/{task_id}/review.md
+  s3://{artifacts_bucket}/runs/{run_id}/validation/review-r{N}.md
 
-The rendered Markdown is the canonical artifact; a single summary
-comment is attempted on the PR via ``repo_helper.comment_pr``.
+where ``N`` is the revision number (0 for the first pass, 1+ after each
+implementer revision). The rendered Markdown is the canonical artifact;
+a single summary comment is attempted on the impl PR via
+``repo_helper.comment_pr``.
 """
 
 from __future__ import annotations
@@ -75,9 +77,9 @@ class ReviewComment(_Frozen):
 
 
 class Review(_Frozen):
-    """The full code review produced by the Reviewer per task PR."""
+    """The full code review produced by the Reviewer per impl-PR validation pass."""
 
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
+    run_id: Annotated[str, Field(min_length=1, max_length=64)]
     verdict: Verdict
     summary: ReviewSummary
     comments: Annotated[NoneSafeList[ReviewComment], Field(max_length=64)] = Field(

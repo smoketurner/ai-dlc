@@ -267,15 +267,20 @@ def task_terminal(_run: Run, task: Task) -> Action:
 TASK_DISPATCH: Mapping[TaskState, TaskHandler] = {
     TaskState.pending: dispatch_implementer,
     TaskState.implementer_running: task_noop_waiting,
-    TaskState.pr_open: dispatch_advisors,
+    # Validation is now run-level (reviewer + tester + code-critic against
+    # the unified impl PR after every task has merged into the impl branch).
+    # Per-task ``pr_open`` is a holding state — the run-level
+    # ``tasks_in_progress`` handler advances the run to ``tasks_complete``
+    # once every task has reached ``pr_open`` (or another terminal-ish
+    # state); from there the validators fire once on the integrated diff.
+    TaskState.pr_open: task_noop_waiting,
     TaskState.reviewer_running: task_noop_waiting,
     TaskState.tester_running: task_noop_waiting,
     TaskState.iterating: dispatch_iteration,
     TaskState.pending_approval: task_noop_waiting,
     # ``blocked`` waits for a human to comment on the draft PR (which fires
     # TASK.ITERATION_REQUESTED via the existing webhook path) or close it
-    # (TASK.REJECTED). Reviewer + Tester intentionally do NOT fire — there's
-    # no implementation in the PR to review.
+    # (TASK.REJECTED).
     TaskState.blocked: task_noop_waiting,
     TaskState.merged: task_terminal,
     TaskState.closed: task_terminal,

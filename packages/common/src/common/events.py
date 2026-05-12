@@ -50,6 +50,8 @@ EventType = Literal[
     "SPEC.ITERATION_REQUESTED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
+    "CODE_CRITIQUE.READY",
+    "REVISION.READY",
     "RUN.COMPLETED",
     "RUN.FAILED",
     "RUN.CANCEL_REQUESTED",
@@ -344,16 +346,18 @@ class RunCancelRequested(Payload):
 
 
 class ReviewReady(UsagePayload):
-    """Reviewer agent code-reviewed a task PR — advisory.
+    """Reviewer agent code-reviewed the unified impl PR — gating.
 
-    Comments are posted to the PR via ``repo_helper.comment_pr``; this event
-    surfaces the verdict and counts to the dashboard. Does not gate the
-    pipeline — humans still own TASK.APPROVED.
+    Reviewer runs once per validation pass, against the integrated impl
+    PR (not per-task). Its ``verdict`` drives the run-level state
+    machine: ``approve`` / ``comment`` advances the run to
+    ``awaiting_human_merge``; ``request_changes`` triggers a revision
+    pass by the implementer (capped at ``MAX_REVISIONS``). Comments
+    land on the impl PR via ``repo_helper.comment_pr``.
     """
 
     project_slug: str
     spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
     verdict: ReviewVerdict
     comment_count: Annotated[int, Field(ge=0)]
@@ -365,22 +369,64 @@ class ReviewReady(UsagePayload):
 
 
 class TestReportReady(UsagePayload):
-    """Tester agent identified test gaps in a task PR — advisory.
+    """Tester agent identified test gaps on the unified impl PR — advisory.
 
-    Test gap suggestions are posted to the PR via ``repo_helper.comment_pr``;
-    this event records counts and a summary for the dashboard. Does not gate
-    the pipeline.
+    Tester runs once per validation pass, against the integrated impl
+    PR. Gap suggestions land on the impl PR via ``repo_helper.comment_pr``;
+    this event records counts and a summary for the dashboard. Does not
+    gate the pipeline — its findings inform the reviewer's verdict and
+    the implementer's revision pass (if triggered).
     """
 
     __test__ = False  # opt out of pytest collection (Test*-prefix collision)
 
     project_slug: str
     spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
     pr_url: str
     gap_count: Annotated[int, Field(ge=0)]
     suggested_test_count: Annotated[int, Field(ge=0)]
     summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
+class CodeCritiqueReady(UsagePayload):
+    """Code-critic adversarially reviewed the unified impl PR — advisory.
+
+    Code-critic runs once per validation pass, in parallel with
+    reviewer + tester. Its findings (logical gaps, missing edge cases,
+    drift from the spec) land on the impl PR as comments and inform
+    the reviewer's verdict + a revision pass if one is triggered.
+    Does not gate the pipeline.
+    """
+
+    project_slug: str
+    spec_slug: str
+    pr_url: str
+    critique_s3_key: str
+    issue_count: Annotated[int, Field(ge=0)]
+    high_severity_count: Annotated[int, Field(ge=0)] = 0
+    medium_severity_count: Annotated[int, Field(ge=0)] = 0
+    low_severity_count: Annotated[int, Field(ge=0)] = 0
+    summary: Annotated[str, Field(max_length=2048)]
+    session_id: str
+
+
+class RevisionReady(UsagePayload):
+    """Implementer revised the impl branch in response to reviewer feedback.
+
+    Emitted after the implementer runs in ``mode=revision`` — clones
+    the repo, checks out the impl branch, applies the aggregated
+    reviewer + tester + code-critic feedback, commits directly to the
+    impl branch (no task branch), pushes. Advances the run from
+    ``revising`` back to ``validation_running`` so the validators
+    re-evaluate the updated diff.
+    """
+
+    project_slug: str
+    spec_slug: str
+    pr_url: str
+    diff_summary: Annotated[str, Field(max_length=4096)]
+    revision_number: Annotated[int, Field(ge=1)]
     session_id: str
 
 
@@ -423,6 +469,8 @@ type AnyPayload = (
     | SpecIterationRequested
     | ReviewReady
     | TestReportReady
+    | CodeCritiqueReady
+    | RevisionReady
     | RunCompleted
     | RunFailed
     | RunCancelRequested

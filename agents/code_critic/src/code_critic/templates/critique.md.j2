@@ -1,0 +1,38 @@
+# Code critique — run `{{ critique.run_id }}`
+
+> Issues: **{{ counts.high }}** high · **{{ counts.medium }}** medium · **{{ counts.low }}** low
+
+## Summary
+
+{{ critique.summary }}
+
+## Issues
+{%- for issue in critique.issues %}
+
+### {{ loop.index }}. [{{ issue.severity }}] `{{ anchor(issue) }}`
+
+**Problem:** {{ issue.description }}
+{%- if issue.code_excerpt %}
+
+```{{ issue.language or '' }}
+{{ issue.code_excerpt }}
+```
+{%- endif %}
+
+**Recommendation:** {{ issue.recommendation }}
+{%- if issue.references %}
+
+**References:**
+{% for ref in issue.references -%}
+- {{ ref }}
+{% endfor -%}
+{%- endif %}
+{%- endfor %}
+{%- if critique.strengths %}
+
+## Strengths
+
+{% for item in critique.strengths -%}
+- {{ item }}
+{% endfor -%}
+{%- endif %}

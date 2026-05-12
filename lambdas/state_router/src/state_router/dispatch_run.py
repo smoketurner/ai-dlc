@@ -17,12 +17,10 @@ from typing import TYPE_CHECKING
 from common.events import (
     EventEnvelope,
     RunCancelRequested,
-    RunCompleted,
 )
 from common.github_mentions import strip_bot_mention
 from common.ids import CorrelationId, RunId, new_event_id, short_run_id
 from common.state import (
-    TERMINAL_TASK_STATES,
     RunState,
     TaskState,
 )
@@ -444,6 +442,30 @@ between base and head" so we wait.
 """
 
 
+IMPL_TASK_DONE_STATES: frozenset[TaskState] = frozenset(
+    {
+        TaskState.pr_open,
+        TaskState.pending_approval,
+        TaskState.blocked,
+        TaskState.merged,
+        TaskState.closed,
+        TaskState.failed,
+    },
+)
+"""Task states meaning the implementer is finished with that task.
+
+``pr_open`` is the typical resting state — the task's commit is on the
+impl branch and the task is waiting on the run-level validation pass.
+``blocked`` means the implementer flagged a structural problem. The
+remaining three are terminal-merged / terminal-closed / terminal-failed.
+
+When every task reaches one of these, the run advances from
+``tasks_in_progress`` to ``tasks_complete`` so validators can fire on
+the integrated diff. ``iterating`` and ``implementer_running`` are
+excluded — those mean the implementer is still working.
+"""
+
+
 def handle_tasks_in_progress(run: Run) -> Action:
     """Walk task rows; dispatch any actionable, otherwise emit completion.
 
@@ -463,7 +485,7 @@ def handle_tasks_in_progress(run: Run) -> Action:
     if not run.tasks:
         return Noop("no tasks seeded yet")
     pr_actions = impl_pr_actions(run)
-    if all(t.state in TERMINAL_TASK_STATES for t in run.tasks):
+    if all(t.state in IMPL_TASK_DONE_STATES for t in run.tasks):
         return CompoundAction(
             actions=(
                 *pr_actions,
@@ -556,20 +578,149 @@ def render_impl_pr_body(run: Run) -> str:
     return "\n".join(lines)
 
 
+MAX_REVISIONS = 3
+"""Upper bound on ``request_changes → revising`` cycles before the run fails.
+
+Caps the agent-loop blast radius: if the reviewer keeps rejecting the
+implementer's fixes, the run fails into the human's lap rather than
+spending tokens indefinitely.
+"""
+
+
 def handle_tasks_complete(run: Run) -> Action:
-    """Emit ``RUN.COMPLETED`` so the projector advances to ``done``."""
-    completed = sum(1 for t in run.tasks if t.state == TaskState.merged)
+    """Dispatch the validation pass: reviewer + tester + code-critic in parallel.
+
+    All three target the unified impl PR (``run.pr_url``). Reviewer is
+    the gatekeeper — its ``REVIEW.READY`` verdict drives the run's
+    next transition (``validation_complete`` handler reads the verdict).
+    Tester and code-critic findings are advisory; their reports land on
+    the impl PR and inform the implementer's revision pass if one is
+    triggered.
+
+    The :class:`InvokeAgent` advances ``tasks_complete → validation_running``
+    once; subsequent beacons in ``validation_running`` no-op.
+    """
+    if not run.pr_url or not run.spec_slug:
+        return Noop("impl PR or spec_slug not yet available")
+    invokes: list[InvokeAgent] = []
+    for agent_name in ("reviewer", "tester", "code_critic"):
+        arn = runtime_arn(agent_name)
+        if not arn:
+            continue
+        invokes.append(invoke_validator(run, agent_name, arn))
+    if not invokes:
+        return Noop("no validator runtimes provisioned")
+    return CompoundAction(
+        actions=(
+            *invokes,
+            AdvanceState(
+                target_pk=f"RUN#{run.run_id}",
+                target_sk="STATE",
+                advance_from=RunState.tasks_complete.value,
+                advance_to=RunState.validation_running.value,
+            ),
+        ),
+    )
+
+
+def invoke_validator(run: Run, agent_name: str, arn: str) -> InvokeAgent:
+    """Build the InvokeAgent for one validator targeting the impl PR."""
+    return InvokeAgent(
+        runtime_arn=arn,
+        runtime_session_id=f"{run.run_id}-{agent_name}-r{run.revision_count}",
+        payload={
+            "project_slug": run.project_slug,
+            "spec_slug": run.spec_slug,
+            "spec_s3_prefix": run.spec_s3_prefix,
+            "pr_url": run.pr_url,
+            "run_id": run.run_id,
+            "correlation_id": run.correlation_id,
+            "actor_id": "state_router",
+            "requestor_sub": run.requestor_sub,
+            "revision_number": run.revision_count,
+        },
+    )
+
+
+def handle_validation_complete(run: Run) -> Action:
+    """Branch on reviewer verdict — merge gate or revision pass.
+
+    ``approve`` / ``comment`` → ``awaiting_human_merge``; the run sits
+    until the human merges the impl PR.
+
+    ``request_changes`` → dispatch the implementer in ``mode=revision``
+    and advance to ``revising``. After ``MAX_REVISIONS`` cycles the
+    run fails into the human's lap with ``RUN.FAILED`` so the loop
+    can't spend tokens forever.
+    """
+    verdict = run.reviewer_verdict
+    if verdict in {"approve", "comment", ""}:
+        return AdvanceState(
+            target_pk=f"RUN#{run.run_id}",
+            target_sk="STATE",
+            advance_from=RunState.validation_complete.value,
+            advance_to=RunState.awaiting_human_merge.value,
+        )
+    if verdict == "request_changes":
+        if run.revision_count >= MAX_REVISIONS:
+            return emit_run_failed(
+                run,
+                reason=(
+                    f"revision cap ({MAX_REVISIONS}) hit while reviewer.verdict "
+                    "is still request_changes"
+                ),
+            )
+        arn = runtime_arn("implementer")
+        if not arn:
+            return Noop("implementer runtime ARN not yet provisioned")
+        return CompoundAction(
+            actions=(
+                InvokeAgent(
+                    runtime_arn=arn,
+                    runtime_session_id=f"{run.run_id}-revision-{run.revision_count + 1}",
+                    payload={
+                        "project_slug": run.project_slug,
+                        "spec_slug": run.spec_slug,
+                        "spec_s3_prefix": run.spec_s3_prefix,
+                        "run_id": run.run_id,
+                        "correlation_id": run.correlation_id,
+                        "actor_id": "state_router",
+                        "mode": "revision",
+                        "pr_url": run.pr_url,
+                        "target_repo": run.target_repo,
+                        "source_issue_url": run.source_issue_url,
+                        "spec_pr_url": run.spec_pr_url,
+                        "revision_number": run.revision_count + 1,
+                    },
+                ),
+                AdvanceState(
+                    target_pk=f"RUN#{run.run_id}",
+                    target_sk="STATE",
+                    advance_from=RunState.validation_complete.value,
+                    advance_to=RunState.revising.value,
+                ),
+            ),
+        )
+    return Noop(f"unknown reviewer verdict: {verdict!r}")
+
+
+def emit_run_failed(run: Run, *, reason: str) -> EmitEvent:
+    """Emit ``RUN.FAILED`` so the projector advances to ``failed``."""
+    from common.events import RunFailed  # noqa: PLC0415 - local import to avoid cycle
+
     return EmitEvent(
-        envelope=EventEnvelope[RunCompleted](
+        envelope=EventEnvelope[RunFailed](
             event_id=new_event_id(),
-            type="RUN.COMPLETED",
+            type="RUN.FAILED",
             run_id=RunId(run.run_id),
             correlation_id=CorrelationId(run.correlation_id),
             actor_id="state_router",
-            payload=RunCompleted(
+            payload=RunFailed(
                 project_slug=run.project_slug,
-                spec_slug=run.spec_slug or "",
-                tasks_completed=completed,
+                failed_state=(run.current_state or RunState.failed).value,
+                error_class="RevisionCapReached",
+                error_message=reason,
+                retryable=False,
             ),
         ),
     )
@@ -599,6 +750,10 @@ RUN_DISPATCH: Mapping[RunState, RunHandler] = {
     RunState.tasks_in_progress: handle_tasks_in_progress,
     RunState.proposer_running: noop_waiting,
     RunState.tasks_complete: handle_tasks_complete,
+    RunState.validation_running: noop_waiting,
+    RunState.validation_complete: handle_validation_complete,
+    RunState.revising: noop_waiting,
+    RunState.awaiting_human_merge: noop_waiting,
     RunState.done: terminal,
     RunState.failed: terminal,
     RunState.cancelled: terminal,

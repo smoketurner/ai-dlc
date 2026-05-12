@@ -51,32 +51,32 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     logger.info(
         "reviewer invoked",
         run_id=payload.run_id,
-        task_id=payload.task_id,
         pr_url=payload.pr_url,
+        revision_number=payload.revision_number,
     )
-    task_id = app.add_async_task(
+    async_task_id = app.add_async_task(
         "reviewer_run",
-        {"run_id": payload.run_id, "task_id": payload.task_id},
+        {"run_id": payload.run_id, "revision_number": payload.revision_number},
     )
     threading.Thread(
         target=run_reviewer,
-        args=(payload, task_id),
+        args=(payload, async_task_id),
         daemon=True,
     ).start()
     return {
         "status": "dispatched",
         "run_id": payload.run_id,
-        "task_id": payload.task_id,
-        "async_task_id": task_id,
+        "async_task_id": async_task_id,
     }
 
 
 def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
     """Body of the reviewer run — produces review, posts comment, emits event.
 
-    Reviewer is advisory; an exception is logged and swallowed. The
-    run continues toward human approval through the normal PR-comment
-    UX without a Reviewer summary.
+    Reviewer gates the run — its verdict drives the next state
+    transition. On exception we still emit a ``comment`` verdict so the
+    state machine doesn't deadlock; the human reviewer can still merge
+    the impl PR directly.
     """
     try:
         agent = build_agent(payload.run_id)
@@ -84,16 +84,15 @@ def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
             agent,
             project_slug=payload.project_slug,
             spec_slug=payload.spec_slug,
-            task_id=payload.task_id,
+            run_id=payload.run_id,
             pr_url=payload.pr_url,
-            diff_summary=payload.diff_summary,
+            revision_number=payload.revision_number,
         )
-        upload_review(review, run_id=payload.run_id, task_id=payload.task_id)
+        upload_review(review, run_id=payload.run_id, revision_number=payload.revision_number)
         post_pr_comment(payload=payload, review=review)
 
         counts = severity_counts(review)
         result = ReviewerResult(
-            task_id=review.task_id,
             pr_url=payload.pr_url,
             verdict=review.verdict,
             comment_count=len(review.comments),
@@ -101,13 +100,12 @@ def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
             medium_severity_count=counts["medium"],
             low_severity_count=counts["low"],
             summary=event_summary(review.summary),
-            session_id=f"{payload.run_id}-{payload.task_id}-reviewer",
+            session_id=f"{payload.run_id}-reviewer-r{payload.revision_number}",
             **usage_from_strands(agent, model_id=model_id()),
         )
         logger.info(
             "review ready",
             run_id=payload.run_id,
-            task_id=payload.task_id,
             verdict=result.verdict,
             comment_count=result.comment_count,
         )
@@ -116,15 +114,18 @@ def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
         logger.exception(
             "reviewer run failed",
             run_id=payload.run_id,
-            task_id=payload.task_id,
         )
     finally:
         app.complete_async_task(async_task_id)
 
 
-def upload_review(review: Review, *, run_id: str, task_id: str) -> None:
+def upload_review(review: Review, *, run_id: str, revision_number: int) -> None:
     """Render and upload the review Markdown to S3."""
-    write_review(run_id=run_id, task_id=task_id, content=render_review(review))
+    write_review(
+        run_id=run_id,
+        revision_number=revision_number,
+        content=render_review(review),
+    )
 
 
 def event_summary(summary: ReviewSummary) -> str:
@@ -149,7 +150,6 @@ def publish_review_ready(payload: ReviewerInput, result: ReviewerResult) -> None
         payload=ReviewReady(
             project_slug=payload.project_slug,
             spec_slug=payload.spec_slug,
-            task_id=result.task_id,
             pr_url=result.pr_url,
             verdict=result.verdict,
             comment_count=result.comment_count,

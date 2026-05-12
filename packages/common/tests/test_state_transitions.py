@@ -68,13 +68,31 @@ class TestRunTransitions:
             == RunState.failed
         )
 
-    def test_run_completed_advances_to_done(self) -> None:
+    def test_run_completed_advances_to_done_from_awaiting_human_merge(self) -> None:
         assert (
             apply_run_transition(
                 event_type="RUN.COMPLETED",
-                current_state=RunState.tasks_complete,
+                current_state=RunState.awaiting_human_merge,
             )
             == RunState.done
+        )
+
+    def test_review_ready_advances_validation_running_to_complete(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="REVIEW.READY",
+                current_state=RunState.validation_running,
+            )
+            == RunState.validation_complete
+        )
+
+    def test_revision_ready_advances_revising_back_to_validation_running(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="REVISION.READY",
+                current_state=RunState.revising,
+            )
+            == RunState.validation_running
         )
 
 

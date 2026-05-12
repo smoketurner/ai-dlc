@@ -42,6 +42,11 @@ class RunState(StrEnum):
     tasks_in_progress = "tasks_in_progress"
     tasks_complete = "tasks_complete"
 
+    validation_running = "validation_running"
+    validation_complete = "validation_complete"
+    revising = "revising"
+    awaiting_human_merge = "awaiting_human_merge"
+
     proposer_running = "proposer_running"
 
     done = "done"

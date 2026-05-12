@@ -489,7 +489,10 @@ def apply_event_specific_projections(
     ISSUE.TRIAGED carries the chosen workflow + the decision verb;
     SPEC.READY carries the task count + task ID set the dashboard
     renders; RUN.COMPLETED carries the final tasks_completed counter
-    for the run summary.
+    for the run summary. REVIEW.READY projects the reviewer's verdict
+    so ``handle_validation_complete`` can branch on it; REVISION.READY
+    increments the revision counter so the dispatch handler can enforce
+    the ``MAX_REVISIONS`` cap.
     """
     if event_type == "ISSUE.TRIAGED":
         project_triage(update, payload=payload)
@@ -497,6 +500,12 @@ def apply_event_specific_projections(
         project_spec_ready(update, payload=payload)
     elif event_type == "RUN.COMPLETED":
         update.set("tasks_completed", int(payload.get("tasks_completed", 0)))
+    elif event_type == "REVIEW.READY":
+        verdict = payload.get("verdict")
+        if isinstance(verdict, str) and verdict:
+            update.set("reviewer_verdict", verdict)
+    elif event_type == "REVISION.READY":
+        update.add("revision_count", 1)
 
 
 def project_triage(update: UpdateBuilder, *, payload: dict[str, Any]) -> None:
