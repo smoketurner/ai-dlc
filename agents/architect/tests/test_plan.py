@@ -8,7 +8,6 @@ from architect.plan import (
     extract_summary,
 )
 
-
 SAMPLE_PLAN = """\
 ## Context
 
@@ -60,7 +59,7 @@ def test_section_headings_in_canonical_order() -> None:
         "## Verification",
         "## Out of scope",
     )
-    assert SECTION_HEADINGS == expected
+    assert expected == SECTION_HEADINGS
 
 
 def test_extract_summary_returns_first_paragraph_under_context() -> None:

@@ -58,7 +58,9 @@ EventType = Literal[
 
 ReviewVerdict = Literal["approve", "request_changes", "comment"]
 
-CheckConclusion = Literal["success", "failure", "timed_out", "cancelled", "action_required", "stale"]
+CheckConclusion = Literal[
+    "success", "failure", "timed_out", "cancelled", "action_required", "stale"
+]
 
 
 class Payload(BaseModel):

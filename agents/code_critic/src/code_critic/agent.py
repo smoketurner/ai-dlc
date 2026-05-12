@@ -64,7 +64,7 @@ def build_agent(run_id: str) -> Agent:
     )
 
 
-def critique_pr(
+def critique_pr(  # noqa: PLR0913 -- structured input + 3 issue context fields
     agent: Agent,
     *,
     project_slug: str,
