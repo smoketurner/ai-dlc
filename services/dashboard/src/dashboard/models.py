@@ -28,6 +28,7 @@ class RunSummary(_Frozen):
     status: str
     current_state: str | None = None
     created_at: datetime | None = None
+    updated_at: str | None = None
     total_token_in: int = 0
     total_token_out: int = 0
     total_cost_usd: float = 0.0

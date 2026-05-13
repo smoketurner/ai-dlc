@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from common.state import RunState
 from dashboard.artifacts import read_critique
 from dashboard.auth import CurrentUser
 from dashboard.deps import ddb, settings
@@ -18,6 +19,7 @@ from dashboard.repos import (
     list_recent_runs,
     run_summary_from_item,
 )
+from dashboard.state_progress import progress_dict
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
@@ -27,11 +29,27 @@ templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / 
 async def runs_page(request: Request, user: CurrentUser) -> HTMLResponse:
     """Recent runs list."""
     runs = list_recent_runs(limit=50)
+    runs_progress = _runs_progress(runs)
     return templates.TemplateResponse(
         request,
         "runs.html",
-        {"runs": runs, "user": user, "terminal_states": TERMINAL_STATES},
+        {
+            "runs": runs,
+            "runs_progress": runs_progress,
+            "user": user,
+            "terminal_states": TERMINAL_STATES,
+        },
     )
+
+
+def _runs_progress(runs: list) -> dict[str, dict[str, object]]:  # type: ignore[type-arg]
+    """Map ``run_id`` to its in-flight progress payload (omits inactive runs)."""
+    out: dict[str, dict[str, object]] = {}
+    for run in runs:
+        prog = progress_dict(_coerce_state(run.current_state), updated_at=run.updated_at)
+        if prog is not None:
+            out[run.run_id] = prog
+    return out
 
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -43,6 +61,10 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
     summary = first_known_run(run_id, events)
     critique = read_critique(run_id)
     failure = run_failure_details(events) if summary.get("current_state") == "failed" else None
+    progress = progress_dict(
+        _coerce_state(summary.get("current_state")),
+        updated_at=summary.get("updated_at"),
+    )
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -52,10 +74,21 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "summary": summary,
             "critique": critique,
             "failure": failure,
+            "progress": progress,
             "user": user,
             "terminal_states": TERMINAL_STATES,
         },
     )
+
+
+def _coerce_state(raw: object) -> RunState | None:
+    """Parse a STATE-row ``current_state`` string into a ``RunState``."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return RunState(raw)
+    except ValueError:
+        return None
 
 
 def run_failure_details(events: list) -> dict[str, str] | None:  # type: ignore[type-arg]

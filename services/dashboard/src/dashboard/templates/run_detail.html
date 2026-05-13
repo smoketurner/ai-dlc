@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ run_id }} · ai-dlc{% endblock %}
 {% block content %}
+<script id="initial-progress" type="application/json">{{ progress | tojson }}</script>
 <div x-data="runDetail($el.dataset.runId, $el.dataset.cursor)"
      x-init="connect()"
      data-run-id="{{ run_id }}"
@@ -55,6 +56,35 @@
     </div>
   </dl>
   {% endif %}
+  <section x-show="progress" x-cloak
+           class="bg-slate-50 border border-slate-200 shadow-sm rounded p-4 space-y-2"
+           :class="stuck ? 'border-amber-300 bg-amber-50' : ''">
+    <header class="flex items-baseline gap-3 flex-wrap">
+      <span class="inline-flex items-center gap-2">
+        <span class="relative flex h-2 w-2">
+          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75"></span>
+          <span class="relative inline-flex rounded-full h-2 w-2 bg-sky-500"></span>
+        </span>
+        <span class="text-sm font-semibold" x-text="'Currently: ' + (progress && progress.agent)"></span>
+      </span>
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-200 font-mono" x-text="progress && progress.state"></span>
+      <span class="text-xs font-mono"
+            :class="stuck ? 'text-amber-800' : 'text-slate-600'"
+            x-text="elapsed"></span>
+      <span x-show="stuck" class="text-xs px-2 py-0.5 rounded bg-amber-200 text-amber-900">looks stuck</span>
+    </header>
+    <p class="text-xs text-slate-600" x-show="progress && progress.expected_next && progress.expected_next.length">
+      <span class="text-slate-500">Next:</span>
+      <template x-for="(step, i) in (progress && progress.expected_next) || []" :key="step.event + step.state">
+        <span>
+          <span x-show="i > 0" class="text-slate-400"> · </span>
+          <span class="font-mono" x-text="step.event"></span>
+          <span class="text-slate-400">→</span>
+          <span class="font-mono" x-text="step.state"></span>
+        </span>
+      </template>
+    </p>
+  </section>
   {% if failure %}
   <section class="bg-rose-50 border border-rose-200 shadow-sm rounded p-4 space-y-2">
     <header class="flex items-baseline gap-3">
@@ -187,16 +217,57 @@
   </ul>
 </div>
 <script>
+function readInitialProgress() {
+  const node = document.getElementById('initial-progress');
+  if (!node) return null;
+  try { return JSON.parse(node.textContent || 'null'); } catch (_) { return null; }
+}
+
+function formatElapsed(sinceIso) {
+  if (!sinceIso) return '';
+  const since = Date.parse(sinceIso);
+  if (Number.isNaN(since)) return '';
+  const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 function runDetail(runId, initialCursor) {
   const POLL_MS = 2500;
+  const TICK_MS = 1000;
   return {
     liveEvents: [],
     lastType: '',
     cursor: initialCursor || '',
     timer: null,
+    ticker: null,
+    progress: readInitialProgress(),
+    elapsed: '',
+    stuck: false,
     connect() {
+      this.refreshElapsed();
+      this.ticker = window.setInterval(() => this.refreshElapsed(), TICK_MS);
       this.poll();
       this.timer = window.setInterval(() => this.poll(), POLL_MS);
+    },
+    refreshElapsed() {
+      if (!this.progress || !this.progress.since) {
+        this.elapsed = '';
+        this.stuck = false;
+        return;
+      }
+      this.elapsed = formatElapsed(this.progress.since);
+      const threshold = this.progress.stuck_threshold_seconds;
+      if (!threshold) {
+        this.stuck = false;
+        return;
+      }
+      const since = Date.parse(this.progress.since);
+      this.stuck = !Number.isNaN(since) && (Date.now() - since) / 1000 > threshold;
     },
     async poll() {
       const qs = this.cursor ? `?since=${encodeURIComponent(this.cursor)}` : '';
@@ -211,9 +282,20 @@ function runDetail(runId, initialCursor) {
         this.lastType = ev.type;
         if (ev.event_id > this.cursor) this.cursor = ev.event_id;
       }
-      if (body.terminal && this.timer !== null) {
-        window.clearInterval(this.timer);
-        this.timer = null;
+      this.progress = body.progress || null;
+      this.refreshElapsed();
+      if (body.terminal) {
+        this.progress = null;
+        this.elapsed = '';
+        this.stuck = false;
+        if (this.timer !== null) {
+          window.clearInterval(this.timer);
+          this.timer = null;
+        }
+        if (this.ticker !== null) {
+          window.clearInterval(this.ticker);
+          this.ticker = null;
+        }
       }
     },
     async deleteRun() {
