@@ -7,10 +7,14 @@
 #     this; pydantic and boto3 are pinned explicitly below for determinism)
 #   - boto3, pydantic (explicit pins so rebuilds are reproducible
 #     regardless of how powertools' [aws-sdk] / [parser] extras resolve)
-#   - httpx, pyjwt, uuid-utils
+#   - httpx, pyjwt, pyyaml, uuid-utils
 #
-# Per-Lambda requirements.txt files are trimmed to Lambda-specific deps
-# (bedrock-agentcore, pyyaml, …). The layer is attached to every Lambda
+# pyyaml is in the layer (not per-Lambda) because ``common.memory_md``
+# transitively imports ``common.stack_discovery`` which uses it — any
+# Lambda that imports the common package would otherwise crash on init.
+#
+# Per-Lambda requirements.txt files carry only Lambda-specific deps
+# (e.g. ``bedrock-agentcore``). The layer is attached to every Lambda
 # the platform owns.
 ################################################################################
 

@@ -389,15 +389,20 @@ DISPATCH: dict[str, type[BaseOp]] = {
 @tracer.capture_lambda_handler
 @metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
-    """Lambda entrypoint. Validates input, dispatches to the GitHub API."""
-    payload = event.get("input") if isinstance(event, dict) else None
-    if not isinstance(payload, dict):
-        return error("invalid_event", "expected event.input to be a JSON object")
-    op = payload.get("op")
+    """Lambda entrypoint. Validates input, dispatches to the GitHub API.
+
+    AgentCore Gateway delivers MCP tool arguments as the event payload
+    directly (no ``event.input`` envelope). We discriminate on the
+    ``op`` field inside the payload because every op for this Lambda
+    is exposed under the single ``repo_helper`` gateway target.
+    """
+    if not isinstance(event, dict):
+        return error("invalid_event", "expected a JSON object")
+    op = event.get("op")
     if op not in DISPATCH:
         return error("unknown_op", f"op must be one of {sorted(DISPATCH)}, got {op!r}")
     try:
-        req = DISPATCH[op].model_validate(payload)
+        req = DISPATCH[op].model_validate(event)
     except ValidationError as exc:
         return error("validation_error", json.loads(exc.json()))
 

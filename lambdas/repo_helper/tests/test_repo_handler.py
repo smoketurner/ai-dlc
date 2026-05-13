@@ -80,21 +80,28 @@ def patch_client(monkeypatch: pytest.MonkeyPatch) -> Callable[[httpx.MockTranspo
     return _patch
 
 
-def test_invalid_event() -> None:
-    out = h.handler({}, ctx())
+def test_non_dict_event_returns_invalid_event() -> None:
+    out = h.handler("not-a-dict", ctx())  # type: ignore[arg-type]
     assert out["ok"] is False
     assert out["error"]["kind"] == "invalid_event"
 
 
+def test_empty_event_is_unknown_op() -> None:
+    """An empty payload has no ``op`` key — unknown_op, not invalid_event."""
+    out = h.handler({}, ctx())
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "unknown_op"
+
+
 def test_unknown_op() -> None:
-    out = h.handler({"input": {"op": "delete_repo"}}, ctx())
+    out = h.handler({"op": "delete_repo"}, ctx())
     assert out["ok"] is False
     assert out["error"]["kind"] == "unknown_op"
 
 
 def test_validation_error_missing_required() -> None:
     out = h.handler(
-        {"input": {"op": "open_pr", "repo": "smoketurner/ai-dlc", "base": "main"}},
+        {"op": "open_pr", "repo": "smoketurner/ai-dlc", "base": "main"},
         ctx(),
     )
     assert out["ok"] is False
@@ -103,7 +110,7 @@ def test_validation_error_missing_required() -> None:
 
 def test_create_branch_validates_repo_format() -> None:
     out = h.handler(
-        {"input": {"op": "create_branch", "repo": "no-slash", "branch": "x", "base": "main"}},
+        {"op": "create_branch", "repo": "no-slash", "branch": "x", "base": "main"},
         ctx(),
     )
     assert out["ok"] is False
@@ -113,13 +120,11 @@ def test_create_branch_validates_repo_format() -> None:
 def test_commit_files_requires_at_least_one_file() -> None:
     out = h.handler(
         {
-            "input": {
-                "op": "commit_files",
-                "repo": "smoketurner/ai-dlc",
-                "branch": "main",
-                "message": "msg",
-                "files": [],
-            },
+            "op": "commit_files",
+            "repo": "smoketurner/ai-dlc",
+            "branch": "main",
+            "message": "msg",
+            "files": [],
         },
         ctx(),
     )
@@ -131,15 +136,13 @@ def test_token_field_is_rejected_in_input() -> None:
     """Auth is no longer caller-provided — extra fields like `token` must be rejected."""
     out = h.handler(
         {
-            "input": {
-                "op": "open_pr",
-                "repo": "o/r",
-                "base": "main",
-                "head": "x",
-                "title": "t",
-                "body": "b",
-                "token": "ghs_legacy",
-            },
+            "op": "open_pr",
+            "repo": "o/r",
+            "base": "main",
+            "head": "x",
+            "title": "t",
+            "body": "b",
+            "token": "ghs_legacy",
         },
         ctx(),
     )
@@ -167,15 +170,13 @@ def test_requestor_sub_routes_through_user_token(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "open_pr",
-                "repo": "o/r",
-                "base": "main",
-                "head": "x",
-                "title": "t",
-                "body": "b",
-                "requestor_sub": "cognito-sub-abc123",
-            },
+            "op": "open_pr",
+            "repo": "o/r",
+            "base": "main",
+            "head": "x",
+            "title": "t",
+            "body": "b",
+            "requestor_sub": "cognito-sub-abc123",
         },
         ctx(),
     )
@@ -203,14 +204,12 @@ def test_requestor_sub_absent_falls_back_to_installation_token(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "open_pr",
-                "repo": "o/r",
-                "base": "main",
-                "head": "x",
-                "title": "t",
-                "body": "b",
-            },
+            "op": "open_pr",
+            "repo": "o/r",
+            "base": "main",
+            "head": "x",
+            "title": "t",
+            "body": "b",
         },
         ctx(),
     )
@@ -241,14 +240,12 @@ def test_open_pr_calls_github_and_returns_pr_url(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "open_pr",
-                "repo": "smoketurner/ai-dlc",
-                "base": "main",
-                "head": "feature/foo",
-                "title": "Add foo",
-                "body": "Body",
-            },
+            "op": "open_pr",
+            "repo": "smoketurner/ai-dlc",
+            "base": "main",
+            "head": "feature/foo",
+            "title": "Add foo",
+            "body": "Body",
         },
         ctx(),
     )
@@ -282,12 +279,10 @@ def test_comment_pr_posts_issue_comment(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "comment_pr",
-                "repo": "smoketurner/ai-dlc",
-                "pr_number": 42,
-                "body": "looks good",
-            },
+            "op": "comment_pr",
+            "repo": "smoketurner/ai-dlc",
+            "pr_number": 42,
+            "body": "looks good",
         },
         ctx(),
     )
@@ -316,12 +311,10 @@ def test_create_branch_uses_base_sha(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "create_branch",
-                "repo": "o/r",
-                "branch": "feature/x",
-                "base": "main",
-            },
+            "op": "create_branch",
+            "repo": "o/r",
+            "branch": "feature/x",
+            "base": "main",
         },
         ctx(),
     )
@@ -349,7 +342,7 @@ def test_get_pr_returns_state_and_merged(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr", "repo": "o/r", "pr_number": 7}},
+        {"op": "get_pr", "repo": "o/r", "pr_number": 7},
         ctx(),
     )
     assert out["ok"] is True
@@ -396,16 +389,14 @@ def test_commit_files_walks_git_data_api(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "commit_files",
-                "repo": "o/r",
-                "branch": "topic",
-                "message": "feat: add",
-                "files": [
-                    {"path": "a.txt", "content": "AA"},
-                    {"path": "b.txt", "content": "BB"},
-                ],
-            },
+            "op": "commit_files",
+            "repo": "o/r",
+            "branch": "topic",
+            "message": "feat: add",
+            "files": [
+                {"path": "a.txt", "content": "AA"},
+                {"path": "b.txt", "content": "BB"},
+            ],
         },
         ctx(),
     )
@@ -423,7 +414,7 @@ def test_github_http_error_is_envelope(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr", "repo": "o/r", "pr_number": 99}},
+        {"op": "get_pr", "repo": "o/r", "pr_number": 99},
         ctx(),
     )
     assert out["ok"] is False
@@ -452,12 +443,10 @@ def test_comment_issue_posts_to_issues_endpoint(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "comment_issue",
-                "repo": "o/r",
-                "issue_number": 7,
-                "body": "triage: deferred",
-            },
+            "op": "comment_issue",
+            "repo": "o/r",
+            "issue_number": 7,
+            "body": "triage: deferred",
         },
         ctx(),
     )
@@ -483,12 +472,10 @@ def test_label_issue_adds_labels_additively(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "label_issue",
-                "repo": "o/r",
-                "issue_number": 7,
-                "labels": ["aidlc:deferred"],
-            },
+            "op": "label_issue",
+            "repo": "o/r",
+            "issue_number": 7,
+            "labels": ["aidlc:deferred"],
         },
         ctx(),
     )
@@ -521,7 +508,7 @@ def test_get_file_returns_decoded_content(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_file", "repo": "o/r", "path": "AGENTS.md"}},
+        {"op": "get_file", "repo": "o/r", "path": "AGENTS.md"},
         ctx(),
     )
     assert out["ok"] is True
@@ -545,12 +532,10 @@ def test_get_file_returns_exists_false_on_404(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "get_file",
-                "repo": "o/r",
-                "path": "missing.md",
-                "ref": "feature-branch",
-            },
+            "op": "get_file",
+            "repo": "o/r",
+            "path": "missing.md",
+            "ref": "feature-branch",
         },
         ctx(),
     )
@@ -579,7 +564,7 @@ def test_get_issue_returns_title_body_and_labels(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_issue", "repo": "o/r", "issue_number": 7}},
+        {"op": "get_issue", "repo": "o/r", "issue_number": 7},
         ctx(),
     )
     assert out["ok"] is True
@@ -611,12 +596,10 @@ def test_create_issue_posts_to_issues_endpoint(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "create_issue",
-                "repo": "o/r",
-                "title": "Adopt scoped rule files",
-                "body": "Split MEMORY.md by directory.",
-            },
+            "op": "create_issue",
+            "repo": "o/r",
+            "title": "Adopt scoped rule files",
+            "body": "Split MEMORY.md by directory.",
         },
         ctx(),
     )
@@ -652,13 +635,11 @@ def test_create_issue_includes_labels_when_set(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "create_issue",
-                "repo": "o/r",
-                "title": "Adopt X",
-                "body": "Body",
-                "labels": ["aidlc-spawned", "adopt"],
-            },
+            "op": "create_issue",
+            "repo": "o/r",
+            "title": "Adopt X",
+            "body": "Body",
+            "labels": ["aidlc-spawned", "adopt"],
         },
         ctx(),
     )
@@ -686,14 +667,12 @@ def test_create_issue_prepends_parent_backlink(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "create_issue",
-                "repo": "o/r",
-                "title": "T",
-                "body": "Detail.",
-                "parent_issue_url": "https://github.com/o/r/issues/34",
-                "requestor": "jplock",
-            },
+            "op": "create_issue",
+            "repo": "o/r",
+            "title": "T",
+            "body": "Detail.",
+            "parent_issue_url": "https://github.com/o/r/issues/34",
+            "requestor": "jplock",
         },
         ctx(),
     )
@@ -724,13 +703,11 @@ def test_create_issue_backlink_omits_attribution_without_requestor(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "create_issue",
-                "repo": "o/r",
-                "title": "T",
-                "body": "Body.",
-                "parent_issue_url": "https://github.com/o/r/issues/34",
-            },
+            "op": "create_issue",
+            "repo": "o/r",
+            "title": "T",
+            "body": "Body.",
+            "parent_issue_url": "https://github.com/o/r/issues/34",
         },
         ctx(),
     )
@@ -740,7 +717,7 @@ def test_create_issue_backlink_omits_attribution_without_requestor(
 
 def test_create_issue_validates_repo_format() -> None:
     out = h.handler(
-        {"input": {"op": "create_issue", "repo": "no-slash", "title": "T", "body": "B"}},
+        {"op": "create_issue", "repo": "no-slash", "title": "T", "body": "B"},
         ctx(),
     )
     assert out["ok"] is False
@@ -778,7 +755,7 @@ def test_list_issue_comments_returns_chronological_thread(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "list_issue_comments", "repo": "o/r", "issue_number": 34}},
+        {"op": "list_issue_comments", "repo": "o/r", "issue_number": 34},
         ctx(),
     )
     assert out["ok"] is True
@@ -801,12 +778,10 @@ def test_list_issue_comments_passes_since_filter(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "list_issue_comments",
-                "repo": "o/r",
-                "issue_number": 1,
-                "since": "2026-05-08T00:00:00Z",
-            },
+            "op": "list_issue_comments",
+            "repo": "o/r",
+            "issue_number": 1,
+            "since": "2026-05-08T00:00:00Z",
         },
         ctx(),
     )
@@ -844,11 +819,9 @@ def test_list_issues_filters_out_pull_requests(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "list_issues",
-                "repo": "o/r",
-                "labels": ["aidlc:ready"],
-            },
+            "op": "list_issues",
+            "repo": "o/r",
+            "labels": ["aidlc:ready"],
         },
         ctx(),
     )
@@ -890,11 +863,9 @@ def test_get_pr_diff_returns_per_file_patches(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "get_pr_diff",
-                "repo": "smoketurner/ai-dlc",
-                "pr_number": 42,
-            },
+            "op": "get_pr_diff",
+            "repo": "smoketurner/ai-dlc",
+            "pr_number": 42,
         },
         ctx(),
     )
@@ -936,7 +907,7 @@ def test_get_pr_diff_truncates_oversized_patch(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -967,7 +938,7 @@ def test_get_pr_diff_marks_binary_file_with_no_patch(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1003,7 +974,7 @@ def test_get_pr_diff_paginates_and_caps_files(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1040,7 +1011,7 @@ def test_get_pr_diff_stops_when_short_page_returned(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_pr_diff", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1050,7 +1021,7 @@ def test_get_pr_diff_stops_when_short_page_returned(
 
 def test_get_pr_diff_validates_repo_format() -> None:
     out = h.handler(
-        {"input": {"op": "get_pr_diff", "repo": "no-slash", "pr_number": 1}},
+        {"op": "get_pr_diff", "repo": "no-slash", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is False
@@ -1071,7 +1042,7 @@ def test_get_pr_archive_url_returns_signed_codeload_url(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 7}},
+        {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 7},
         ctx(),
     )
     assert out["ok"] is True
@@ -1089,7 +1060,7 @@ def test_get_pr_archive_url_missing_pr_returns_error_envelope(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 999}},
+        {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 999},
         ctx(),
     )
     assert out["ok"] is False
@@ -1099,7 +1070,7 @@ def test_get_pr_archive_url_missing_pr_returns_error_envelope(
 
 def test_get_pr_archive_url_validates_pr_number() -> None:
     out = h.handler(
-        {"input": {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 0}},
+        {"op": "get_pr_archive_url", "repo": "o/r", "pr_number": 0},
         ctx(),
     )
     assert out["ok"] is False
@@ -1140,7 +1111,7 @@ def test_list_pr_comments_calls_issue_comments_endpoint(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "list_pr_comments", "repo": "o/r", "pr_number": 42}},
+        {"op": "list_pr_comments", "repo": "o/r", "pr_number": 42},
         ctx(),
     )
     assert out["ok"] is True
@@ -1163,12 +1134,10 @@ def test_list_pr_comments_passes_since_filter(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "list_pr_comments",
-                "repo": "o/r",
-                "pr_number": 1,
-                "since": "2026-01-01T00:00:00Z",
-            },
+            "op": "list_pr_comments",
+            "repo": "o/r",
+            "pr_number": 1,
+            "since": "2026-01-01T00:00:00Z",
         },
         ctx(),
     )
@@ -1203,7 +1172,7 @@ def test_list_pr_review_comments_calls_pulls_endpoint(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "list_pr_review_comments", "repo": "o/r", "pr_number": 42}},
+        {"op": "list_pr_review_comments", "repo": "o/r", "pr_number": 42},
         ctx(),
     )
     assert out["ok"] is True
@@ -1233,13 +1202,11 @@ def test_reply_pr_review_comment_posts_to_replies_endpoint(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "reply_pr_review_comment",
-                "repo": "o/r",
-                "pr_number": 42,
-                "comment_id": 7,
-                "body": "fixed in next commit",
-            },
+            "op": "reply_pr_review_comment",
+            "repo": "o/r",
+            "pr_number": 42,
+            "comment_id": 7,
+            "body": "fixed in next commit",
         },
         ctx(),
     )
@@ -1254,13 +1221,11 @@ def test_reply_pr_review_comment_posts_to_replies_endpoint(
 def test_reply_pr_review_comment_requires_body() -> None:
     out = h.handler(
         {
-            "input": {
-                "op": "reply_pr_review_comment",
-                "repo": "o/r",
-                "pr_number": 1,
-                "comment_id": 1,
-                "body": "",
-            },
+            "op": "reply_pr_review_comment",
+            "repo": "o/r",
+            "pr_number": 1,
+            "comment_id": 1,
+            "body": "",
         },
         ctx(),
     )
@@ -1307,7 +1272,7 @@ def test_list_check_runs_calls_commits_endpoint(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "list_check_runs", "repo": "o/r", "ref": "abcdef0"}},
+        {"op": "list_check_runs", "repo": "o/r", "ref": "abcdef0"},
         ctx(),
     )
     assert out["ok"] is True
@@ -1336,12 +1301,10 @@ def test_list_check_runs_filters_by_conclusion(
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
         {
-            "input": {
-                "op": "list_check_runs",
-                "repo": "o/r",
-                "ref": "main",
-                "filter_conclusions": ["failure", "timed_out"],
-            },
+            "op": "list_check_runs",
+            "repo": "o/r",
+            "ref": "main",
+            "filter_conclusions": ["failure", "timed_out"],
         },
         ctx(),
     )
@@ -1375,7 +1338,7 @@ def test_list_check_runs_truncates_long_summary(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "list_check_runs", "repo": "o/r", "ref": "main"}},
+        {"op": "list_check_runs", "repo": "o/r", "ref": "main"},
         ctx(),
     )
     assert out["ok"] is True
@@ -1414,7 +1377,7 @@ def test_get_check_state_returns_passed_when_all_success(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 42}},
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 42},
         ctx(),
     )
     assert out["ok"] is True
@@ -1450,7 +1413,7 @@ def test_get_check_state_returns_failed_on_any_failure(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1481,7 +1444,7 @@ def test_get_check_state_treats_all_failure_modes_as_failed(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1510,7 +1473,7 @@ def test_get_check_state_returns_pending_on_incomplete_run(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1531,7 +1494,7 @@ def test_get_check_state_returns_pending_when_no_checks(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1540,7 +1503,7 @@ def test_get_check_state_returns_pending_when_no_checks(
 
 def test_get_check_state_validates_repo_format() -> None:
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "no-slash", "pr_number": 1}},
+        {"op": "get_check_state", "repo": "no-slash", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is False
@@ -1573,7 +1536,7 @@ def test_get_check_state_failure_in_suite_wins_over_passing_run(
 
     patch_client(httpx.MockTransport(respond))
     out = h.handler(
-        {"input": {"op": "get_check_state", "repo": "o/r", "pr_number": 1}},
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
         ctx(),
     )
     assert out["ok"] is True
@@ -1582,6 +1545,6 @@ def test_get_check_state_failure_in_suite_wins_over_passing_run(
 
 def test_open_spec_pr_op_no_longer_registered() -> None:
     """The legacy spec PR opcode was removed in the single-PR-per-issue refactor."""
-    out = h.handler({"input": {"op": "open_spec_pr"}}, ctx())
+    out = h.handler({"op": "open_spec_pr"}, ctx())
     assert out["ok"] is False
     assert out["error"]["kind"] == "unknown_op"

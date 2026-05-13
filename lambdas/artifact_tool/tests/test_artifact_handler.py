@@ -46,7 +46,8 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def invoke(payload: dict[str, Any]) -> dict[str, Any]:
-    return handler({"input": payload}, ctx())
+    # AgentCore Gateway delivers tool args as the event payload directly.
+    return handler(payload, ctx())
 
 
 def test_put_then_get_roundtrip() -> None:
@@ -91,10 +92,17 @@ def test_unknown_op_returns_error() -> None:
     assert out["error"]["kind"] == "unknown_op"
 
 
-def test_missing_input_returns_error() -> None:
-    out = handler({}, ctx())
+def test_non_dict_event_returns_error() -> None:
+    out = handler("not-a-dict", ctx())  # type: ignore[arg-type]
     assert out["ok"] is False
     assert out["error"]["kind"] == "invalid_event"
+
+
+def test_empty_event_is_unknown_op() -> None:
+    """An empty payload has no ``op`` key — that's an unknown_op, not invalid_event."""
+    out = handler({}, ctx())
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "unknown_op"
 
 
 def test_validation_error_on_missing_field() -> None:
