@@ -161,7 +161,7 @@ module "agents" {
     }
     proposer = {
       description = "Proposer agent — research-driven; opens PRs proposing prompt/MEMORY edits."
-      targets     = ["repo_helper"]
+      targets     = ["artifact_tool", "repo_helper"]
       features    = ["browser"]
       # bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
       bedrock_model_id = "us.anthropic.claude-sonnet-4-6"

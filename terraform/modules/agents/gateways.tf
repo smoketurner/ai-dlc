@@ -173,7 +173,7 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
               property {
                 name        = "op"
                 type        = "string"
-                description = "Operation: open_pr | comment_pr | create_branch | commit_files | get_pr."
+                description = "Operation: open_pr | comment_pr | create_branch | commit_files | get_pr | comment_issue | create_issue | list_issue_comments."
                 required    = true
               }
               property {
@@ -185,6 +185,11 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
                 name        = "pr_number"
                 type        = "integer"
                 description = "Pull request number (used by comment_pr, get_pr)."
+              }
+              property {
+                name        = "issue_number"
+                type        = "integer"
+                description = "Issue number (used by comment_issue, list_issue_comments)."
               }
               property {
                 name        = "branch"
@@ -204,17 +209,41 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
               property {
                 name        = "title"
                 type        = "string"
-                description = "PR title (used by open_pr)."
+                description = "PR or issue title (used by open_pr, create_issue)."
               }
               property {
                 name        = "body"
                 type        = "string"
-                description = "PR or comment body."
+                description = "PR / issue / comment body."
               }
               property {
                 name        = "message"
                 type        = "string"
                 description = "Commit message (used by commit_files)."
+              }
+              property {
+                name        = "labels"
+                type        = "array"
+                description = "GitHub labels to attach (used by create_issue)."
+
+                items {
+                  type = "string"
+                }
+              }
+              property {
+                name        = "parent_issue_url"
+                type        = "string"
+                description = "Backlink URL of the parent issue (used by create_issue to inject the `Spawned from` blockquote)."
+              }
+              property {
+                name        = "requestor"
+                type        = "string"
+                description = "GitHub login of the human requestor (used by create_issue attribution)."
+              }
+              property {
+                name        = "requestor_sub"
+                type        = "string"
+                description = "Cognito sub of the human requestor for on-behalf-of token minting (optional; falls back to the GitHub App installation token when absent)."
               }
               property {
                 name        = "files"
