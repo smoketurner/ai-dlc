@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -10,6 +11,7 @@ import pytest
 from common.runtime import ImplementerInput
 from implementer import client
 from implementer.finish import FinishReport
+from implementer.gates import GatesBlockedError
 from implementer.repo_ops import RepoSession
 
 
@@ -250,3 +252,46 @@ def test_fetch_revision_inputs_pulls_via_gateway(monkeypatch: pytest.MonkeyPatch
     assert "runs/r-1/validation/critique-r0.md" in keys
     assert inputs["review"].startswith("<body for ")
     assert inputs["mention"] == ""  # raised → swallowed → empty
+
+
+@pytest.mark.asyncio
+async def test_execute_implementation_writes_blocked_md_on_exhausted_gates(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+    tmp_path: Path,
+) -> None:
+    """When run_lint_gates raises GatesBlockedError, BLOCKED.md is written and committed."""
+    report = FinishReport(summary="Fixed the bug.", status="done")
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=report,
+        made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+
+    # Patch repo_path to a temp dir so BLOCKED.md write doesn't need a real checkout.
+    monkeypatch.setattr(client, "repo_path", lambda: tmp_path)
+
+    async def fake_gates(run_id: str, drive_agent_fn: Any) -> None:
+        raise GatesBlockedError("lint", "E501 line too long\n")
+
+    monkeypatch.setattr(client, "run_lint_gates", fake_gates)
+
+    with pytest.raises(GatesBlockedError):
+        await client.execute_implementation(payload)
+
+    blocked_md = tmp_path / "BLOCKED.md"
+    assert blocked_md.exists(), "BLOCKED.md must be written before re-raise"
+    content = blocked_md.read_text()
+    assert "make lint" in content
+    assert "E501 line too long" in content
+
+    # commit_changes must be called at least twice:
+    # once for the agent's initial commit, once for BLOCKED.md.
+    blocked_commits = [m for m in calls["commit_changes"] if "blocked" in m.lower()]
+    assert blocked_commits, "BLOCKED.md commit message must contain 'blocked'"
+
+    # push_branch must NOT be called — we bail before the push.
+    assert not calls["push_branch"], "push_branch must not be called after gates block"

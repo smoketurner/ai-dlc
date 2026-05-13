@@ -46,6 +46,7 @@ from common.runtime import (
 )
 from common.templating import make_template_env
 from implementer.finish import FinishReport, FinishSink
+from implementer.gates import GatesBlockedError, run_lint_gates
 from implementer.options import build_options
 from implementer.repo_ops import (
     call_artifact_tool,
@@ -62,6 +63,7 @@ from implementer.repo_ops import (
     post_inline_replies,
     push_branch,
     repo_made_real_changes,
+    repo_path,
     run_git,
     short_diff_summary,
 )
@@ -114,6 +116,25 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
         commit_message = build_commit_message(payload.run_id, report=report)
         if has_uncommitted_changes():
             commit_changes(commit_message)
+
+        try:
+            await run_lint_gates(payload.run_id, drive_agent)
+        except GatesBlockedError as exc:
+            blocked_path = repo_path() / "BLOCKED.md"
+            blocked_path.write_text(
+                f"# Gates blocked\n\nLast failing command: `make {exc.command}`\n\n"
+                f"## Output\n\n```\n{exc.output}\n```\n",
+                encoding="utf-8",
+            )
+            try:
+                commit_changes("gates: record blocked state")
+            except Exception:
+                logger.warning(
+                    "gates: failed to commit BLOCKED.md",
+                    run_id=payload.run_id,
+                )
+            raise
+
         push_branch(impl_branch)
 
         pr_url = open_impl_pr(
