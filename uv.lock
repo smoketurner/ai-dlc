@@ -1019,6 +1019,7 @@ dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "strands-agents" },
     { name = "structlog" },
 ]
 
@@ -1032,6 +1033,7 @@ requires-dist = [
     { name = "httpx", specifier = "==0.28.1" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
+    { name = "strands-agents", specifier = "==1.38.0" },
     { name = "structlog", specifier = "==25.5.0" },
 ]
 

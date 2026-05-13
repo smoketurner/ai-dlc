@@ -20,11 +20,11 @@ own ``pyproject.toml``.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 
-import structlog
 from bedrock_agentcore.tools.browser_client import BrowserClient
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -37,7 +37,7 @@ BROWSER_GOTO_TIMEOUT_MS = 30_000
 # agent receives the full content and decides what to keep.
 BROWSER_TEXT_LIMIT = 5_000_000
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +156,7 @@ def browse_url(url: str, extract_js: str | None = None) -> dict[str, Any]:
         try:
             stop_session(sdk_client)
         except AgentCoreBrowserError as exc:
-            logger.warning("browser stop_session failed", err=str(exc))
+            logger.warning("browser stop_session failed", extra={"err": str(exc)})
 
 
 def navigate_and_extract(
@@ -192,5 +192,5 @@ def navigate_and_extract(
             finally:
                 chromium.close()
     except PlaywrightError as exc:
-        logger.warning("browser navigation failed", url=url, err=str(exc))
+        logger.warning("browser navigation failed", extra={"url": url, "err": str(exc)})
         return {"error": f"browse failed: {exc.__class__.__name__}: {exc}"}

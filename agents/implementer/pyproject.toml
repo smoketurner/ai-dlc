@@ -12,6 +12,10 @@ dependencies = [
     "httpx==0.28.1",
     "pydantic==2.13.4",
     "pyjwt[crypto]==2.12.1",
+    # MCPClient is used (via common.gateway_tools) for the per-agent gateway
+    # connection. The implementer's primary loop is Claude Agent SDK, but
+    # gateway-routed S3 + GitHub ops still flow through Strands' MCP client.
+    "strands-agents==1.38.0",
     "structlog==25.5.0",
 ]
 
