@@ -12,9 +12,8 @@
       <tr>
         <th class="px-3 py-2">run_id</th>
         <th class="px-3 py-2">project</th>
-        <th class="px-3 py-2">status</th>
-        <th class="px-3 py-2">spec</th>
-        <th class="px-3 py-2 text-right">tasks</th>
+        <th class="px-3 py-2">state</th>
+        <th class="px-3 py-2">PR</th>
         <th class="px-3 py-2 text-right">tokens (in/out)</th>
         <th class="px-3 py-2 text-right">cost</th>
         <th class="px-3 py-2 w-px"></th>
@@ -26,9 +25,12 @@
           class="border-b last:border-0 hover:bg-slate-50">
         <td class="px-3 py-2"><a href="/runs/{{ run.run_id }}" class="text-sky-700 hover:underline">{{ run.run_id }}</a></td>
         <td class="px-3 py-2">{{ run.project_slug }}</td>
-        <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs bg-slate-200">{{ run.status }}</span></td>
-        <td class="px-3 py-2">{{ run.spec_slug or "—" }}</td>
-        <td class="px-3 py-2 text-right">{{ run.tasks_completed }}/{{ run.tasks_total }}</td>
+        <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs bg-slate-200">{{ run.current_state or run.status }}</span></td>
+        <td class="px-3 py-2">
+          {% if run.pr_url %}
+          <a href="{{ run.pr_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline font-mono text-xs">{{ run.pr_url.split('/')[-2] }}/{{ run.pr_url.split('/')[-1] }}</a>
+          {% else %}—{% endif %}
+        </td>
         <td class="px-3 py-2 text-right font-mono text-xs text-slate-500">
           {% if run.total_token_in or run.total_token_out %}{{ "{:,}".format(run.total_token_in) }}/{{ "{:,}".format(run.total_token_out) }}{% else %}—{% endif %}
         </td>

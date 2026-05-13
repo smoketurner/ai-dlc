@@ -48,12 +48,11 @@ resource "aws_dynamodb_table" "runs" {
     projection_type = "ALL"
   }
 
-  # gsi_pr: PR-URL → STATE/TASK row lookup. Populated by the state_router
-  # when it opens the spec PR (writes pr_url onto STATE) and by the
-  # event_projector when it applies TASK.READY (writes pr_url onto the
-  # TASK row). The dashboard webhook queries this index to resolve a
-  # GitHub PR webhook to the right run/task and emit the right
-  # business event (SPEC.APPROVED, TASK.ITERATION_REQUESTED, etc.).
+  # gsi_pr: PR-URL → STATE row lookup. Populated by the event_projector
+  # when it applies IMPL_PR.OPENED (writes pr_url onto STATE). The
+  # dashboard webhook queries this index to resolve a GitHub PR webhook
+  # to the right run and emit the right business event
+  # (IMPL.ITERATION_REQUESTED, CHECKS.PASSED, CHECKS.FAILED, RUN.COMPLETED, …).
   global_secondary_index {
     name = "gsi_pr"
     key_schema {

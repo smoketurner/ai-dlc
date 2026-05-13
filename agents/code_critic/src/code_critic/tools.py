@@ -1,4 +1,4 @@
-"""Strands tools the Code-Critic uses to read the spec and write its critique.
+"""Strands tools the Code-Critic uses to read the plan and write its critique.
 
 The code-critic runs in the AgentCore Runtime container with IAM
 credentials scoped to the artifacts + memory_md S3 buckets. Tools speak
@@ -23,8 +23,6 @@ from common.memory_md import read_memory_md, read_stack_profile_md
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
-VALID_SPEC_DOCS = frozenset({"requirements", "design", "tasks"})
-
 
 @cache
 def s3_client() -> S3Client:
@@ -33,25 +31,23 @@ def s3_client() -> S3Client:
 
 
 def artifacts_bucket() -> str:
-    """Bucket holding run artifacts (specs, ADRs, critiques)."""
+    """Bucket holding run artifacts (plans, critiques)."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
 
 
-def read_spec_doc(spec_slug: str, doc: str) -> str:
-    """Read one of the three spec documents from S3.
+def read_plan_doc(plan_s3_key: str) -> str:
+    """Read the architect's plan from S3.
 
     Args:
-        spec_slug: Slug folder under ``specs/`` — e.g., ``add-healthz``.
-        doc: One of ``requirements`` | ``design`` | ``tasks``.
+        plan_s3_key: Bucket-relative key — e.g., ``runs/{run_id}/plan.md``.
 
     Returns:
-        The Markdown body of the requested document.
+        The Markdown body of the plan, or an empty string if missing.
     """
-    if doc not in VALID_SPEC_DOCS:
-        msg = f"doc must be one of {sorted(VALID_SPEC_DOCS)}, got {doc!r}"
-        raise ValueError(msg)
-    key = f"specs/{spec_slug}/{doc}.md"
-    obj = s3_client().get_object(Bucket=artifacts_bucket(), Key=key)
+    try:
+        obj = s3_client().get_object(Bucket=artifacts_bucket(), Key=plan_s3_key)
+    except Exception:
+        return ""
     return obj["Body"].read().decode("utf-8")
 
 
@@ -86,5 +82,5 @@ def critique_s3_key(*, run_id: str, revision_number: int) -> str:
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
 read_stack_profile_md_tool = tool(read_stack_profile_md)
-read_spec_doc_tool = tool(read_spec_doc)
+read_plan_doc_tool = tool(read_plan_doc)
 browse_url_tool = tool(browse_url)

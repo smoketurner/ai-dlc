@@ -7,7 +7,7 @@ from typing import Any
 
 from common.state import TERMINAL_RUN_STATES, RunState
 from dashboard.deps import ddb, settings
-from dashboard.models import EventLink, RunEvent, RunSummary, TaskSummary
+from dashboard.models import EventLink, RunEvent, RunSummary
 
 EVENT_LINK_LABELS: tuple[tuple[str, str], ...] = (
     ("pr_url", "PR"),
@@ -84,9 +84,6 @@ def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
         project_slug=item.get("project_slug", {}).get("S", ""),
         status=item.get("status", {}).get("S", "UNKNOWN"),
         current_state=item.get("current_state", {}).get("S") or None,
-        spec_slug=item.get("spec_slug", {}).get("S") or None,
-        tasks_completed=int(item.get("tasks_completed", {}).get("N", "0")),
-        tasks_total=int(item.get("tasks_total", {}).get("N", "0")),
         total_token_in=int(item.get("total_token_in", {}).get("N", "0")),
         total_token_out=int(item.get("total_token_out", {}).get("N", "0")),
         total_cost_usd=float(item.get("total_cost_usd", {}).get("N", "0")),
@@ -96,6 +93,20 @@ def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
         issue_number=int(issue_number_raw) if issue_number_raw is not None else None,
         issue_title=item.get("issue_title", {}).get("S") or None,
         pr_url=item.get("pr_url", {}).get("S") or None,
+        revision_count=int(item.get("revision_count", {}).get("N", "0")),
+        check_state=item.get("check_state", {}).get("S") or None,
+        reviewer_verdict=item.get("reviewer_verdict", {}).get("S") or None,
+        review_high_severity_count=int(
+            item.get("review_high_severity_count", {}).get("N", "0"),
+        ),
+        review_medium_severity_count=int(
+            item.get("review_medium_severity_count", {}).get("N", "0"),
+        ),
+        review_low_severity_count=int(
+            item.get("review_low_severity_count", {}).get("N", "0"),
+        ),
+        plan_s3_key=item.get("plan_s3_key", {}).get("S") or None,
+        critique_s3_key=item.get("critique_s3_key", {}).get("S") or None,
     )
 
 
@@ -128,39 +139,6 @@ def event_links(payload: dict[str, Any]) -> list[EventLink]:
         seen.add(value)
         links.append(EventLink(label=label, url=value))
     return links
-
-
-def get_run_tasks(run_id: str) -> list[TaskSummary]:
-    """Fetch TASK rows for ``run_id`` sorted by ``last_event_at``.
-
-    Returns every task with a ``pr_url``; rejected and closed tasks are
-    included so the dashboard preserves a full PR audit trail. Tasks
-    without a ``pr_url`` (e.g. still pending) are omitted because they
-    have nothing to link to.
-    """
-    cfg = settings()
-    resp = ddb().query(
-        TableName=cfg.runs_table,
-        KeyConditionExpression="pk = :p AND begins_with(sk, :t)",
-        ExpressionAttributeValues={
-            ":p": {"S": f"RUN#{run_id}"},
-            ":t": {"S": "TASK#"},
-        },
-    )
-    tasks = [task_summary_from_item(item) for item in resp.get("Items", [])]
-    tasks = [t for t in tasks if t.pr_url]
-    tasks.sort(key=lambda t: t.last_event_at or "")
-    return tasks
-
-
-def task_summary_from_item(item: dict[str, Any]) -> TaskSummary:
-    """Convert a TASK row into a :class:`TaskSummary`."""
-    return TaskSummary(
-        task_id=item["sk"]["S"].removeprefix("TASK#"),
-        status=item.get("status", {}).get("S", "unknown"),
-        pr_url=item.get("pr_url", {}).get("S") or None,
-        last_event_at=item.get("last_event_at", {}).get("S") or None,
-    )
 
 
 def get_run_state(run_id: str) -> RunState | None:

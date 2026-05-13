@@ -1,8 +1,8 @@
 """Run-state dispatch — pure functions ``Run -> Action``.
 
 Each handler decides the next action for one run state. No side
-effects: the executors in :mod:`state_router.execute` consume the
-returned actions and apply them.
+effects: the executor in :mod:`state_router.execute` consumes the
+returned action and applies it.
 
 The handler set is mostly 1:1 with :class:`~common.state.RunState`
 entries; states that wait on external events map to
@@ -12,18 +12,16 @@ entries; states that wait on external events map to
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from common.events import (
     EventEnvelope,
     RunCancelRequested,
+    RunFailed,
 )
 from common.github_mentions import strip_bot_mention
-from common.ids import CorrelationId, RunId, new_event_id, short_run_id
-from common.state import (
-    RunState,
-    TaskState,
-)
+from common.ids import CorrelationId, RunId, new_event_id
+from common.state import RunState
 from state_router.actions import (
     Action,
     AdvanceState,
@@ -32,27 +30,34 @@ from state_router.actions import (
     InvokeAgent,
     InvokeRepoHelper,
     Noop,
-    OpenImplPr,
-    SeedTasks,
-    WriteSyntheticSpec,
 )
 from state_router.config import (
     github_bot_login,
-    repo_helper_function_name,
     runtime_arn,
-)
-from state_router.dispatch_task import decide_task
-from state_router.synthetic_spec import (
-    SYNTHETIC_TASK_ID,
-    render_design,
-    render_requirements,
-    render_tasks,
 )
 
 if TYPE_CHECKING:
     from state_router.model import Run
 
 type RunHandler = Callable[["Run"], Action]
+
+
+MAX_REVISIONS = 3
+"""Upper bound on automated revision cycles before the run fails.
+
+Caps the agent-loop blast radius: if the reviewer keeps rejecting the
+implementer's fixes, or CI keeps going red, the run fails into the
+human's lap rather than spending tokens indefinitely.
+
+Counts: validator-driven (``request_changes``) and CI-driven
+(``CHECKS.FAILED``) revisions. Does not count: human ``@aidlc-bot``
+mentions (the human is actively steering, so the cap doesn't apply).
+"""
+
+
+# ---------------------------------------------------------------------------
+# received → triage (or straight to architect)
+# ---------------------------------------------------------------------------
 
 
 def handle_received(run: Run) -> Action:
@@ -113,14 +118,7 @@ def invoke_triage(run: Run, arn: str) -> Action:
 
 
 def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAgent:
-    """Dispatch the architect agent and advance to ``architect_running``.
-
-    ``prior_feedback`` carries any accumulated spec-PR-iteration comments
-    so the architect rewrites the docs to address them. Multiple
-    accumulated comments are joined with blank-line separators —
-    ``compose_message`` treats the whole blob as one feedback section.
-    """
-    prior_feedback = "\n\n".join(b.strip() for b in run.pending_spec_feedback if b.strip()) or None
+    """Dispatch the architect agent and advance to ``architect_running``."""
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-architect",
@@ -131,12 +129,14 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
                 run.triggering_comment_body,
                 github_bot_login(),
             ),
-            "prior_feedback": prior_feedback,
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,
             "requestor_sub": run.requestor_sub,
             "target_repo": run.target_repo,
+            "source_issue_url": run.source_issue_url,
+            "source_issue_title": run.source_issue_title or run.issue_title,
+            "source_issue_body": run.source_issue_body or run.issue_body,
         },
         target_pk=f"RUN#{run.run_id}",
         target_sk="STATE",
@@ -179,63 +179,52 @@ def invoke_proposer_research(run: Run, arn: str, *, advance_from: RunState) -> I
     )
 
 
-def handle_triage_decided(run: Run) -> Action:
-    """Branch on the triage's ``action`` (and ``workflow_kind`` for proceed).
+# ---------------------------------------------------------------------------
+# triage_decided → architect / proposer / cancel
+# ---------------------------------------------------------------------------
 
-    ``proceed`` + ``spec_driven`` → architect → critic → spec-PR flow.
-    ``proceed`` + ``bug_fix``/``upgrade``/``docs`` → synthetic spec.
-    ``ask`` → comment + label ``aidlc:awaiting-response`` on the issue;
-    cancel this run (the webhook mints a fresh run on the user's reply).
-    ``defer`` / ``decline`` → label the issue and cancel this run.
+
+_TRIAGE_CLOSE_LABELS: Mapping[str, tuple[str, str]] = {
+    "defer": ("aidlc:deferred", "triage deferred"),
+    "decline": ("aidlc:declined", "triage declined"),
+}
+
+
+def handle_triage_decided(run: Run) -> Action:
+    """Branch on the triage agent's ``action`` decision.
+
+    ``proceed`` → dispatch architect.
+    ``research`` → dispatch proposer.
+    ``ask`` → comment + label ``aidlc:awaiting-response``; cancel.
+    ``defer`` / ``decline`` → label the issue and cancel.
     """
     action = run.triage_action or "proceed"
     if action == "proceed":
-        return handle_triage_proceed(run)
+        return triage_proceed(run)
+    if action == "research":
+        return triage_research(run)
     if action == "ask":
         return triage_ask(run)
-    if action == "defer":
-        return triage_close(run, label="aidlc:deferred", reason="triage deferred")
-    if action == "decline":
-        return triage_close(run, label="aidlc:declined", reason="triage declined")
+    if action in _TRIAGE_CLOSE_LABELS:
+        label, reason = _TRIAGE_CLOSE_LABELS[action]
+        return triage_close(run, label=label, reason=reason)
     return Noop(f"unknown triage action: {action}")
 
 
-def handle_triage_proceed(run: Run) -> Action:
-    """Triage said ``proceed`` — fork on workflow_kind."""
-    if run.workflow_kind == "spec_driven" or run.workflow_kind is None:
-        arn = runtime_arn("architect")
-        if not arn:
-            return Noop("architect runtime ARN not yet provisioned")
-        return invoke_architect(run, arn, advance_from=RunState.triage_decided)
-    if run.workflow_kind == "research":
-        arn = runtime_arn("proposer")
-        if not arn:
-            return Noop("proposer runtime ARN not yet provisioned")
-        return invoke_proposer_research(run, arn, advance_from=RunState.triage_decided)
-    if run.workflow_kind in {"bug_fix", "upgrade", "docs"}:
-        return CompoundAction(
-            actions=(
-                WriteSyntheticSpec(
-                    s3_key_prefix=f"specs/{run.synthetic_spec_slug or run.run_id}/",
-                    requirements_md=render_requirements(run),
-                    design_md=render_design(run),
-                    tasks_md=render_tasks(run),
-                    target_pk=f"RUN#{run.run_id}",
-                    target_sk="STATE",
-                    advance_from=RunState.triage_decided.value,
-                    advance_to=RunState.tasks_in_progress.value,
-                ),
-                # Synthetic specs always have one task; seed its row before
-                # tasks_in_progress walks the (otherwise empty) task list.
-                SeedTasks(
-                    run_id=run.run_id,
-                    task_ids=(SYNTHETIC_TASK_ID,),
-                    project_slug=run.project_slug,
-                    spec_slug=run.synthetic_spec_slug or run.run_id,
-                ),
-            ),
-        )
-    return Noop(f"unknown workflow_kind: {run.workflow_kind}")
+def triage_proceed(run: Run) -> Action:
+    """Triage said ``proceed`` — dispatch the architect."""
+    arn = runtime_arn("architect")
+    if not arn:
+        return Noop("architect runtime ARN not yet provisioned")
+    return invoke_architect(run, arn, advance_from=RunState.triage_decided)
+
+
+def triage_research(run: Run) -> Action:
+    """Triage said ``research`` — dispatch the proposer."""
+    arn = runtime_arn("proposer")
+    if not arn:
+        return Noop("proposer runtime ARN not yet provisioned")
+    return invoke_proposer_research(run, arn, advance_from=RunState.triage_decided)
 
 
 def triage_ask(run: Run) -> Action:
@@ -304,16 +293,20 @@ def emit_run_cancel(run: Run, *, source: str, reason: str) -> EmitEvent:
     )
 
 
-def handle_spec_pending(run: Run) -> Action:
-    """Architect not yet dispatched — kick it off."""
-    arn = runtime_arn("architect")
-    if not arn:
-        return Noop("architect runtime ARN not yet provisioned")
-    return invoke_architect(run, arn, advance_from=RunState.spec_pending)
+# ---------------------------------------------------------------------------
+# designed → critic
+# ---------------------------------------------------------------------------
 
 
-def handle_spec_drafted(run: Run) -> Action:
-    """Architect produced a spec — dispatch the critic."""
+def handle_designed(run: Run) -> Action:
+    """Architect produced a plan — dispatch the critic against it.
+
+    The critic reads ``plan.md`` from S3 and emits an adversarial
+    review. Advisory only — its findings inform the implementer but do
+    not gate the run.
+    """
+    if not run.plan_s3_key:
+        return Noop("designed without plan_s3_key — projector hasn't projected yet")
     arn = runtime_arn("critic")
     if not arn:
         return Noop("critic runtime ARN not yet provisioned")
@@ -322,286 +315,89 @@ def handle_spec_drafted(run: Run) -> Action:
         runtime_session_id=f"{run.run_id}-critic",
         payload={
             "project_slug": run.project_slug,
-            "spec_slug": run.spec_slug,
-            "spec_s3_prefix": run.spec_s3_prefix,
+            "plan_s3_key": run.plan_s3_key,
             "intent": run.intent,
             "run_id": run.run_id,
             "correlation_id": run.correlation_id,
             "actor_id": run.actor_id,
             "requestor_sub": run.requestor_sub,
             "target_repo": run.target_repo,
+            "source_issue_url": run.source_issue_url,
+            "source_issue_title": run.source_issue_title or run.issue_title,
+            "source_issue_body": run.source_issue_body or run.issue_body,
         },
         target_pk=f"RUN#{run.run_id}",
         target_sk="STATE",
-        advance_from=RunState.spec_drafted.value,
+        advance_from=RunState.designed.value,
         advance_to=RunState.critic_running.value,
     )
 
 
-def handle_spec_critiqued(run: Run) -> Action:
-    """Critic done — open the spec PR via repo_helper.
+# ---------------------------------------------------------------------------
+# critiqued → implementer (first pass)
+# ---------------------------------------------------------------------------
 
-    When the architect re-produced a spec identical to what's already
-    on the base branch (a re-trigger that resulted in the same docs),
-    ``open_spec_pr`` short-circuits with ``no_change: true``. The run
-    skips ``spec_pr_open`` and lands directly on ``spec_approved`` —
-    the next beacon poll runs ``handle_spec_approved`` which seeds
-    tasks from the SPEC.READY-projected ``task_ids``.
+
+def handle_critiqued(run: Run) -> Action:
+    """Critic done — dispatch the implementer in ``mode=implementation``.
+
+    The implementer reads both ``plan.md`` and ``critique.md`` from S3,
+    works on a single branch ``aidlc/impl/{run_id}``, and opens the
+    single impl PR for the whole run. It emits ``IMPL_PR.OPENED`` when
+    done.
     """
-    fn = repo_helper_function_name()
-    if not fn or not run.spec_slug or not run.target_repo:
-        return Noop("repo_helper or spec context not yet available")
-    return InvokeRepoHelper(
-        op="open_spec_pr",
-        args={
-            "repo": run.target_repo,
-            "spec_slug": run.spec_slug,
-            "spec_s3_prefix": run.spec_s3_prefix,
+    if not run.plan_s3_key:
+        return Noop("critiqued without plan_s3_key — projector hasn't projected yet")
+    arn = runtime_arn("implementer")
+    if not arn:
+        return Noop("implementer runtime ARN not yet provisioned")
+    return InvokeAgent(
+        runtime_arn=arn,
+        runtime_session_id=f"{run.run_id}-impl",
+        payload={
+            "project_slug": run.project_slug,
             "run_id": run.run_id,
+            "correlation_id": run.correlation_id,
+            "actor_id": "state_router",
+            "mode": "implementation",
+            "plan_s3_key": run.plan_s3_key,
+            "critique_s3_key": run.critique_s3_key,
+            "revision_number": 0,
             "requestor_sub": run.requestor_sub,
-            # Issue-driven runs get a backlink in the spec PR body so
-            # GitHub's UI cross-references the source issue. Programmatic
-            # runs (POST /v1/runs) leave this None.
+            "target_repo": run.target_repo,
             "source_issue_url": run.source_issue_url,
         },
         target_pk=f"RUN#{run.run_id}",
         target_sk="STATE",
-        advance_from=RunState.spec_critiqued.value,
-        advance_to=RunState.spec_pr_open.value,
-        advance_on_no_change_to=RunState.spec_approved.value,
-        record_pr_url_attrs=("pr_url", "spec_pr_url"),
+        advance_from=RunState.critiqued.value,
+        advance_to=RunState.implementer_running.value,
     )
 
 
-def handle_spec_approved(run: Run) -> Action:
-    """Spec PR merged — seed task rows, create the impl branch, advance to tasks_in_progress.
-
-    The impl branch is the head of the unified implementation PR each
-    task merges into. It's created off ``main`` (which already carries
-    the just-merged spec docs from the spec PR), so the impl branch
-    starts identical to main and accumulates one merge commit per task.
-
-    ``InvokeRepoHelper`` carries the state advance: the branch must
-    exist before ``tasks_in_progress`` can dispatch task work. On
-    failure the executor bumps the breaker counter and enqueues a
-    retry beacon so the dispatch eventually retries (idempotent on the
-    repo_helper side — ``create_branch`` is 422-idempotent).
-    """
-    if not run.task_ids:
-        return Noop("spec_approved with no task_ids — projector hasn't seeded them")
-    if not run.target_repo or not run.spec_slug:
-        return Noop("spec_approved: missing target_repo / spec_slug")
-    impl_branch = impl_branch_name(run.spec_slug, run.run_id)
-    return CompoundAction(
-        actions=(
-            SeedTasks(
-                run_id=run.run_id,
-                task_ids=run.task_ids,
-                project_slug=run.project_slug,
-                spec_slug=run.spec_slug or run.run_id,
-            ),
-            InvokeRepoHelper(
-                op="create_branch",
-                args={
-                    "repo": run.target_repo,
-                    "branch": impl_branch,
-                    "base": "main",
-                    "requestor_sub": run.requestor_sub,
-                },
-                target_pk=f"RUN#{run.run_id}",
-                target_sk="STATE",
-                advance_from=RunState.spec_approved.value,
-                advance_to=RunState.tasks_in_progress.value,
-            ),
-        ),
-    )
+# ---------------------------------------------------------------------------
+# impl_pr_open → reviewer + tester + code_critic in parallel
+# ---------------------------------------------------------------------------
 
 
-def impl_branch_name(spec_slug: str, run_id: str) -> str:
-    """Conventional impl branch name. Mirrors ``implementer.repo_ops.impl_branch_name``."""
-    return f"aidlc/impl/{spec_slug}/{short_run_id(run_id)}"
-
-
-IMPL_BRANCH_CONTRIBUTOR_STATES: frozenset[TaskState] = frozenset(
-    {
-        TaskState.pr_open,
-        TaskState.pending_approval,
-        TaskState.reviewer_running,
-        TaskState.tester_running,
-        TaskState.iterating,
-        TaskState.blocked,
-        TaskState.merged,
-    },
-)
-"""Task states that prove an implementer merged into the impl branch.
-
-When any task on a run is in one of these states, at least one merge
-commit exists on the impl branch — enough for GitHub to render a
-non-empty PR. Until then, opening the PR would fail with "No commits
-between base and head" so we wait.
-"""
-
-
-IMPL_TASK_DONE_STATES: frozenset[TaskState] = frozenset(
-    {
-        TaskState.pr_open,
-        TaskState.pending_approval,
-        TaskState.blocked,
-        TaskState.merged,
-        TaskState.closed,
-        TaskState.failed,
-    },
-)
-"""Task states meaning the implementer is finished with that task.
-
-``pr_open`` is the typical resting state — the task's commit is on the
-impl branch and the task is waiting on the run-level validation pass.
-``blocked`` means the implementer flagged a structural problem. The
-remaining three are terminal-merged / terminal-closed / terminal-failed.
-
-When every task reaches one of these, the run advances from
-``tasks_in_progress`` to ``tasks_complete`` so validators can fire on
-the integrated diff. ``iterating`` and ``implementer_running`` are
-excluded — those mean the implementer is still working.
-"""
-
-
-def handle_tasks_in_progress(run: Run) -> Action:
-    """Walk task rows; dispatch any actionable, otherwise emit completion.
-
-    Two extra concerns on top of task dispatch:
-
-    * If any task has reached an impl-branch-contributing state and
-      ``run.pr_url`` is empty, open the unified impl PR (idempotent;
-      backfills ``pr_url`` to STATE + every TASK row).
-    * If ``run.pr_url`` is set, refresh the impl PR body so reviewers
-      see latest task statuses. One PATCH per beacon; cheap.
-
-    Task-level dispatch returns one action per task. We collect them
-    into a :class:`CompoundAction`. When every task is in a terminal
-    state, the run transitions to ``tasks_complete`` (not done yet —
-    the projector will apply ``RUN.COMPLETED → done``).
-    """
-    if not run.tasks:
-        return Noop("no tasks seeded yet")
-    pr_actions = impl_pr_actions(run)
-    if all(t.state in IMPL_TASK_DONE_STATES for t in run.tasks):
-        return CompoundAction(
-            actions=(
-                *pr_actions,
-                AdvanceState(
-                    target_pk=f"RUN#{run.run_id}",
-                    target_sk="STATE",
-                    advance_from=RunState.tasks_in_progress.value,
-                    advance_to=RunState.tasks_complete.value,
-                ),
-            ),
-        )
-    pending = [decide_task(run, t) for t in run.tasks]
-    real_actions = tuple(a for a in pending if not isinstance(a, Noop))
-    if not real_actions and not pr_actions:
-        return Noop("all tasks are running or waiting")
-    return CompoundAction(actions=(*pr_actions, *real_actions))
-
-
-def impl_pr_actions(run: Run) -> tuple[Action, ...]:
-    """Open or refresh the impl PR when there's something to PR.
-
-    Returns an empty tuple when no impl-branch contributor exists yet
-    (every task still in ``pending`` or ``implementer_running``) — the
-    impl branch is empty and a PR can't be opened. Once any task lands
-    in a contributor state, returns either an ``OpenImplPr`` (first
-    time) or an ``InvokeRepoHelper(update_pr)`` (subsequent refresh).
-    """
-    if not run.spec_slug or not run.target_repo:
-        return ()
-    has_contributor = any(t.state in IMPL_BRANCH_CONTRIBUTOR_STATES for t in run.tasks)
-    if not has_contributor:
-        return ()
-    title = f"impl: {run.spec_slug}"
-    body = render_impl_pr_body(run)
-    if not run.pr_url:
-        return (
-            OpenImplPr(
-                repo=run.target_repo,
-                head=impl_branch_name(run.spec_slug, run.run_id),
-                base="main",
-                title=title,
-                body=body,
-                run_id=run.run_id,
-                task_ids=tuple(t.task_id for t in run.tasks),
-            ),
-        )
-    pr_number = parse_pr_number(run.pr_url)
-    if pr_number is None:
-        return ()
-    return (
-        InvokeRepoHelper(
-            op="update_pr",
-            args={
-                "repo": run.target_repo,
-                "pr_number": pr_number,
-                "body": body,
-                "requestor_sub": run.requestor_sub,
-            },
-        ),
-    )
-
-
-def parse_pr_number(pr_url: str) -> int | None:
-    """Extract the PR number from ``https://github.com/owner/repo/pull/{n}``."""
-    tail = pr_url.rsplit("/", 1)[-1]
-    try:
-        return int(tail)
-    except ValueError:
-        return None
-
-
-def render_impl_pr_body(run: Run) -> str:
-    """Render the unified impl PR body — one checkbox row per task with status."""
-    status_by_id = {t.task_id: t.state.value for t in run.tasks}
-    task_ids = sorted(set(run.task_ids) | set(status_by_id.keys()))
-    lines = [
-        f"ai-dlc implementation run for `{run.spec_slug}` (run `{run.run_id}`).",
-        "",
-        "Each task below merged into this branch as its own commit; "
-        "merging this PR ships the whole spec.",
-        "",
-        "## Tasks",
-        "",
-    ]
-    for task_id in task_ids:
-        status = status_by_id.get(task_id, "pending")
-        checkbox = "x" if status == TaskState.merged.value else " "
-        lines.append(f"- [{checkbox}] `{task_id}` — {status}")
-    lines += ["", f"Spec docs: `docs/specs/{run.spec_slug}/`", ""]
-    return "\n".join(lines)
-
-
-MAX_REVISIONS = 3
-"""Upper bound on ``request_changes → revising`` cycles before the run fails.
-
-Caps the agent-loop blast radius: if the reviewer keeps rejecting the
-implementer's fixes, the run fails into the human's lap rather than
-spending tokens indefinitely.
-"""
-
-
-def handle_tasks_complete(run: Run) -> Action:
-    """Dispatch the validation pass: reviewer + tester + code-critic in parallel.
+def handle_impl_pr_open(run: Run) -> Action:
+    """Implementer opened the PR — dispatch the three validators in parallel.
 
     All three target the unified impl PR (``run.pr_url``). Reviewer is
-    the gatekeeper — its ``REVIEW.READY`` verdict drives the run's
-    next transition (``validation_complete`` handler reads the verdict).
-    Tester and code-critic findings are advisory; their reports land on
-    the impl PR and inform the implementer's revision pass if one is
-    triggered.
+    the gatekeeper: its ``REVIEW.READY`` verdict drives the run's next
+    transition. Tester and code-critic findings are advisory.
 
-    The :class:`InvokeAgent` advances ``tasks_complete → validation_running``
-    once; subsequent beacons in ``validation_running`` no-op.
+    Code-critic specifically reviews the implementation against the
+    **original GitHub issue** (not just the architect's plan), so it
+    additionally receives ``source_issue_url`` + title + body.
+
+    The compound AdvanceState moves the run ``impl_pr_open →
+    validation_running`` once all three invokes are queued; subsequent
+    beacons in ``validation_running`` no-op.
     """
-    if not run.pr_url or not run.spec_slug:
-        return Noop("impl PR or spec_slug not yet available")
+    if not run.pr_url:
+        return Noop("impl_pr_open without pr_url — projector hasn't projected yet")
+    if not run.plan_s3_key:
+        return Noop("impl_pr_open without plan_s3_key — architect output missing")
     invokes: list[InvokeAgent] = []
     for agent_name in ("reviewer", "tester", "code_critic"):
         arn = runtime_arn(agent_name)
@@ -616,7 +412,7 @@ def handle_tasks_complete(run: Run) -> Action:
             AdvanceState(
                 target_pk=f"RUN#{run.run_id}",
                 target_sk="STATE",
-                advance_from=RunState.tasks_complete.value,
+                advance_from=RunState.impl_pr_open.value,
                 advance_to=RunState.validation_running.value,
             ),
         ),
@@ -625,89 +421,209 @@ def handle_tasks_complete(run: Run) -> Action:
 
 def invoke_validator(run: Run, agent_name: str, arn: str) -> InvokeAgent:
     """Build the InvokeAgent for one validator targeting the impl PR."""
+    payload: dict[str, Any] = {
+        "project_slug": run.project_slug,
+        "plan_s3_key": run.plan_s3_key,
+        "pr_url": run.pr_url,
+        "run_id": run.run_id,
+        "correlation_id": run.correlation_id,
+        "actor_id": "state_router",
+        "requestor_sub": run.requestor_sub,
+        "revision_number": run.revision_count,
+    }
+    if agent_name == "code_critic":
+        payload["source_issue_url"] = run.source_issue_url
+        payload["source_issue_title"] = run.source_issue_title or run.issue_title
+        payload["source_issue_body"] = run.source_issue_body or run.issue_body
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-{agent_name}-r{run.revision_count}",
-        payload={
-            "project_slug": run.project_slug,
-            "spec_slug": run.spec_slug,
-            "spec_s3_prefix": run.spec_s3_prefix,
-            "pr_url": run.pr_url,
-            "run_id": run.run_id,
-            "correlation_id": run.correlation_id,
-            "actor_id": "state_router",
-            "requestor_sub": run.requestor_sub,
-            "revision_number": run.revision_count,
-        },
+        payload=payload,
     )
+
+
+# ---------------------------------------------------------------------------
+# validation_complete → checks gate or revision dispatch
+# ---------------------------------------------------------------------------
 
 
 def handle_validation_complete(run: Run) -> Action:
     """Branch on reviewer verdict — merge gate or revision pass.
 
-    ``approve`` / ``comment`` → ``awaiting_human_merge``; the run sits
-    until the human merges the impl PR.
+    ``approve`` / ``comment`` → read the impl PR's current Checks
+    aggregate via ``repo_helper.get_check_state``:
+
+    * ``passed`` → emit ``CHECKS.PASSED`` → ``awaiting_human_merge``.
+    * ``failed`` → emit ``CHECKS.FAILED`` → ``revising`` (counts toward
+      the revision cap).
+    * ``pending`` → advance to ``awaiting_checks`` so the next
+      ``CHECKS.PASSED`` / ``CHECKS.FAILED`` webhook lands the run on
+      the right cursor.
 
     ``request_changes`` → dispatch the implementer in ``mode=revision``
-    and advance to ``revising``. After ``MAX_REVISIONS`` cycles the
-    run fails into the human's lap with ``RUN.FAILED`` so the loop
-    can't spend tokens forever.
+    and advance to ``revising``. After ``MAX_REVISIONS`` automated
+    cycles the run fails into the human's lap with ``RUN.FAILED`` so
+    the loop can't spend tokens forever.
     """
     verdict = run.reviewer_verdict
     if verdict in {"approve", "comment", ""}:
+        return handle_validation_approve(run)
+    if verdict == "request_changes":
+        return handle_validation_request_changes(run)
+    return Noop(f"unknown reviewer verdict: {verdict!r}")
+
+
+def handle_validation_approve(run: Run) -> Action:
+    """Reviewer approved — gate on GitHub Checks state.
+
+    ``run.check_state`` is the aggregate the projector wrote when the
+    most recent ``CHECKS.PASSED`` / ``CHECKS.FAILED`` event landed. If
+    nothing has projected yet, we proactively advance into
+    ``awaiting_checks`` so the next webhook can land the run on the
+    correct cursor without racing this beacon.
+    """
+    if run.check_state == "passed":
         return AdvanceState(
             target_pk=f"RUN#{run.run_id}",
             target_sk="STATE",
             advance_from=RunState.validation_complete.value,
             advance_to=RunState.awaiting_human_merge.value,
         )
-    if verdict == "request_changes":
-        if run.revision_count >= MAX_REVISIONS:
-            return emit_run_failed(
-                run,
-                reason=(
-                    f"revision cap ({MAX_REVISIONS}) hit while reviewer.verdict "
-                    "is still request_changes"
-                ),
-            )
-        arn = runtime_arn("implementer")
-        if not arn:
-            return Noop("implementer runtime ARN not yet provisioned")
-        return CompoundAction(
-            actions=(
-                InvokeAgent(
-                    runtime_arn=arn,
-                    runtime_session_id=f"{run.run_id}-revision-{run.revision_count + 1}",
-                    payload={
-                        "project_slug": run.project_slug,
-                        "spec_slug": run.spec_slug,
-                        "spec_s3_prefix": run.spec_s3_prefix,
-                        "run_id": run.run_id,
-                        "correlation_id": run.correlation_id,
-                        "actor_id": "state_router",
-                        "mode": "revision",
-                        "pr_url": run.pr_url,
-                        "target_repo": run.target_repo,
-                        "source_issue_url": run.source_issue_url,
-                        "spec_pr_url": run.spec_pr_url,
-                        "revision_number": run.revision_count + 1,
-                    },
-                ),
-                AdvanceState(
-                    target_pk=f"RUN#{run.run_id}",
-                    target_sk="STATE",
-                    advance_from=RunState.validation_complete.value,
-                    advance_to=RunState.revising.value,
-                ),
+    if run.check_state == "failed":
+        return dispatch_revision(run, advance_from=RunState.validation_complete, automated=True)
+    return AdvanceState(
+        target_pk=f"RUN#{run.run_id}",
+        target_sk="STATE",
+        advance_from=RunState.validation_complete.value,
+        advance_to=RunState.awaiting_checks.value,
+    )
+
+
+def handle_validation_request_changes(run: Run) -> Action:
+    """Reviewer requested changes — dispatch revision or fail at cap."""
+    if run.revision_count >= MAX_REVISIONS:
+        return emit_run_failed(
+            run,
+            reason=(
+                f"revision cap ({MAX_REVISIONS}) hit while reviewer.verdict "
+                "is still request_changes"
             ),
         )
-    return Noop(f"unknown reviewer verdict: {verdict!r}")
+    return dispatch_revision(run, advance_from=RunState.validation_complete, automated=True)
+
+
+# ---------------------------------------------------------------------------
+# revising → implementer (mode=revision)
+# ---------------------------------------------------------------------------
+
+
+def handle_revising(run: Run) -> Action:
+    """Dispatch the implementer to apply pending revision feedback.
+
+    The projector writes ``pending_revision_feedback`` to the run row
+    when the triggering event lands (CHECKS.FAILED, IMPL.ITERATION_REQUESTED,
+    or a changes-requested REVIEW.READY). The implementer consumes it on
+    revision dispatch.
+
+    Note: ``handle_revising`` is reached only when the run is already
+    in ``revising`` (the projector advanced it via transition). It does
+    not increment ``revision_count`` itself — that's the dispatcher's
+    job in :func:`dispatch_revision` (called from
+    :func:`handle_validation_complete`). When ``revising`` is reached
+    directly via CHECKS.FAILED / IMPL.ITERATION_REQUESTED projection,
+    we still need to dispatch the implementer here.
+    """
+    return dispatch_revision(
+        run,
+        advance_from=None,
+        automated=False,
+        already_in_revising=True,
+    )
+
+
+def dispatch_revision(
+    run: Run,
+    *,
+    advance_from: RunState | None,
+    automated: bool,
+    already_in_revising: bool = False,
+) -> Action:
+    """Build the implementer revision invoke + optional state advance.
+
+    Args:
+        run: parsed run state.
+        advance_from: the state the run is currently in (the implementer
+            invoke includes the conditional advance). ``None`` when the
+            caller is already in ``revising`` and just needs to fire the
+            implementer.
+        automated: ``True`` when this revision is automated (validator-
+            or CI-driven); ``False`` for human-mention revisions. Used
+            to decide whether the new revision number counts toward the
+            cap (automated ones do; human ones don't — but
+            :func:`handle_validation_complete` checks the cap before
+            calling here, and human-mention revisions never reach this
+            via validation_complete).
+        already_in_revising: ``True`` when the run is already in
+            ``revising`` (called from :func:`handle_revising`) — skip
+            the state advance.
+    """
+    arn = runtime_arn("implementer")
+    if not arn:
+        return Noop("implementer runtime ARN not yet provisioned")
+    next_revision = run.revision_count + (1 if automated else 0)
+    invoke = build_revision_invoke(run, arn, next_revision=next_revision)
+    if already_in_revising or advance_from is None:
+        return invoke
+    return CompoundAction(
+        actions=(
+            invoke,
+            AdvanceState(
+                target_pk=f"RUN#{run.run_id}",
+                target_sk="STATE",
+                advance_from=advance_from.value,
+                advance_to=RunState.revising.value,
+            ),
+        ),
+    )
+
+
+def build_revision_invoke(run: Run, arn: str, *, next_revision: int) -> InvokeAgent:
+    """Construct the InvokeAgent for the implementer in ``mode=revision``."""
+    return InvokeAgent(
+        runtime_arn=arn,
+        runtime_session_id=f"{run.run_id}-revision-{next_revision}",
+        payload={
+            "project_slug": run.project_slug,
+            "run_id": run.run_id,
+            "correlation_id": run.correlation_id,
+            "actor_id": "state_router",
+            "mode": "revision",
+            "plan_s3_key": run.plan_s3_key,
+            "critique_s3_key": run.critique_s3_key,
+            "pr_url": run.pr_url,
+            "revision_number": next_revision,
+            "revision_feedback": list(run.pending_revision_feedback),
+            "target_repo": run.target_repo,
+            "source_issue_url": run.source_issue_url,
+            "requestor_sub": run.requestor_sub,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Terminal helpers
+# ---------------------------------------------------------------------------
 
 
 def emit_run_failed(run: Run, *, reason: str) -> EmitEvent:
-    """Emit ``RUN.FAILED`` so the projector advances to ``failed``."""
-    from common.events import RunFailed  # noqa: PLC0415 - local import to avoid cycle
+    """Emit ``RUN.FAILED`` so the projector advances to ``failed``.
 
+    The payload carries ``pr_url``, ``source_issue_url``, and
+    ``revision_count`` so the retrospector dispatcher can route the
+    failure to the agent with full context — on cap-hit, the agent
+    reads every revision's validator artifacts and proposes a
+    prompt / ``MEMORY.md`` update that would have prevented the failure.
+    """
     return EmitEvent(
         envelope=EventEnvelope[RunFailed](
             event_id=new_event_id(),
@@ -721,6 +637,9 @@ def emit_run_failed(run: Run, *, reason: str) -> EmitEvent:
                 error_class="RevisionCapReached",
                 error_message=reason,
                 retryable=False,
+                pr_url=run.pr_url or "",
+                source_issue_url=run.source_issue_url or "",
+                revision_count=run.revision_count,
             ),
         ),
     )
@@ -740,20 +659,18 @@ RUN_DISPATCH: Mapping[RunState, RunHandler] = {
     RunState.received: handle_received,
     RunState.triaging: noop_waiting,
     RunState.triage_decided: handle_triage_decided,
-    RunState.spec_pending: handle_spec_pending,
     RunState.architect_running: noop_waiting,
-    RunState.spec_drafted: handle_spec_drafted,
+    RunState.designed: handle_designed,
     RunState.critic_running: noop_waiting,
-    RunState.spec_critiqued: handle_spec_critiqued,
-    RunState.spec_pr_open: noop_waiting,
-    RunState.spec_approved: handle_spec_approved,
-    RunState.tasks_in_progress: handle_tasks_in_progress,
-    RunState.proposer_running: noop_waiting,
-    RunState.tasks_complete: handle_tasks_complete,
+    RunState.critiqued: handle_critiqued,
+    RunState.implementer_running: noop_waiting,
+    RunState.impl_pr_open: handle_impl_pr_open,
     RunState.validation_running: noop_waiting,
     RunState.validation_complete: handle_validation_complete,
-    RunState.revising: noop_waiting,
+    RunState.revising: handle_revising,
+    RunState.awaiting_checks: noop_waiting,
     RunState.awaiting_human_merge: noop_waiting,
+    RunState.proposer_running: noop_waiting,
     RunState.done: terminal,
     RunState.failed: terminal,
     RunState.cancelled: terminal,

@@ -23,8 +23,6 @@ from common.sandbox import get_pr_diff, run_pr_in_sandbox
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
-VALID_SPEC_DOCS = frozenset({"requirements", "design", "tasks"})
-
 
 @cache
 def s3_client() -> S3Client:
@@ -37,21 +35,21 @@ def artifacts_bucket() -> str:
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
 
 
-def read_spec_doc(spec_slug: str, doc: str) -> str:
-    """Read one of the three spec documents from S3.
+def read_plan_doc(plan_s3_key: str) -> str:
+    """Read the architect's plan from S3.
 
     Args:
-        spec_slug: Slug folder under ``specs/`` — e.g., ``add-healthz``.
-        doc: One of ``requirements`` | ``design`` | ``tasks``.
+        plan_s3_key: Bucket-relative key — e.g., ``runs/{run_id}/plan.md``.
 
     Returns:
-        The Markdown body of the requested document.
+        The Markdown body of the plan, or an empty string if the key is
+        missing (the reviewer should still run; it just lacks the plan
+        context the architect produced).
     """
-    if doc not in VALID_SPEC_DOCS:
-        msg = f"doc must be one of {sorted(VALID_SPEC_DOCS)}, got {doc!r}"
-        raise ValueError(msg)
-    key = f"specs/{spec_slug}/{doc}.md"
-    obj = s3_client().get_object(Bucket=artifacts_bucket(), Key=key)
+    try:
+        obj = s3_client().get_object(Bucket=artifacts_bucket(), Key=plan_s3_key)
+    except Exception:
+        return ""
     return obj["Body"].read().decode("utf-8")
 
 
@@ -87,7 +85,7 @@ def review_s3_key(*, run_id: str, revision_number: int) -> str:
 # Strands wrappers — added to the agent's tool list.
 read_memory_md_tool = tool(read_memory_md)
 read_stack_profile_md_tool = tool(read_stack_profile_md)
-read_spec_doc_tool = tool(read_spec_doc)
+read_plan_doc_tool = tool(read_plan_doc)
 get_pr_diff_tool = tool(get_pr_diff)
 run_pr_in_sandbox_tool = tool(run_pr_in_sandbox)
 browse_url_tool = tool(browse_url)

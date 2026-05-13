@@ -1,7 +1,7 @@
 """Strands Agent factory for the Reviewer.
 
 The Reviewer uses Claude Sonnet 4.6 on Bedrock. The agent loop runs
-with spec/memory readers plus a sandbox runner and finishes by emitting
+with plan/memory readers plus a sandbox runner and finishes by emitting
 a :class:`Review` via Strands' ``structured_output_model`` parameter —
 that constrains the model to produce JSON matching the schema while
 still letting it call grounding tools.
@@ -23,7 +23,7 @@ from reviewer.tools import (
     browse_url_tool,
     get_pr_diff_tool,
     read_memory_md_tool,
-    read_spec_doc_tool,
+    read_plan_doc_tool,
     read_stack_profile_md_tool,
     run_pr_in_sandbox_tool,
 )
@@ -55,7 +55,7 @@ def build_agent(run_id: str) -> Agent:
         tools=[
             read_memory_md_tool,
             read_stack_profile_md_tool,
-            read_spec_doc_tool,
+            read_plan_doc_tool,
             get_pr_diff_tool,
             run_pr_in_sandbox_tool,
             browse_url_tool,
@@ -69,7 +69,7 @@ def review_pr(
     agent: Agent,
     *,
     project_slug: str,
-    spec_slug: str,
+    plan_s3_key: str,
     run_id: str,
     pr_url: str,
     revision_number: int,
@@ -77,12 +77,12 @@ def review_pr(
     """Run the agent and return the validated Review.
 
     Targets the integrated impl PR — the reviewer reads ``get_pr_diff``
-    for the full diff (every task plus any prior revision) and produces
+    for the full diff (every step plus any prior revision) and produces
     a single coherent verdict.
     """
     user_message = compose_message(
         project_slug=project_slug,
-        spec_slug=spec_slug,
+        plan_s3_key=plan_s3_key,
         run_id=run_id,
         pr_url=pr_url,
         revision_number=revision_number,
@@ -93,7 +93,7 @@ def review_pr(
 def compose_message(
     *,
     project_slug: str,
-    spec_slug: str,
+    plan_s3_key: str,
     run_id: str,
     pr_url: str,
     revision_number: int,
@@ -110,9 +110,9 @@ def compose_message(
         )
     )
     parts = [
-        agent_memory_preamble(project_slug=project_slug, query=spec_slug),
+        agent_memory_preamble(project_slug=project_slug, query=pr_url),
         f"Project: {project_slug}",
-        f"Spec slug: {spec_slug}",
+        f"Plan S3 key: {plan_s3_key}",
         f"Run id: {run_id}",
         f"Impl PR: {pr_url}",
         f"Revision number: {revision_number}",
@@ -120,9 +120,10 @@ def compose_message(
         revision_context,
         "",
         f"Read the project's MEMORY.md (project_slug={project_slug}) to apply "
-        f"its conventions. Read the three spec documents (spec_slug={spec_slug}) "
-        f"to know what the run is supposed to accomplish. Fetch the impl PR "
-        f"diff with ``get_pr_diff`` and produce a single coherent verdict over "
-        "the integrated diff. Return a Review JSON object.",
+        f"its conventions. Read the architect's plan via "
+        f"``read_plan_doc(plan_s3_key='{plan_s3_key}')`` so you know what the "
+        f"run is supposed to accomplish. Fetch the impl PR diff with "
+        f"``get_pr_diff`` and produce a single coherent verdict over the "
+        "integrated diff. Return a Review JSON object.",
     ]
     return "\n".join(parts)

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "REQUEST.RECEIVED",
-  "description": "A new run request has entered the system.",
+  "title": "IMPL.ITERATION_REQUESTED",
+  "description": "A signal on the impl PR (typically an @aidlc-bot mention) that should trigger an implementer revision. Uncapped; the human is actively steering.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["REQUEST.RECEIVED"] },
+    "type": { "type": "string", "enum": ["IMPL.ITERATION_REQUESTED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,24 +26,29 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_slug", "intent", "requestor"],
+      "required": [
+        "project_slug",
+        "pr_url",
+        "delivery_id",
+        "source",
+        "commenter",
+        "feedback_body"
+      ],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "intent": { "type": "string", "minLength": 1, "maxLength": 4096 },
-        "requestor": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "requestor_sub": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
-        "target_repo": {
-          "type": ["string", "null"],
-          "minLength": 3,
-          "maxLength": 128,
-          "pattern": "^[\\w.-]+/[\\w.-]+$"
-        },
-        "source_issue_url": {
-          "type": ["string", "null"],
+        "pr_url": {
+          "type": "string",
           "minLength": 1,
           "maxLength": 512,
-          "pattern": "^https://github\\.com/.+$"
-        }
+          "pattern": "^https://github\\.com/.+/pull/[0-9]+$"
+        },
+        "delivery_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "source": {
+          "type": "string",
+          "enum": ["issue_comment_mention", "review_comment_mention", "review_changes_requested"]
+        },
+        "commenter": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "feedback_body": { "type": "string", "minLength": 1, "maxLength": 8192 }
       }
     }
   }

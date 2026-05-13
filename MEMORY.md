@@ -6,7 +6,7 @@ Six sections, in order. Agents fail-fast on unknown headers.
 
 ## Overview
 
-ai-dlc is the agentic SDLC platform itself. Eight agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer, Retrospector) drive a spec-driven pipeline gated by GitHub PR reviews. The Architect writes a spec (requirements + design + tasks); the Critic advises on it; the spec PR is reviewed and merged as a bundle; the Implementer then works through `tasks.md` opening one PR per task with the Reviewer and Tester acting as advisors. Triage classifies issue-driven runs; Proposer drives memory and prompt updates; Retrospector fires on terminal events to extract lessons into `MEMORY.md`. Orchestration is an SQS-beacon + DDB-state machine driven by a single `state_router` Lambda.
+ai-dlc is the agentic SDLC platform itself. Nine agents (Architect, Critic, Implementer, Reviewer, Tester, Code-Critic, Triage, Proposer, Retrospector) drive a single-PR-per-issue pipeline gated by GitHub PR review + GitHub Checks. Triage classifies an issue-driven run; the Architect writes a structured `plan.md` to S3 (Context, Assumptions, Approach, Files, Reuse, Implementation steps, Verification, Out of scope); the Critic adversarially reviews the plan; the Implementer opens a single impl PR for the run. Reviewer, Tester, and Code-Critic then run in parallel against the PR — the Code-Critic specifically reviews how well the implementation addresses the original GitHub issue. Humans steer via `@aidlc-bot` mentions on the PR; the Implementer auto-iterates on reviewer-requested changes and failing GitHub Checks (capped at three automated revisions). Proposer drives memory/prompt update PRs; Retrospector fires on terminal events. Orchestration is an SQS-beacon + DDB state machine driven by a single `state_router` Lambda.
 
 ## Conventions
 
@@ -14,8 +14,8 @@ ai-dlc is the agentic SDLC platform itself. Eight agents (Architect, Critic, Imp
 - All agents ship as `linux/arm64` container images on AgentCore Runtime.
 - Pin every dependency to an exact version. Pin every GitHub Action to a SHA with a version comment.
 - Replace, don't deprecate: when a new implementation supersedes an old one, remove the old one entirely.
-- **Spec-driven**: every feature ships as a three-document spec under `docs/specs/{slug}/{requirements,design,tasks}.md`. The Architect writes the spec; reviewers approve it as a bundle (one HITL gate). The Implementer works the `tasks.md` checklist, opening **one PR per task**.
-- Markdown everywhere: requirements, design, tasks, ADRs, MEMORY.md.
+- **Single-PR-per-issue**: each GitHub issue assigned to the bot produces exactly one impl PR. The Architect's `plan.md` and the Critic's `critique.md` are internal S3 artifacts — not committed to git. The Implementer reads both, executes on one branch (`aidlc/impl/{run_id}`), opens one PR.
+- Markdown everywhere: plan, critique, ADRs, MEMORY.md.
 - Every Python Lambda depends on `aws-lambda-powertools==3.28.0` and uses its `Logger` / `Tracer` / `Metrics` / `event_source` primitives in place of stdlib `logging`.
 - Prefer `terraform-aws-modules/*/aws` community modules over bespoke wrappers for AWS resources. Bespoke code only where the community module doesn't cover the surface (e.g., project-specific security-group rules, the EventBridge schema registry).
 - In every Terraform module: `data` blocks live in `data.tf`, `locals` in `locals.tf`. Resource files (`lambdas.tf`, `sqs.tf`, etc.) contain only `resource` blocks.
@@ -26,20 +26,7 @@ ai-dlc is the agentic SDLC platform itself. Eight agents (Architect, Critic, Imp
 
 ## Decisions
 
-Two kinds of decisions, both linked from here.
-
-**Specs** — one per feature, three documents per spec:
-
-```
-docs/specs/{slug}/
-  requirements.md   — user stories + acceptance criteria
-  design.md         — how it's built; data model, components, sequence
-  tasks.md          — ordered, atomic units (`- [ ] T-001 ...`); each links to a requirement
-```
-
-Format the bullet here as: `- [{slug}](docs/specs/{slug}/): one-line summary`.
-
-**ADRs** — cross-cutting architectural decisions that outlive a single spec. Most specs don't produce an ADR; one is added when the design surfaces a decision worth committing to long-term. Format: `- [ADR-NNNN](docs/ADRs/NNNN-slug.md): one-line summary`.
+**ADRs** — cross-cutting architectural decisions worth committing to long-term. The Architect's `plan.md` lives in S3 (`runs/{run_id}/plan.md`), not in the repo; if a plan surfaces an architectural choice with multi-run reach, the Implementer commits a new ADR under `docs/ADRs/` as part of the impl PR. Format: `- [ADR-NNNN](docs/ADRs/NNNN-slug.md): one-line summary`.
 
 **Standing decisions** — load-bearing choices that aren't tied to a single spec:
 
@@ -53,10 +40,12 @@ Format the bullet here as: `- [{slug}](docs/specs/{slug}/): one-line summary`.
 
 ## Glossary
 
-- **Spec** — A three-document feature bundle (`requirements.md`, `design.md`, `tasks.md`) under `docs/specs/{slug}/`. Written by the Architect, approved as a unit, executed task-by-task by the Implementer.
-- **Task** — One checkbox in a spec's `tasks.md`. Atomic, links back to a requirement, gets its own PR and HITL gate.
-- **ADR** — Architectural Decision Record. Cross-cutting decision under `docs/ADRs/`. Surfaces from a spec's design when something is worth committing to long-term.
-- **HITL** — Human-in-the-loop. Mandatory PR-review gates: one for the spec, one per task.
+- **Plan** — The single markdown document the Architect writes for a run (`s3://artifacts/runs/{run_id}/plan.md`). Sections: Context, Assumptions, Approach, Files, Reuse, Implementation steps, Verification, Out of scope. Internal artifact — not committed to git.
+- **Critique** — The Critic's adversarial review of the plan (`s3://artifacts/runs/{run_id}/critique.md`). Severity-tagged findings (high/medium/low). Advisory — doesn't gate the run.
+- **Impl PR** — The single GitHub PR opened by the Implementer for a run, off branch `aidlc/impl/{run_id}`. The only PR a human reviews per run.
+- **ADR** — Architectural Decision Record. Cross-cutting decision under `docs/ADRs/`. Surfaced from a plan when a choice has multi-run reach; committed as part of the impl PR.
+- **HITL** — Human-in-the-loop. PR review on the impl PR (one gate). Additionally, humans steer mid-run by `@aidlc-bot` mentions on the impl PR.
+- **Revision** — One implementer pass after the initial PR opens. Triggered by a reviewer requesting changes, a `@aidlc-bot` mention, or a failing GitHub Check. Automated revisions are capped at three per run; human-mention revisions are uncapped.
 - **Run** — One execution of the SDLC pipeline. Identified by a UUID7 `run_id`.
 
 ## Notes

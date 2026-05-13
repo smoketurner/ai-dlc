@@ -2,8 +2,8 @@
 
 Pins the AgentCore async-task contract: ``handler()`` must return
 ``{"status": "dispatched", ...}`` in ~100ms regardless of how long
-the actual spec generation takes, and the background thread must
-emit either ``SPEC.READY`` (success) or ``RUN.FAILED`` (exception)
+the actual plan generation takes, and the background thread must
+emit either ``DESIGN.READY`` (success) or ``RUN.FAILED`` (exception)
 so the run never wedges silently.
 """
 
@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from architect import app
-from common.events import EventEnvelope, RunFailed, SpecReady
+from common.events import DesignReady, EventEnvelope, RunFailed
 from common.runtime import ArchitectInput, ArchitectResult
 
 
@@ -54,15 +54,11 @@ def test_handler_returns_immediately_on_success(captured: list[EventEnvelope[Any
 
     def slow_run_architect(payload: ArchitectInput, async_task_id: int) -> None:
         time.sleep(0.05)
-        app.publish_spec_ready(
+        app.publish_design_ready(
             payload,
             ArchitectResult(
-                spec_slug="add-healthz",
-                spec_s3_prefix="specs/add-healthz/",
-                requirements_summary="r",
-                design_summary="d",
-                task_count=1,
-                task_ids=["T-001"],
+                plan_s3_key="runs/r-1/plan.md",
+                summary="Add /healthz route.",
                 proposed_adrs=[],
                 session_id=payload.run_id,
             ),
@@ -79,8 +75,8 @@ def test_handler_returns_immediately_on_success(captured: list[EventEnvelope[Any
     assert "task_id" in out
     # Entrypoint returns long before the body finishes.
     assert elapsed < 0.5
-    # Background thread eventually emits SPEC.READY.
-    assert wait_for(lambda: any(e.type == "SPEC.READY" for e in captured))
+    # Background thread eventually emits DESIGN.READY.
+    assert wait_for(lambda: any(e.type == "DESIGN.READY" for e in captured))
 
 
 def test_background_exception_emits_run_failed(captured: list[EventEnvelope[Any]]) -> None:
@@ -128,7 +124,7 @@ def test_publish_run_failed_builds_envelope(captured: list[EventEnvelope[Any]]) 
     env = captured[0]
     assert env.type == "RUN.FAILED"
     assert env.actor_id == "architect"
-    assert isinstance(env.payload, SpecReady) is False
+    assert isinstance(env.payload, DesignReady) is False
     assert isinstance(env.payload, RunFailed)
     assert env.payload.error_class == "ValueError"
     assert env.payload.error_message == "nope"

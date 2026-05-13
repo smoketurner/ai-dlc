@@ -4,10 +4,11 @@ The Critic produces a :class:`Critique` whose Markdown rendering lands at:
 
   s3://{artifacts_bucket}/runs/{run_id}/critique.md
 
-The critique sits alongside the spec bundle and is referenced from the
-``CRITIQUE.READY`` event payload via ``critique_s3_key``. The HITL gate at
-``WaitForSpecApproval`` includes the critique link so reviewers see it
-before approving the spec.
+The critique sits alongside the architect's ``plan.md`` and is referenced
+from the ``CRITIQUE.READY`` event payload via ``critique_s3_key``. The
+implementer reads both the plan and the critique on the first
+implementation pass and is instructed to address every high-severity
+finding (or document why it deviated).
 """
 
 from __future__ import annotations
@@ -28,14 +29,14 @@ class _Frozen(BaseModel):
 
 
 class Issue(_Frozen):
-    """One issue the Critic identified in the spec.
+    """One issue the Critic identified in the architect's plan.
 
     ``path``, ``symbol``, and ``line`` together anchor the issue to a
-    concrete location in the spec bundle (``requirements.md``,
-    ``design.md``, ``tasks.md``) — the dashboard renders ``path:line`` as
-    a deep link and uses ``symbol`` as the section / task-id label.
-    ``symbol`` and ``line`` are optional because not every issue can be
-    pinned to a specific element (e.g., a missing-section gap).
+    concrete location. For most plan-level findings ``path`` will be
+    ``runs/{run_id}/plan.md``; for findings that reference a repo file
+    the architect named, ``path`` can be that file. ``symbol`` typically
+    holds the plan section header (e.g. ``Approach``, ``Files to modify
+    / create``, ``Implementation steps``).
     """
 
     severity: Severity
@@ -49,13 +50,14 @@ class Issue(_Frozen):
 class Critique(_Frozen):
     """The full adversarial review produced by the Critic per session.
 
-    ``issues`` is required and non-empty: the Critic's job is to find at
-    least one thing — a Critique with zero issues is treated as a model
-    failure and surfaced to the agent as a Pydantic ``ValidationError``,
-    which Strands' structured-output mode lets the agent self-correct.
+    ``issues`` is required and non-empty: the Critic's job is to find
+    at least one thing — a Critique with zero issues is treated as a
+    model failure and surfaced to the agent as a Pydantic
+    ``ValidationError``, which Strands' structured-output mode lets
+    the agent self-correct.
     """
 
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
+    run_id: Annotated[str, Field(min_length=1, max_length=64)]
     summary: Annotated[str, Field(min_length=1, max_length=2048)]
     issues: Annotated[NoneSafeList[Issue], Field(min_length=1, max_length=64)]
     strengths: NoneSafeList[str] = Field(default_factory=list)
@@ -81,7 +83,7 @@ def render_critique(critique: Critique) -> str:
     """Render the critique as a Markdown document."""
     counts = severity_counts(critique)
     lines = [
-        f"# Critique — `{critique.spec_slug}`",
+        f"# Critique — run `{critique.run_id}`",
         "",
         f"> Issues: **{counts['high']}** high · **{counts['medium']}** medium · "
         f"**{counts['low']}** low",

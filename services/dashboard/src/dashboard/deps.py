@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
     from mypy_boto3_events.client import EventBridgeClient
+    from mypy_boto3_lambda.client import LambdaClient
     from mypy_boto3_s3.client import S3Client
 
 
@@ -40,6 +41,11 @@ class Settings(BaseModel):
     dashboard_workload_name: str
     github_oauth_provider_name: str
     dashboard_oauth_return_url: str
+    # Lambda function name for the ``repo_helper`` worker. Used by the
+    # webhook handler to call ``get_check_state`` synchronously after a
+    # ``check_run`` / ``check_suite`` / ``workflow_run`` event aggregates.
+    # Empty string in dev/test environments where repo_helper isn't wired.
+    repo_helper_function_name: str
     # Login of the GitHub bot the platform runs as. When set, an
     # ``issues.assigned`` webhook routes to triage if the new assignee
     # matches this login. Unset → assigned-trigger is disabled (only the
@@ -72,6 +78,7 @@ def settings() -> Settings:
         github_oauth_provider_name=os.environ.get("AIDLC_GITHUB_OAUTH_PROVIDER_NAME", ""),
         dashboard_oauth_return_url=os.environ.get("AIDLC_DASHBOARD_OAUTH_RETURN_URL", ""),
         github_bot_login=os.environ.get("AIDLC_GITHUB_BOT_LOGIN", ""),
+        repo_helper_function_name=os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME", ""),
     )
 
 
@@ -97,3 +104,9 @@ def s3() -> S3Client:
 def secrets() -> object:
     """Process-cached Secrets Manager client."""
     return boto3.client("secretsmanager", region_name=settings().region)
+
+
+@cache
+def lambda_client() -> LambdaClient:
+    """Process-cached Lambda client (used to invoke repo_helper synchronously)."""
+    return boto3.client("lambda", region_name=settings().region)

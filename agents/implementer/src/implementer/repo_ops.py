@@ -6,15 +6,17 @@ The implementer needs to:
     requestor's user OAuth token (commits attribute to the user) or the
     App's installation token (commits attribute to ``ai-dlc[bot]``),
   * clone the target repo into ``/workspace/repo`` using that token,
-  * fetch the spec bundle from S3 into ``/workspace/spec/``,
+  * fetch the architect's ``plan.md`` and the critic's ``critique.md``
+    from S3 into ``/workspace/spec/``,
   * configure local git author from the resolved identity,
-  * create a new branch named after the task, let Claude edit, commit,
-    push, and open a PR via the GitHub API.
+  * create the run's single impl branch ``aidlc/impl/{run_id}``,
+  * let Claude edit, commit, push, and open one PR via the
+    repo_helper Lambda.
 
 The :class:`RepoSession` holds the token + author identity + target repo
-for one Implementer invocation. ``execute_task`` builds the session at
-the start of a run and passes it through every git/GitHub operation —
-no module-level env-var reads in this code path.
+for one Implementer invocation. ``execute_implementation`` builds the
+session at the start of a run and passes it through every git/GitHub
+operation — no module-level env-var reads in this code path.
 """
 
 from __future__ import annotations
@@ -69,7 +71,7 @@ def s3_client() -> S3Client:
 
 
 def artifacts_bucket() -> str:
-    """Bucket holding spec artifacts."""
+    """Bucket holding plan/critique artifacts."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
 
 
@@ -84,7 +86,7 @@ def repo_path() -> Path:
 
 
 def spec_path() -> Path:
-    """Local spec bundle path inside the container."""
+    """Local plan/critique path inside the container."""
     return workspace_root() / "spec"
 
 
@@ -131,8 +133,6 @@ def resolve_user_identity(token: str) -> tuple[str, str]:
     body = response.json()
     login = str(body["login"])
     user_id = int(body["id"])
-    # GitHub's privacy-respecting noreply email pattern. See
-    # https://docs.github.com/en/account-and-profile/setting-up-and-managing-your-personal-account-on-github/managing-email-preferences/setting-your-commit-email-address
     email = f"{user_id}+{login}@users.noreply.github.com"
     return login, email
 
@@ -160,18 +160,12 @@ def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
     """Clone (or reset) the project repo in the container workspace.
 
     AgentCore Runtime reuses the microVM filesystem across invocations
-    that share a ``runtime_session_id``. On reuse the working tree may
-    carry leftover branches, uncommitted edits, or the wrong HEAD from
-    a prior run, so we always reset back to the configured base branch
-    and update the access token before handing the repo to Claude Code.
+    that share a ``runtime_session_id``. On reuse we always reset back
+    to the base branch and update the access token before handing the
+    repo to Claude Code.
 
     Uses ``--filter=blob:none`` (partial clone) so blob contents are
-    fetched on demand rather than upfront — the agent only reads a
-    small fraction of any non-trivial repo. The default refspec
-    (``+refs/heads/*:refs/remotes/origin/*``) is used so every branch
-    is trackable on fetch, and full commit history is kept so
-    ``origin/main...HEAD`` merge-base lookups succeed on iteration runs
-    where the task branch was created off an older main commit.
+    fetched on demand rather than upfront.
     """
     target = repo_path()
     url = f"https://x-access-token:{session.access_token}@github.com/{session.target_repo}.git"
@@ -190,16 +184,9 @@ def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
 
 
 def reset_existing_clone(target: Path, *, url: str, branch: str) -> None:
-    """Bring a reused workspace back to a clean ``branch`` checkout.
-
-    Refreshes ``origin``'s URL (the access token is freshly minted each
-    invocation), fetches the latest base branch, hard-resets HEAD onto
-    it, and removes any untracked files. Idempotent.
-    """
+    """Bring a reused workspace back to a clean ``branch`` checkout."""
     run_git("remote", "set-url", "origin", url, cwd=target)
     run_git("fetch", "origin", branch, cwd=target)
-    # Detach HEAD before resetting so any old task branch can be safely
-    # force-recreated by ``create_branch`` later.
     run_git("checkout", "--detach", f"origin/{branch}", cwd=target)
     run_git("reset", "--hard", f"origin/{branch}", cwd=target)
     run_git("clean", "-fdx", cwd=target)
@@ -211,103 +198,64 @@ def configure_git_author(session: RepoSession) -> None:
     run_git("config", "user.email", session.author_email)
 
 
-def fetch_spec(spec_s3_prefix: str) -> None:
-    """Download the three spec docs from S3 into ``/workspace/spec/``."""
+def fetch_plan_and_critique(
+    *,
+    plan_s3_key: str | None,
+    critique_s3_key: str | None,
+) -> None:
+    """Download the plan + critique markdown bodies from S3 into ``/workspace/spec/``.
+
+    Best-effort: a missing object is logged but does not raise — the
+    implementer can still proceed when only one of the artifacts is
+    present (e.g., a re-run before the critic finished).
+    """
     target = spec_path()
     target.mkdir(parents=True, exist_ok=True)
     bucket = artifacts_bucket()
-    for doc in ("requirements", "design", "tasks"):
-        key = f"{spec_s3_prefix.rstrip('/')}/{doc}.md"
-        body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
-        (target / f"{doc}.md").write_bytes(body)
+    for name, key in (("plan", plan_s3_key), ("critique", critique_s3_key)):
+        if not key:
+            continue
+        try:
+            body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
+        except Exception as exc:
+            logger.warning(
+                "fetch_plan_and_critique missed object",
+                name=name,
+                key=key,
+                error=str(exc),
+            )
+            continue
+        (target / f"{name}.md").write_bytes(body)
 
 
-def impl_branch_name(spec_slug: str, run_id: str) -> str:
-    """Conventional branch name for the unified implementation PR.
+def impl_branch_name(run_id: str) -> str:
+    """Conventional branch name for the run's single impl PR.
 
-    One impl branch per run; every task in the run merges into it via
-    GitHub's server-side merge API. Mirrors the existing
-    ``aidlc/spec/{spec_slug}`` naming for spec PRs.
+    One impl branch per run. Mirrors
+    ``state_router.actions.impl_branch_name`` so the wrapper and the
+    router agree on the branch name without sharing imports.
     """
-    from common.ids import short_run_id  # noqa: PLC0415 - cheap import-time pin
-
-    return f"aidlc/impl/{spec_slug}/{short_run_id(run_id)}"
-
-
-def task_branch_name(task_id: str, spec_slug: str, run_id: str) -> str:
-    """Conventional branch name for a single task within an impl run.
-
-    Lives under ``aidlc/task/...`` rather than nested inside the impl
-    branch's ref path: git stores refs as filesystem paths, so a ref
-    named ``aidlc/impl/{slug}/{short_run_id}`` can't coexist with a
-    second ref under ``aidlc/impl/{slug}/{short_run_id}/{task_id}``
-    (the first would have to be both a file and a directory).
-
-    Run-scoped via ``short_run_id`` so retries against the same
-    ``(spec_slug, task_id)`` don't collide.
-    """
-    from common.ids import short_run_id  # noqa: PLC0415 - cheap import-time pin
-
-    return f"aidlc/task/{spec_slug}/{short_run_id(run_id)}/{task_id.lower()}"
+    return f"aidlc/impl/{run_id}"
 
 
 def create_branch(branch: str) -> None:
     """Create + check out a fresh branch off the current HEAD.
 
     Uses ``-B`` (capital) so a leftover branch of the same name from a
-    prior session is force-recreated rather than failing with exit 128.
+    prior session is force-recreated rather than failing.
     """
     run_git("checkout", "-B", branch)
 
 
 def checkout_impl_branch(branch: str) -> None:
-    """Fetch + check out the run's impl branch as the task branch's base.
+    """Fetch + check out the run's impl branch as the working branch.
 
-    Called after ``clone_repo`` (which lands on ``main``) and before
-    ``create_branch`` for the task. The impl branch is created by the
-    event projector on ``SPEC.APPROVED`` and starts identical to
-    ``main`` — sibling-task merges advance it.
+    Called in revision mode after ``clone_repo`` (which lands on
+    ``main``). The impl branch already exists on origin from the
+    initial implementation pass.
     """
     run_git("fetch", "origin", branch)
     run_git("checkout", "-B", branch, f"origin/{branch}")
-
-
-def fetch_branch(branch: str) -> None:
-    """Fetch ``branch`` from ``origin`` without changing HEAD."""
-    run_git("fetch", "origin", branch)
-
-
-def merge_remote_into_head(branch: str) -> bool:
-    """Merge ``origin/{branch}`` into the current HEAD.
-
-    Returns ``True`` when the merge completed cleanly (auto-merge with
-    no conflict markers, or a fast-forward). Returns ``False`` when
-    the merge left conflict markers in the working tree — caller is
-    expected to either resolve them and commit, or run
-    ``git merge --abort``.
-    """
-    run_git("fetch", "origin", branch)
-    try:
-        run_git("merge", f"origin/{branch}", "--no-edit")
-    except RuntimeError:
-        return not has_unmerged_paths()
-    return True
-
-
-def has_unmerged_paths() -> bool:
-    """``True`` when ``git diff --name-only --diff-filter=U`` is non-empty."""
-    return bool(unmerged_paths())
-
-
-def unmerged_paths() -> list[str]:
-    """List paths with unresolved merge conflicts in the working tree."""
-    output = run_git("diff", "--name-only", "--diff-filter=U")
-    return [line for line in output.splitlines() if line]
-
-
-def abort_merge() -> None:
-    """Abort an in-progress merge, restoring the working tree."""
-    run_git("merge", "--abort")
 
 
 def commit_changes(message: str) -> str:
@@ -318,12 +266,7 @@ def commit_changes(message: str) -> str:
 
 
 def push_branch(branch: str) -> None:
-    """Push ``branch`` to ``origin``. Single-writer: a plain push suffices.
-
-    Task branches are scoped to ``short_run_id`` and branched off the
-    run's impl branch tip; no other container writes the same task
-    branch, so the push is always fast-forward.
-    """
+    """Push ``branch`` to ``origin``. Single-writer: plain push suffices."""
     run_git("push", "--set-upstream", "origin", branch)
 
 
@@ -332,36 +275,18 @@ def has_uncommitted_changes() -> bool:
     return bool(run_git("status", "--porcelain").strip())
 
 
-def agent_made_real_changes(spec_slug: str, *, base: str) -> bool:
-    """``True`` when committed or uncommitted edits touch any path outside the spec tree.
+def repo_made_real_changes() -> bool:
+    """``True`` when commits or uncommitted edits exist on top of main.
 
-    Compares ``HEAD`` against ``origin/{base}`` (typically the run's
-    impl branch) so this catches edits the agent made and committed
-    during its session, edits inherited from a prior run on the same
-    branch, and edits still in the working tree. Spec docs under
-    ``docs/specs/<spec_slug>/`` are excluded — they're merged via the
-    spec PR before the implementer runs.
+    Compares ``HEAD`` against ``origin/main`` so this catches both edits
+    the agent committed during its session and edits still in the
+    working tree.
     """
-    spec_prefix = f"docs/specs/{spec_slug}/"
-    # ``rstrip`` instead of ``strip``: porcelain leads with two status chars
-    # plus a space, so a leading space is meaningful and must survive trim.
     porcelain = run_git("status", "--porcelain").rstrip().splitlines()
-    # ``XY <path>`` (or ``XY <old> -> <new>`` for renames); strip the flags.
-    uncommitted = [line[3:].split(" -> ")[-1] for line in porcelain]
-    committed = changed_paths(base=base)
-    return any(not p.startswith(spec_prefix) for p in committed + uncommitted)
-
-
-def changed_paths(*, base: str) -> list[str]:
-    """Return paths changed on HEAD vs ``base`` (e.g. ``main``).
-
-    Uses the ``base...HEAD`` triple-dot diff so deletions, additions, and
-    modifications are all reported. The branch must be checked out and
-    ``base`` must already be fetched (``reset_existing_clone`` and
-    ``clone_repo`` both fetch ``origin/<base>`` for us).
-    """
-    output = run_git("diff", "--name-only", f"origin/{base}...HEAD")
-    return [line for line in output.splitlines() if line]
+    if porcelain:
+        return True
+    diff = run_git("diff", "--name-only", "origin/main...HEAD").strip()
+    return bool(diff)
 
 
 def short_diff_summary() -> str:
@@ -375,13 +300,7 @@ def shell_safe_join(args: list[str]) -> str:
 
 
 # ----------------------------------------------------------------------
-# Iteration-mode helpers (iteration_count > 0).
-#
-# On iteration runs the implementer doesn't clone main + create a new
-# branch — the task branch already exists on origin from the prior
-# implementer run. Instead we fetch the existing branch and check it
-# out, let Claude make fix commits, then post inline replies via
-# repo_helper.
+# repo_helper Lambda invocation
 # ----------------------------------------------------------------------
 
 PR_NUMBER_PATTERN = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)$")
@@ -401,9 +320,7 @@ def repo_helper_function_name() -> str | None:
 def parse_pr_number(pr_url: str) -> int:
     """Extract the PR number from a github.com pull URL.
 
-    Raises ``ValueError`` if the URL doesn't match the expected shape —
-    the iteration_reactor only emits validated URLs so this is a
-    defensive check, not user input.
+    Raises ``ValueError`` if the URL doesn't match the expected shape.
     """
     match = PR_NUMBER_PATTERN.match(pr_url)
     if match is None:
@@ -412,47 +329,8 @@ def parse_pr_number(pr_url: str) -> int:
     return int(match.group(1))
 
 
-def checkout_task_branch(branch: str, *, impl_branch_fallback: str | None = None) -> None:
-    """Fetch + check out an existing task branch (iteration mode).
-
-    Used when ``iteration_count > 0``. The branch normally exists on
-    origin from the prior implementer run; we want HEAD to land on top
-    of it (rather than recreating from main, which is what
-    ``create_branch`` does for iteration_count == 0). Idempotent —
-    ``-B`` recreates the local ref.
-
-    ``impl_branch_fallback`` handles the post-merge-iteration case: the
-    prior task PR was merged into the impl branch and GitHub auto-
-    deleted the task branch (``delete_head_on_merge=True``). The fetch
-    fails; we recreate the task branch from the impl branch HEAD so
-    iteration can land on top of the merged code. Without the fallback,
-    a missing task branch raises ``RuntimeError`` and aborts the run.
-    """
-    try:
-        run_git("fetch", "origin", branch)
-    except RuntimeError:
-        if impl_branch_fallback is None:
-            raise
-        logger.info(
-            "task branch missing on origin; recreating from impl branch",
-            task_branch=branch,
-            impl_branch=impl_branch_fallback,
-        )
-        run_git("fetch", "origin", impl_branch_fallback)
-        run_git("checkout", "-B", branch, f"origin/{impl_branch_fallback}")
-        return
-    run_git("checkout", "-B", branch, f"origin/{branch}")
-
-
 def invoke_repo_helper(*, op: str, requestor_sub: str | None, **fields: Any) -> dict[str, Any]:
-    """Synchronously invoke the ``repo_helper`` Lambda and return its result.
-
-    Mirrors the Proposer's pattern (``proposer.app:lambda_client().invoke``).
-    Raises ``RuntimeError`` on transport failure or when ``repo_helper``
-    returns ``{"ok": false, ...}`` — iteration-mode callers want to fail
-    loud rather than silently dropping a comment-reply or a check-runs
-    fetch.
-    """
+    """Synchronously invoke the ``repo_helper`` Lambda and return its result."""
     fn = repo_helper_function_name()
     if fn is None:
         msg = "AIDLC_REPO_HELPER_FUNCTION_NAME unset; cannot invoke repo_helper"
@@ -477,12 +355,7 @@ def post_inline_replies(
     requestor_sub: str | None,
     replies: list[tuple[int, str]],
 ) -> None:
-    """Post a batch of PR-review-thread replies, one repo_helper call per reply.
-
-    ``replies`` is a list of ``(comment_id, body)`` tuples. Failures on
-    individual replies are logged but don't abort the batch — a single
-    deleted upstream comment shouldn't drop the rest.
-    """
+    """Post a batch of PR-review-thread replies, one repo_helper call per reply."""
     for comment_id, body in replies:
         try:
             invoke_repo_helper(

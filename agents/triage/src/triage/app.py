@@ -98,7 +98,6 @@ def run_triage(payload: TriageInput, task_id: int) -> None:
         result = TriageResult(
             decision_s3_key=decision_key,
             action=decision.action,
-            workflow_kind=decision.workflow_kind,
             rationale=decision.rationale[:2048],
             missing_information_count=len(decision.missing_information),
             confidence=decision.confidence,
@@ -108,7 +107,6 @@ def run_triage(payload: TriageInput, task_id: int) -> None:
             "triage decided",
             run_id=payload.run_id,
             action=result.action,
-            workflow_kind=result.workflow_kind,
             missing_information=result.missing_information_count,
             confidence=result.confidence,
         )
@@ -134,7 +132,6 @@ def publish_issue_triaged(payload: TriageInput, result: TriageResult) -> None:
             issue_url=payload.issue_url,
             issue_number=payload.issue_number,
             action=result.action,
-            workflow_kind=result.workflow_kind,
             decision_s3_key=result.decision_s3_key,
             rationale=result.rationale,
             confidence=result.confidence,

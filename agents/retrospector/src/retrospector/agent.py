@@ -28,6 +28,7 @@ from retrospector.tools import (
     list_pr_review_comments_tool,
     read_memory_md_tool,
     read_stack_profile_md_tool,
+    read_validation_artifact_tool,
 )
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -64,21 +65,20 @@ def build_agent(run_id: str) -> Agent:
             list_pr_review_comments_tool,
             get_issue_tool,
             list_issue_comments_tool,
+            read_validation_artifact_tool,
         ],
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 
 
 type EventKind = Literal[
-    "SPEC.APPROVED",
-    "SPEC.REJECTED",
-    "TASK.APPROVED",
-    "TASK.REJECTED",
+    "RUN.COMPLETED",
+    "RUN.FAILED",
     "RUN.CANCEL_REQUESTED",
 ]
 
 
-def retrospect(  # noqa: PLR0913 - one keyword arg per event field by design
+def retrospect(  # noqa: PLR0913 -- 6 event fields + 2 cap-hit fields
     *,
     event_type: EventKind,
     project_slug: str,
@@ -86,10 +86,9 @@ def retrospect(  # noqa: PLR0913 - one keyword arg per event field by design
     run_id: str,
     pr_url: str | None,
     issue_url: str | None,
-    spec_slug: str | None,
-    task_id: str | None,
-    reviewer: str | None,
     reason: str | None,
+    revision_count: int = 0,
+    validation_artifact_keys: tuple[str, ...] = (),
 ) -> RetrospectiveDecision:
     """Run the agent against one terminal event and return its decision."""
     user_message = compose_message(
@@ -98,10 +97,9 @@ def retrospect(  # noqa: PLR0913 - one keyword arg per event field by design
         target_repo=target_repo,
         pr_url=pr_url,
         issue_url=issue_url,
-        spec_slug=spec_slug,
-        task_id=task_id,
-        reviewer=reviewer,
         reason=reason,
+        revision_count=revision_count,
+        validation_artifact_keys=validation_artifact_keys,
     )
     agent = build_agent(run_id)
     return run_for_structured_output(
@@ -111,17 +109,16 @@ def retrospect(  # noqa: PLR0913 - one keyword arg per event field by design
     )
 
 
-def compose_message(  # noqa: PLR0913
+def compose_message(
     *,
     event_type: EventKind,
     project_slug: str,
     target_repo: str,
     pr_url: str | None,
     issue_url: str | None,
-    spec_slug: str | None,
-    task_id: str | None,
-    reviewer: str | None,
     reason: str | None,
+    revision_count: int = 0,
+    validation_artifact_keys: tuple[str, ...] = (),
 ) -> str:
     """Compose the user-message prompt for one retrospective."""
     parts = [
@@ -133,25 +130,31 @@ def compose_message(  # noqa: PLR0913
         f"Target repo: {target_repo}",
         f"Event: {event_type}",
     ]
-    if spec_slug:
-        parts.append(f"Spec: {spec_slug}")
-    if task_id:
-        parts.append(f"Task: {task_id}")
     if pr_url:
-        parts.append(f"PR: {pr_url}")
+        parts.append(f"Impl PR: {pr_url}")
     if issue_url:
-        parts.append(f"Issue: {issue_url}")
-    if reviewer:
-        parts.append(f"Reviewer / sender: {reviewer}")
+        parts.append(f"Source issue: {issue_url}")
     if reason:
         parts += ["", "Reason / context (from the platform):", reason.strip()]
+    if validation_artifact_keys:
+        parts += [
+            "",
+            f"Revision-cap hit (revision_count={revision_count}). The platform "
+            "ran the implementer up to its cap and still couldn't converge. "
+            "Read each validator artifact below with read_validation_artifact "
+            "and look for the finding that recurs across rounds — that's the "
+            "real lesson:",
+            *(f"  - {key}" for key in validation_artifact_keys),
+        ]
     parts += [
         "",
         "Steps:",
         "  1. read_memory_md to see what's already recorded — DO NOT propose duplicates.",
-        "  2. If a PR is involved, get_pr + list_pr_comments + list_pr_review_comments.",
-        "  3. If an issue is involved, get_issue + list_issue_comments.",
-        "  4. Decide whether the trace contains a reusable lesson worth appending "
+        "  2. If an impl PR is involved, get_pr + list_pr_comments + list_pr_review_comments.",
+        "  3. If a source issue is involved, get_issue + list_issue_comments.",
+        "  4. If validation_artifact_keys are listed above, read each one with "
+        "read_validation_artifact and identify the recurring failure pattern.",
+        "  5. Decide whether the trace contains a reusable lesson worth appending "
         "to MEMORY.md. Return a RetrospectiveDecision JSON.",
     ]
     return "\n".join(parts)
