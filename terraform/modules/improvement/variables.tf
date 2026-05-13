@@ -35,6 +35,16 @@ variable "artifacts_bucket_arn" {
   type        = string
 }
 
+variable "runs_table" {
+  description = "DDB table the dispatcher reads to derive the run's runtimeUserId."
+  type        = string
+}
+
+variable "runs_table_arn" {
+  description = "DDB runs table ARN — scopes the dispatcher's GetItem grant."
+  type        = string
+}
+
 variable "retrospector_runtime_arn" {
   description = <<-EOT
     AgentCore Runtime ARN of the Retrospector agent. May be unknown at

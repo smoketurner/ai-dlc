@@ -48,6 +48,7 @@ def test_read_timeout_is_failure() -> None:
         ok = dispatch_to_runtime(
             runtime_arn="arn:test",
             runtime_session_id="sess-1",
+            runtime_user_id="gh:tester",
             payload={"x": 1},
         )
     assert ok is False
@@ -71,6 +72,7 @@ def test_client_error_is_failure() -> None:
         ok = dispatch_to_runtime(
             runtime_arn="arn:test",
             runtime_session_id="sess-1",
+            runtime_user_id="gh:tester",
             payload={"x": 1},
         )
     assert ok is False
@@ -90,6 +92,7 @@ def test_clean_response_is_success() -> None:
         ok = dispatch_to_runtime(
             runtime_arn="arn:test",
             runtime_session_id="sess-1",
+            runtime_user_id="gh:tester",
             payload={"x": 1},
         )
     assert ok is True

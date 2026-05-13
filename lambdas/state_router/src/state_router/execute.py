@@ -114,6 +114,7 @@ def execute_invoke_agent(run: Run, action: InvokeAgent) -> None:
     if dispatch_to_runtime(
         runtime_arn=action.runtime_arn,
         runtime_session_id=action.runtime_session_id,
+        runtime_user_id=action.runtime_user_id,
         payload=action.payload,
     ):
         return

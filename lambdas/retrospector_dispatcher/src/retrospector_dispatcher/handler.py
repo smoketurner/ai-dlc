@@ -33,11 +33,15 @@ from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.parser import ValidationError, parse
 from aws_lambda_powertools.utilities.parser.envelopes import EventBridgeEnvelope
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from botocore.exceptions import BotoCoreError, ClientError
 
 from common.events import UntypedEnvelope
+from common.identity import runtime_user_id
+from common.trace_context import current_trace_context
 
 if TYPE_CHECKING:
     from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
+    from mypy_boto3_dynamodb.client import DynamoDBClient
 
 
 logger = Logger(service="retrospector_dispatcher")
@@ -64,9 +68,42 @@ def agentcore_client() -> BedrockAgentCoreClient:
     return boto3.client("bedrock-agentcore")
 
 
+@cache
+def ddb_client() -> DynamoDBClient:
+    """Process-cached DynamoDB client (used to look up the run's requester)."""
+    return boto3.client("dynamodb")
+
+
 def retrospector_runtime_arn() -> str:
     """ARN of the Retrospector AgentCore Runtime."""
     return os.environ["AIDLC_RETROSPECTOR_RUNTIME_ARN"]
+
+
+def lookup_run_requester(run_id: str) -> tuple[str | None, str | None]:
+    """Read the run's STATE row and return ``(requestor_sub, requestor)``.
+
+    Returns ``(None, None)`` when the row is missing, identity columns
+    are absent, the table env var is unset, or the DDB call raises —
+    the caller falls back to a synthetic ``system:`` identity rather
+    than failing the dispatch (the retrospector is best-effort).
+    """
+    table = os.environ.get("AIDLC_RUNS_TABLE")
+    if not table:
+        return None, None
+    try:
+        resp = ddb_client().get_item(
+            TableName=table,
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            ProjectionExpression="requestor, requestor_sub",
+            ConsistentRead=False,
+        )
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("ddb lookup failed", extra={"run_id": run_id, "err": str(exc)})
+        return None, None
+    item = resp.get("Item") or {}
+    requestor = item.get("requestor", {}).get("S")
+    requestor_sub = item.get("requestor_sub", {}).get("S")
+    return requestor_sub, requestor
 
 
 @logger.inject_lambda_context(log_event=False)
@@ -93,9 +130,16 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
         logger.info("event missing fields the retrospector needs", extra={"type": event_type})
         return {"ok": True, "ignored": "missing_fields"}
 
-    invoke_runtime(payload=payload, run_id=str(envelope.run_id))
+    run_id = str(envelope.run_id)
+    requestor_sub, requestor = lookup_run_requester(run_id)
+    user_id = runtime_user_id(
+        requestor_sub=requestor_sub,
+        requestor=requestor,
+        fallback="system:retrospector",
+    )
+    invoke_runtime(payload=payload, run_id=run_id, user_id=user_id)
     metrics.add_metric(name="RetrospectivesDispatched", unit=MetricUnit.Count, value=1)
-    return {"ok": True, "dispatched": event_type, "run_id": str(envelope.run_id)}
+    return {"ok": True, "dispatched": event_type, "run_id": run_id}
 
 
 def normalise(event: dict[str, Any]) -> dict[str, Any]:
@@ -172,7 +216,7 @@ def derive_target_repo(*, pr_url: str, issue_url: str) -> str:
     return f"{parts[0]}/{parts[1]}"
 
 
-def invoke_runtime(*, payload: dict[str, Any], run_id: str) -> None:
+def invoke_runtime(*, payload: dict[str, Any], run_id: str, user_id: str) -> None:
     """Asynchronously invoke the Retrospector AgentCore Runtime.
 
     AgentCore Runtime invocations are synchronous request/response;
@@ -180,12 +224,19 @@ def invoke_runtime(*, payload: dict[str, Any], run_id: str) -> None:
     daemon-thread pattern (the runtime's ``handler`` returns
     ``{"status": "dispatched"}`` in ~100ms regardless of how long the
     underlying agent takes).
+
+    ``user_id`` is forwarded as ``runtimeUserId``; see
+    :mod:`common.identity` for the derivation rule. Without it the
+    agent SDK can't bootstrap its workload access token and gateway
+    MCP calls fail closed.
     """
     body = json.dumps(payload).encode("utf-8")
     agentcore_client().invoke_agent_runtime(
         agentRuntimeArn=retrospector_runtime_arn(),
         runtimeSessionId=f"retrospector-{run_id}",
+        runtimeUserId=user_id,
         contentType="application/json",
         accept="application/json",
         payload=body,
+        **current_trace_context(),
     )

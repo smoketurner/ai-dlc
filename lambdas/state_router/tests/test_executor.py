@@ -41,6 +41,7 @@ def reviewer_invoke() -> InvokeAgent:
     return InvokeAgent(
         runtime_arn="arn:aws:bedrock-agentcore:us-east-1:1:runtime/reviewer",
         runtime_session_id="r-1-reviewer-r0",
+        runtime_user_id="gh:tester",
         payload={"pr_url": "https://github.com/o/r/pull/1"},
     )
 
@@ -50,6 +51,7 @@ def architect_invoke() -> InvokeAgent:
     return InvokeAgent(
         runtime_arn="arn:aws:bedrock-agentcore:us-east-1:1:runtime/architect",
         runtime_session_id="r-1-architect",
+        runtime_user_id="gh:tester",
         payload={},
         target_pk="RUN#r-1",
         target_sk="STATE",

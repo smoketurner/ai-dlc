@@ -57,6 +57,7 @@ class InvokeAgent:
 
     runtime_arn: str
     runtime_session_id: str
+    runtime_user_id: str
     payload: dict[str, Any]
     target_pk: str | None = None
     target_sk: str | None = None

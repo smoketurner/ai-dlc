@@ -20,6 +20,7 @@ from common.events import (
     RunFailed,
 )
 from common.github_mentions import strip_bot_mention
+from common.identity import revision_commenter, runtime_user_id
 from common.ids import CorrelationId, RunId, new_event_id
 from common.state import RunState
 from state_router.actions import (
@@ -53,6 +54,35 @@ Counts: validator-driven (``request_changes``) and CI-driven
 (``CHECKS.FAILED``) revisions. Does not count: human ``@aidlc-bot``
 mentions (the human is actively steering, so the cap doesn't apply).
 """
+
+
+def run_user_id(run: Run) -> str:
+    """Derive ``runtimeUserId`` for an invoke that acts on behalf of the run's requester.
+
+    Falls back to ``system:webhook`` when the row is missing identity
+    fields — should only happen for malformed trigger payloads since
+    the entry adapter writes ``requestor`` on every run row.
+    """
+    return runtime_user_id(
+        requestor_sub=run.requestor_sub,
+        requestor=run.requestor,
+        fallback="system:webhook",
+    )
+
+
+def revision_user_id(run: Run) -> str:
+    """Derive ``runtimeUserId`` for an implementer revision dispatch.
+
+    Uses the most recent human commenter from
+    ``pending_revision_feedback`` so the workload access token reflects
+    the human who's actively steering the iteration. Falls back to the
+    original requester when the queue is empty or only contains
+    ``ci_failure`` items.
+    """
+    commenter = revision_commenter(list(run.pending_revision_feedback))
+    if commenter:
+        return runtime_user_id(requestor=commenter)
+    return run_user_id(run)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +123,7 @@ def invoke_triage(run: Run, arn: str) -> Action:
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-triage",
+        runtime_user_id=run_user_id(run),
         payload={
             "project_slug": run.project_slug,
             "target_repo": run.target_repo,
@@ -122,6 +153,7 @@ def invoke_architect(run: Run, arn: str, *, advance_from: RunState) -> InvokeAge
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-architect",
+        runtime_user_id=run_user_id(run),
         payload={
             "project_slug": run.project_slug,
             "intent": run.intent,
@@ -160,6 +192,7 @@ def invoke_proposer_research(run: Run, arn: str, *, advance_from: RunState) -> I
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-proposer",
+        runtime_user_id=run_user_id(run),
         payload={
             "project_slug": run.project_slug,
             "target_repo": run.target_repo,
@@ -313,6 +346,7 @@ def handle_designed(run: Run) -> Action:
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-critic",
+        runtime_user_id=run_user_id(run),
         payload={
             "project_slug": run.project_slug,
             "plan_s3_key": run.plan_s3_key,
@@ -354,6 +388,7 @@ def handle_critiqued(run: Run) -> Action:
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-impl",
+        runtime_user_id=run_user_id(run),
         payload={
             "project_slug": run.project_slug,
             "run_id": run.run_id,
@@ -438,6 +473,7 @@ def invoke_validator(run: Run, agent_name: str, arn: str) -> InvokeAgent:
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-{agent_name}-r{run.revision_count}",
+        runtime_user_id=run_user_id(run),
         payload=payload,
     )
 
@@ -592,6 +628,7 @@ def build_revision_invoke(run: Run, arn: str, *, next_revision: int) -> InvokeAg
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-revision-{next_revision}",
+        runtime_user_id=revision_user_id(run),
         payload={
             "project_slug": run.project_slug,
             "run_id": run.run_id,

@@ -28,6 +28,7 @@ from botocore.exceptions import ClientError, ReadTimeoutError
 
 from common.ddb import PutBuilder, TransactWriteItemsBuilder, UpdateBuilder
 from common.ids import new_event_id
+from common.trace_context import current_trace_context
 from state_router.config import (
     DISPATCH_CONNECT_TIMEOUT_SECONDS,
     DISPATCH_READ_TIMEOUT_SECONDS,
@@ -169,6 +170,7 @@ def dispatch_to_runtime(
     *,
     runtime_arn: str,
     runtime_session_id: str,
+    runtime_user_id: str,
     payload: dict[str, Any],
 ) -> bool:
     """Invoke the AgentCore Runtime; return ``True`` when the agent acknowledged the work.
@@ -178,6 +180,16 @@ def dispatch_to_runtime(
     actual work, and returns ``{"status": "dispatched", ...}`` in
     ~100ms. So a normal dispatch returns a clean 200 well inside the
     10s read timeout.
+
+    ``runtime_user_id`` is forwarded to AgentCore as the
+    ``X-Amzn-Bedrock-AgentCore-Runtime-User-Id`` header. The data
+    plane mints a workload access token on behalf of that identity
+    and injects it as the ``WorkloadAccessToken`` header on the
+    container's ``/invocations`` call, which the agent SDK uses to
+    bootstrap M2M / OAuth tokens for gateway-routed tools. Without
+    it the SDK falls through to local-dev auth, which tries to
+    ``CreateWorkloadIdentity`` and fails closed under the runtime
+    role's least-privilege policy.
 
     A :class:`ReadTimeoutError` now means a real failure — AgentCore
     didn't acknowledge within 10s. A :class:`ClientError` (4xx / 5xx)
@@ -191,9 +203,11 @@ def dispatch_to_runtime(
             agentRuntimeArn=runtime_arn,
             qualifier="DEFAULT",
             runtimeSessionId=runtime_session_id,
+            runtimeUserId=runtime_user_id,
             contentType="application/json",
             accept="application/json",
             payload=json.dumps(payload).encode("utf-8"),
+            **current_trace_context(),
         )
     except ReadTimeoutError:
         logger.warning(

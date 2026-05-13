@@ -167,8 +167,16 @@ module "state_router" {
     },
     length(local.state_router_runtime_arns) > 0 ? {
       invoke_agent_runtime = {
-        effect  = "Allow"
-        actions = ["bedrock-agentcore:InvokeAgentRuntime"]
+        effect = "Allow"
+        # InvokeAgentRuntimeForUser is required when the call passes
+        # ``runtimeUserId`` — without it AgentCore returns AccessDenied
+        # before the runtime sees the request. The agent SDK in the
+        # container then can't bootstrap its workload access token, so
+        # gateway MCP init fails closed.
+        actions = [
+          "bedrock-agentcore:InvokeAgentRuntime",
+          "bedrock-agentcore:InvokeAgentRuntimeForUser",
+        ]
         resources = concat(
           local.state_router_runtime_arns,
           [for arn in local.state_router_runtime_arns : "${arn}/runtime-endpoint/*"],

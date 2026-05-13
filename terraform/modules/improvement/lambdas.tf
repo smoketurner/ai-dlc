@@ -33,6 +33,7 @@ module "retrospector_dispatcher" {
 
   environment_variables = merge(local.common_aws_env, {
     AIDLC_RETROSPECTOR_RUNTIME_ARN = var.retrospector_runtime_arn
+    AIDLC_RUNS_TABLE               = var.runs_table
     POWERTOOLS_SERVICE_NAME        = "retrospector_dispatcher"
     POWERTOOLS_METRICS_NAMESPACE   = "ai-dlc"
     POWERTOOLS_LOG_LEVEL           = "INFO"
@@ -44,9 +45,23 @@ module "retrospector_dispatcher" {
   attach_policy_statements = true
   policy_statements = {
     invoke_runtime = {
-      effect    = "Allow"
-      actions   = ["bedrock-agentcore:InvokeAgentRuntime"]
+      effect = "Allow"
+      # InvokeAgentRuntimeForUser is required when the call passes
+      # ``runtimeUserId``; see pipeline/lambdas.tf for the rationale.
+      actions = [
+        "bedrock-agentcore:InvokeAgentRuntime",
+        "bedrock-agentcore:InvokeAgentRuntimeForUser",
+      ]
       resources = [var.retrospector_runtime_arn]
+    }
+    read_run_state = {
+      # The dispatcher reads ``requestor`` / ``requestor_sub`` off the
+      # STATE row to derive ``runtimeUserId``; without this the
+      # dispatch falls back to ``system:retrospector`` and we lose the
+      # human-identity thread through the retrospective.
+      effect    = "Allow"
+      actions   = ["dynamodb:GetItem"]
+      resources = [var.runs_table_arn]
     }
   }
 

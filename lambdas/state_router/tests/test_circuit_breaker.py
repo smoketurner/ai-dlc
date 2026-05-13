@@ -52,6 +52,7 @@ def implementer_invoke() -> InvokeAgent:
     return InvokeAgent(
         runtime_arn="arn:aws:bedrock-agentcore:us-east-1:1:runtime/implementer",
         runtime_session_id="r-1-impl",
+        runtime_user_id="gh:tester",
         payload={"mode": "implementation"},
         target_pk="RUN#r-1",
         target_sk="STATE",
@@ -65,6 +66,7 @@ def validator_invoke() -> InvokeAgent:
     return InvokeAgent(
         runtime_arn="arn:aws:bedrock-agentcore:us-east-1:1:runtime/reviewer",
         runtime_session_id="r-1-reviewer-r0",
+        runtime_user_id="gh:tester",
         payload={"pr_url": "..."},
     )
 

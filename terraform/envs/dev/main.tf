@@ -284,6 +284,9 @@ module "improvement" {
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn
 
+  runs_table     = module.state.runs_table
+  runs_table_arn = module.state.runs_table_arn
+
   retrospector_runtime_arn = lookup(module.agents.runtime_arns, "retrospector", "")
   retrospector_enabled     = contains(keys(local.agent_image_tags), "retrospector")
 
