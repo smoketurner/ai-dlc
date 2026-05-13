@@ -18,6 +18,7 @@ carry the runtime's ``WorkloadAccessToken`` across the boundary.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from typing import Any
@@ -26,6 +27,8 @@ from bedrock_agentcore.identity.auth import requires_access_token
 from mcp.client.streamable_http import streamablehttp_client
 from strands.tools.mcp import MCPClient
 from strands.tools.mcp.mcp_agent_tool import MCPAgentTool
+
+logger = logging.getLogger(__name__)
 
 
 def gateway_url() -> str:
@@ -143,25 +146,74 @@ def extract_envelope(result: Any) -> dict[str, Any]:
     """Pull a Lambda return envelope out of an MCPToolResult.
 
     AgentCore Gateway invokes a Lambda target and returns the Lambda's
-    dict response as MCP content. The MCP server serialises dict
-    returns into both ``structuredContent`` (the raw dict) and
-    ``content[0].text`` (a JSON string of the same dict) per
-    ``mcp.server.lowlevel.server``'s serialisation path. This helper
-    prefers the structured form and falls back to parsing the first
-    text block so it's robust to servers that haven't enabled
-    structured output.
+    dict response as MCP content. Observed shapes in the wild:
 
-    Raises ``RuntimeError`` when neither shape yields a parseable dict.
+    * ``structuredContent`` populated with the raw dict (preferred).
+    * ``structuredContent`` populated with a JSON-string serialisation
+      of the dict (some gateway configurations).
+    * ``content[0].text`` containing the JSON-string envelope, when
+      structured output isn't surfaced. Some ops leave ``text`` empty
+      and rely on a subsequent block.
+    * ``isError=True`` with a text block carrying the error message
+      verbatim (not JSON).
+
+    The helper walks all of these shapes, skipping blocks that don't
+    yield a parseable dict, and only raises when nothing is recoverable.
+    The full result is logged at WARNING so a future shape mismatch
+    surfaces in CloudWatch instead of as an opaque traceback.
+
+    Raises ``RuntimeError`` when no shape yields a parseable dict.
     """
+    if isinstance(result, dict) and result.get("isError"):
+        raise RuntimeError(_error_message(result))
+
     structured = result.get("structuredContent") if isinstance(result, dict) else None
-    if isinstance(structured, dict):
-        return structured
+    parsed = _coerce_to_dict(structured)
+    if parsed is not None:
+        return parsed
+
     blocks = result.get("content", []) if isinstance(result, dict) else []
     for block in blocks:
-        text = block.get("text") if isinstance(block, dict) else None
-        if isinstance(text, str):
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-    msg = f"gateway tool returned no parseable content: {result!r}"
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        parsed = _coerce_to_dict(text)
+        if parsed is not None:
+            return parsed
+
+    logger.warning(
+        "gateway tool returned no parseable content",
+        extra={"result": repr(result)[:4096]},
+    )
+    msg = f"gateway tool returned no parseable content: {repr(result)[:1024]}"
     raise RuntimeError(msg)
+
+
+def _coerce_to_dict(value: Any) -> dict[str, Any] | None:
+    """Return a dict if ``value`` already is one or is a JSON-encoded dict; else None."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _error_message(result: dict[str, Any]) -> str:
+    """Render an MCP error result into a single-line message for the RuntimeError."""
+    blocks = result.get("content", [])
+    parts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+    detail = " | ".join(parts) if parts else repr(result)[:512]
+    return f"gateway tool returned isError=true: {detail}"

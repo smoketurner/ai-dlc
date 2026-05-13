@@ -131,3 +131,47 @@ def test_extract_envelope_raises_on_garbage() -> None:
     """An empty result envelope produces a clear error."""
     with pytest.raises(RuntimeError, match="no parseable content"):
         gateway_tools.extract_envelope({"content": []})
+
+
+def test_extract_envelope_skips_empty_text_blocks() -> None:
+    """A leading empty text block must not crash json parsing — keep looking."""
+    envelope = {"ok": True, "op": "get_artifact", "result": {"content": "x"}}
+    out = gateway_tools.extract_envelope(
+        {"content": [{"text": ""}, {"text": json.dumps(envelope)}]},
+    )
+    assert out == envelope
+
+
+def test_extract_envelope_handles_string_structured_content() -> None:
+    """Some gateway configs return ``structuredContent`` as a JSON string."""
+    envelope = {"ok": True, "op": "get_artifact", "result": {"content": "x"}}
+    out = gateway_tools.extract_envelope({"structuredContent": json.dumps(envelope)})
+    assert out == envelope
+
+
+def test_extract_envelope_raises_on_is_error() -> None:
+    """``isError`` results carry the upstream message verbatim, not a JSON envelope."""
+    err_result = {
+        "isError": True,
+        "content": [{"text": "AccessDeniedException: not authorized for s3:GetObject"}],
+    }
+    with pytest.raises(
+        RuntimeError,
+        match=r"isError=true.*AccessDeniedException",
+    ):
+        gateway_tools.extract_envelope(err_result)
+
+
+def test_extract_envelope_skips_non_json_text_blocks() -> None:
+    """Plain-text blocks (markdown body, error string) are skipped, not raised through."""
+    envelope = {"ok": True, "op": "get_artifact", "result": {"content": "# Plan"}}
+    out = gateway_tools.extract_envelope(
+        {"content": [{"text": "# Plan body that isn't JSON"}, {"text": json.dumps(envelope)}]},
+    )
+    assert out == envelope
+
+
+def test_extract_envelope_raises_when_all_text_blocks_unparseable() -> None:
+    """If every block is non-JSON, surface the raw result in the RuntimeError."""
+    with pytest.raises(RuntimeError, match="no parseable content"):
+        gateway_tools.extract_envelope({"content": [{"text": "not json"}, {"text": ""}]})
