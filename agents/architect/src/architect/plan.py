@@ -9,7 +9,8 @@ Assumptions → Approach → Files → Reuse → Implementation steps →
 Verification → Out of scope. Section headings are fixed; the platform
 hands the body verbatim to the implementer.
 
-Architects produce the body by calling ``write_plan_doc(content=...)``
+Architects produce the body by calling the gateway-routed
+``put_artifact(key='runs/{run_id}/plan.md', content=...)`` operation
 exactly once. The platform extracts a short summary (first line of the
 Context section) and any proposed ADR references for the
 ``DESIGN.READY`` event payload.

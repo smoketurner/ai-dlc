@@ -1,10 +1,12 @@
 """Strands Agent factory for the Architect.
 
 The Architect uses Claude Opus 4.7 on Bedrock. The agent loop runs with
-grounding tools (``read_memory_md``, ``read_stack_profile_md``,
-``list_repo_paths``, ``read_repo_file``, ``browse_url``) and finishes
-by calling ``write_plan_doc`` to persist a single markdown plan
-document to S3 at ``runs/{run_id}/plan.md``.
+gateway-routed grounding tools (the ``artifact_tool`` ops for
+``read_memory_md`` / ``read_stack_profile_md`` / ``put_artifact``) plus
+the local repo-checkout readers (``list_repo_paths``, ``read_repo_file``)
+and ``browse_url``. It finishes by calling the gateway's
+``put_artifact`` op to persist a single markdown plan document to S3 at
+``runs/{run_id}/plan.md``.
 
 The output is plain markdown — no JSON wrapping. The platform reads
 ``plan.md`` back to populate the ``DESIGN.READY`` event.
@@ -16,16 +18,15 @@ import os
 
 from strands import Agent
 from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
 
 from architect.hooks import build_hooks
 from architect.tools import (
     browse_url_tool,
     list_repo_paths_tool,
-    read_memory_md_tool,
     read_repo_file_tool,
-    read_stack_profile_md_tool,
-    write_plan_doc_tool,
 )
+from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy
@@ -38,11 +39,18 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> Agent:
+def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
     """Build a fresh Strands Agent for one architect invocation.
 
-    The system prompt is selected via A/B routing — if ``architect.prompts_b``
-    exists, half of runs (deterministically picked from ``run_id``) use it.
+    The caller is responsible for starting ``mcp_client`` (typically via
+    ``with gateway_mcp_client() as mcp_client:``) and keeping it open
+    for the lifetime of the agent call. Tool definitions from the
+    gateway catalogue are spliced into the agent's tool list alongside
+    the local repo-checkout readers and :func:`browse_url`.
+
+    The system prompt is selected via A/B routing — if
+    ``architect.prompts_b`` exists, half of runs (deterministically
+    picked from ``run_id``) use it.
     """
     variant = pick_variant(run_id, "architect")
     bedrock_model_id = model_id()
@@ -56,9 +64,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("architect", variant),
         tools=[
-            read_memory_md_tool,
-            read_stack_profile_md_tool,
-            write_plan_doc_tool,
+            *gateway_tools(mcp_client),
             list_repo_paths_tool,
             read_repo_file_tool,
             browse_url_tool,
@@ -79,12 +85,13 @@ def generate_plan(
     source_issue_title: str | None = None,
     source_issue_body: str | None = None,
 ) -> None:
-    """Run the agent so it writes ``plan.md`` to S3 via ``write_plan_doc``.
+    """Run the agent so it writes ``plan.md`` to S3 via ``put_artifact``.
 
-    No structured output: the agent's instructions tell it to call
-    ``write_plan_doc(run_id=..., content=...)`` exactly once. The caller
-    reads usage metrics off ``agent`` after this returns and fetches
-    the persisted plan via :func:`architect.tools.read_plan_doc`.
+    No structured output: the agent's instructions tell it to call the
+    gateway's ``put_artifact`` op exactly once with the run's plan key.
+    The caller reads usage metrics off ``agent`` after this returns and
+    fetches the persisted plan via ``get_artifact`` through the same
+    gateway client.
 
     Args:
         agent: Strands ``Agent`` built via :func:`build_agent`.
@@ -147,7 +154,7 @@ def compose_message(
         "you draft the plan; conform to every rule in its Conventions section.",
         "",
         "Produce the plan as Markdown using the eight section headings the "
-        "system prompt specifies, then call ``write_plan_doc(run_id="
-        f"'{run_id}', content=...)`` once to persist it.",
+        "system prompt specifies, then call ``put_artifact(key="
+        f"'runs/{run_id}/plan.md', content=...)`` once to persist it.",
     ]
     return "\n".join(parts)

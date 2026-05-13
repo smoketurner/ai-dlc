@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -48,9 +48,38 @@ def wait_for(predicate: Any, timeout: float = 5.0) -> bool:
     return False
 
 
+def test_handler_dispatches_via_copy_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Handler spawns a daemon thread whose target runs under a copied context."""
+    monkeypatch.setattr(app.app, "add_async_task", MagicMock(return_value=42))
+
+    captured: dict[str, Any] = {}
+
+    class FakeThread:
+        def __init__(self, *, target: Any, args: tuple[Any, ...], daemon: bool) -> None:
+            captured["target"] = target
+            captured["args"] = args
+            captured["daemon"] = daemon
+
+        def start(self) -> None:
+            captured["started"] = True
+
+    monkeypatch.setattr(app.threading, "Thread", FakeThread)
+
+    out = app.handler(architect_event())
+
+    assert out["status"] == "dispatched"
+    assert out["task_id"] == 42
+    assert captured["started"] is True
+    assert captured["daemon"] is True
+    # target is the bound `Context.run` method; args carry (run_architect, payload, task_id).
+    assert captured["target"].__name__ == "run"
+    assert captured["args"][0] is app.run_architect
+    assert isinstance(captured["args"][1], ArchitectInput)
+    assert captured["args"][2] == 42
+
+
 def test_handler_returns_immediately_on_success(captured: list[EventEnvelope[Any]]) -> None:
     """The entrypoint must return in ~100ms even when the body would take longer."""
-    sleeping_completion = []
 
     def slow_run_architect(payload: ArchitectInput, async_task_id: int) -> None:
         time.sleep(0.05)
@@ -63,7 +92,7 @@ def test_handler_returns_immediately_on_success(captured: list[EventEnvelope[Any
                 session_id=payload.run_id,
             ),
         )
-        sleeping_completion.append(async_task_id)
+        del async_task_id  # not completing the AgentCore task in this fake
 
     with patch.object(app, "run_architect", slow_run_architect):
         start = time.monotonic()

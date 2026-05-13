@@ -34,7 +34,7 @@ def test_compose_message_threads_intent_only_by_default() -> None:
     assert "Additional user guidance" not in msg
     assert "Issue body:" not in msg
     # Plan-writing instruction is always present.
-    assert "write_plan_doc(run_id='r-1'" in msg
+    assert "put_artifact(key='runs/r-1/plan.md'" in msg
 
 
 @pytest.mark.usefixtures("memory_preamble_stub")
