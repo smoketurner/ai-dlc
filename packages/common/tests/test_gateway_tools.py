@@ -113,6 +113,37 @@ def test_call_gateway_tool_uses_call_tool_sync() -> None:
     assert len(kwargs["tool_use_id"]) > 0
 
 
+def test_call_gateway_tool_strips_none_arguments() -> None:
+    """``None``-valued keys must be removed before the gateway validates the schema.
+
+    AgentCore Gateway rejects ``null`` for fields declared ``type: string``,
+    so callers pass optional fields through and rely on this filter.
+    """
+    client = MagicMock()
+    client.call_tool_sync.return_value = object()
+
+    gateway_tools.call_gateway_tool(
+        client,
+        name="repo-helper___repo_helper",
+        arguments={
+            "op": "open_pr",
+            "repo": "owner/name",
+            "requestor_sub": None,
+            "head": "feature",
+            "base": "main",
+        },
+    )
+
+    kwargs = client.call_tool_sync.call_args.kwargs
+    assert "requestor_sub" not in kwargs["arguments"]
+    assert kwargs["arguments"] == {
+        "op": "open_pr",
+        "repo": "owner/name",
+        "head": "feature",
+        "base": "main",
+    }
+
+
 def test_extract_envelope_prefers_structured_content() -> None:
     """When structuredContent is present, the helper returns it directly."""
     envelope = {"ok": True, "op": "get_artifact", "result": {"key": "k", "content": "c"}}

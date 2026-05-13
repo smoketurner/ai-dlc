@@ -137,21 +137,30 @@ def call_gateway_tool(
 ) -> Any:
     """Invoke a gateway tool by name out-of-band (post-agent / no Agent in scope).
 
+    ``None`` values are stripped from ``arguments`` before the call.
+    AgentCore Gateway validates inputs against the target's tool schema
+    *before* the Lambda runs; the schema declares optional fields as
+    ``type: string`` (not ``type: ["string", "null"]``), so passing
+    ``null`` makes the gateway return a ``ValidationException`` envelope.
+    Stripping ``None`` lets callers pass through optional values like
+    ``payload.requestor_sub`` without conditionals at every site.
+
     Args:
         client: A started :class:`MCPClient`.
         name: The MCP tool name as advertised by the gateway target
-            (e.g. ``"artifact_tool"``).
-        arguments: The tool input payload.
+            (e.g. ``ARTIFACT_TOOL``).
+        arguments: The tool input payload; ``None``-valued keys dropped.
 
     Returns:
         The :class:`strands.tools.mcp.MCPToolResult` from the MCP call.
         Callers that need the structured response should pull from
         ``result.content`` (a list of content blocks).
     """
+    cleaned = {k: v for k, v in arguments.items() if v is not None}
     return client.call_tool_sync(
         tool_use_id=str(uuid.uuid4()),
         name=name,
-        arguments=arguments,
+        arguments=cleaned,
     )
 
 
