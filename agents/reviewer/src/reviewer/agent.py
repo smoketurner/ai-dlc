@@ -1,8 +1,11 @@
 """Strands Agent factory for the Reviewer.
 
 The Reviewer uses Claude Sonnet 4.6 on Bedrock. The agent loop runs
-with plan/memory readers plus a sandbox runner and finishes by emitting
-a :class:`Review` via Strands' ``structured_output_model`` parameter —
+with gateway-routed grounding tools (``artifact_tool`` ops for
+``read_memory_md`` / ``read_stack_profile_md`` / ``get_artifact``)
+plus the local tools that the gateway can't host (``get_pr_diff``,
+``run_pr_in_sandbox``, ``browse_url``). It finishes by emitting a
+:class:`Review` via Strands' ``structured_output_model`` parameter —
 that constrains the model to produce JSON matching the schema while
 still letting it call grounding tools.
 """
@@ -13,7 +16,9 @@ import os
 
 from strands import Agent
 from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
 
+from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
@@ -22,9 +27,6 @@ from reviewer.review import Review
 from reviewer.tools import (
     browse_url_tool,
     get_pr_diff_tool,
-    read_memory_md_tool,
-    read_plan_doc_tool,
-    read_stack_profile_md_tool,
     run_pr_in_sandbox_tool,
 )
 
@@ -36,8 +38,14 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> Agent:
+def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
     """Build a fresh Strands Agent for one reviewer invocation.
+
+    The caller is responsible for starting ``mcp_client`` (typically via
+    ``with gateway_mcp_client() as mcp_client:``) and keeping it open
+    for the lifetime of the agent call. Tool definitions from the
+    gateway catalogue are spliced into the agent's tool list alongside
+    the local tools.
 
     Prompt variant routed via :func:`common.routing.pick_variant`.
     """
@@ -53,9 +61,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("reviewer", variant),
         tools=[
-            read_memory_md_tool,
-            read_stack_profile_md_tool,
-            read_plan_doc_tool,
+            *gateway_tools(mcp_client),
             get_pr_diff_tool,
             run_pr_in_sandbox_tool,
             browse_url_tool,
@@ -121,7 +127,7 @@ def compose_message(
         "",
         f"Read the project's MEMORY.md (project_slug={project_slug}) to apply "
         f"its conventions. Read the architect's plan via "
-        f"``read_plan_doc(plan_s3_key='{plan_s3_key}')`` so you know what the "
+        f"``get_artifact(key='{plan_s3_key}')`` so you know what the "
         f"run is supposed to accomplish. Fetch the impl PR diff with "
         f"``get_pr_diff`` and produce a single coherent verdict over the "
         "integrated diff. Return a Review JSON object.",

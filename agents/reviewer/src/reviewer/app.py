@@ -6,40 +6,41 @@ The entrypoint:
   1. Validates the input as :class:`ReviewerInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
      reports ``HealthyBusy`` while the review runs.
-  3. Spawns a daemon thread that runs the Strands agent, uploads the
-     review to S3, posts a summary comment on the PR, and emits
-     ``REVIEW.READY``. On exception the thread logs and acknowledges
-     the async task — reviewer is the gating reviewer, so a crash
-     would otherwise leave the run in ``validation_running`` waiting
-     forever; we re-raise as a ``comment`` verdict so the run can
-     still advance to ``awaiting_human_merge``.
+  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
+     that runs the Strands agent, uploads the review via the per-agent
+     gateway, posts a summary comment on the PR via the same gateway,
+     and emits ``REVIEW.READY``. On exception the thread logs and
+     acknowledges the async task — reviewer is the gating reviewer, so
+     a crash would otherwise leave the run in ``validation_running``
+     waiting forever.
   4. Returns ``{"status": "dispatched", ...}`` to the caller in
      ~100ms.
+
+``contextvars.copy_context()`` carries the runtime's
+``WorkloadAccessToken`` ContextVar into the daemon thread so
+:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
+Cognito M2M JWT via AgentCore Identity.
 """
 
 from __future__ import annotations
 
-import json
-import os
+import contextvars
 import re
 import threading
-from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import EventEnvelope, ReviewReady
+from common.gateway_tools import call_gateway_tool, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ReviewerInput, ReviewerResult, usage_from_strands
 from reviewer.agent import build_agent, model_id, review_pr
 from reviewer.review import Review, ReviewSummary, render_review, severity_counts
-from reviewer.tools import write_review
-
-if TYPE_CHECKING:
-    from mypy_boto3_lambda.client import LambdaClient
+from reviewer.tools import review_s3_key
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
@@ -61,9 +62,10 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         "reviewer_run",
         {"run_id": payload.run_id, "revision_number": payload.revision_number},
     )
+    ctx = contextvars.copy_context()
     threading.Thread(
-        target=run_reviewer,
-        args=(payload, async_task_id),
+        target=ctx.run,
+        args=(run_reviewer, payload, async_task_id),
         daemon=True,
     ).start()
     return {
@@ -76,37 +78,43 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
     """Body of the reviewer run — produces review, posts comment, emits event."""
     try:
-        agent = build_agent(payload.run_id)
-        review = review_pr(
-            agent,
-            project_slug=payload.project_slug,
-            plan_s3_key=payload.plan_s3_key,
-            run_id=payload.run_id,
-            pr_url=payload.pr_url,
-            revision_number=payload.revision_number,
-        )
-        upload_review(review, run_id=payload.run_id, revision_number=payload.revision_number)
-        post_pr_comment(payload=payload, review=review)
+        with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
+            agent = build_agent(payload.run_id, mcp_client=mcp_client)
+            review = review_pr(
+                agent,
+                project_slug=payload.project_slug,
+                plan_s3_key=payload.plan_s3_key,
+                run_id=payload.run_id,
+                pr_url=payload.pr_url,
+                revision_number=payload.revision_number,
+            )
+            upload_review(
+                mcp_client,
+                review,
+                run_id=payload.run_id,
+                revision_number=payload.revision_number,
+            )
+            post_pr_comment(mcp_client, payload=payload, review=review)
 
-        counts = severity_counts(review)
-        result = ReviewerResult(
-            pr_url=payload.pr_url,
-            verdict=review.verdict,
-            comment_count=len(review.comments),
-            high_severity_count=counts["high"],
-            medium_severity_count=counts["medium"],
-            low_severity_count=counts["low"],
-            summary=event_summary(review.summary),
-            session_id=f"{payload.run_id}-reviewer-r{payload.revision_number}",
-            **usage_from_strands(agent, model_id=model_id()),
-        )
-        logger.info(
-            "review ready",
-            run_id=payload.run_id,
-            verdict=result.verdict,
-            comment_count=result.comment_count,
-        )
-        publish_review_ready(payload, result)
+            counts = severity_counts(review)
+            result = ReviewerResult(
+                pr_url=payload.pr_url,
+                verdict=review.verdict,
+                comment_count=len(review.comments),
+                high_severity_count=counts["high"],
+                medium_severity_count=counts["medium"],
+                low_severity_count=counts["low"],
+                summary=event_summary(review.summary),
+                session_id=f"{payload.run_id}-reviewer-r{payload.revision_number}",
+                **usage_from_strands(agent, model_id=model_id()),
+            )
+            logger.info(
+                "review ready",
+                run_id=payload.run_id,
+                verdict=result.verdict,
+                comment_count=result.comment_count,
+            )
+            publish_review_ready(payload, result)
     except Exception:
         logger.exception(
             "reviewer run failed",
@@ -116,12 +124,22 @@ def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
         app.complete_async_task(async_task_id)
 
 
-def upload_review(review: Review, *, run_id: str, revision_number: int) -> None:
-    """Render and upload the review Markdown to S3."""
-    write_review(
-        run_id=run_id,
-        revision_number=revision_number,
-        content=render_review(review),
+def upload_review(
+    mcp_client: MCPClient,
+    review: Review,
+    *,
+    run_id: str,
+    revision_number: int,
+) -> None:
+    """Render and upload the review Markdown via the artifact_tool gateway target."""
+    call_gateway_tool(
+        mcp_client,
+        name="artifact_tool",
+        arguments={
+            "op": "put_artifact",
+            "key": review_s3_key(run_id=run_id, revision_number=revision_number),
+            "content": render_review(review),
+        },
     )
 
 
@@ -163,42 +181,29 @@ def publish_review_ready(payload: ReviewerInput, result: ReviewerResult) -> None
     publish(envelope)
 
 
-@cache
-def lambda_client() -> LambdaClient:
-    """Process-cached boto3 Lambda client for invoking ``repo_helper``."""
-    return boto3.client("lambda")
-
-
-def repo_helper_function_name() -> str | None:
-    """Lambda function name for ``repo_helper`` — empty when not wired in this env."""
-    return os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME") or None
-
-
-def post_pr_comment(*, payload: ReviewerInput, review: Review) -> None:
-    """Best-effort summary comment on the PR. Never raises — advisory only."""
-    fn = repo_helper_function_name()
-    if fn is None:
-        return
+def post_pr_comment(
+    mcp_client: MCPClient,
+    *,
+    payload: ReviewerInput,
+    review: Review,
+) -> None:
+    """Best-effort summary comment on the PR via the repo_helper gateway target."""
     parsed = PR_URL_PATTERN.match(payload.pr_url)
     if parsed is None:
         logger.warning("could not parse pr_url for comment", pr_url=payload.pr_url)
         return
     body = render_review(review)
     try:
-        lambda_client().invoke(
-            FunctionName=fn,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(
-                {
-                    "input": {
-                        "op": "comment_pr",
-                        "repo": parsed.group("repo"),
-                        "pr_number": int(parsed.group("num")),
-                        "body": body,
-                        "requestor_sub": payload.requestor_sub,
-                    },
-                },
-            ).encode("utf-8"),
+        call_gateway_tool(
+            mcp_client,
+            name="repo_helper",
+            arguments={
+                "op": "comment_pr",
+                "repo": parsed.group("repo"),
+                "pr_number": int(parsed.group("num")),
+                "body": body,
+                "requestor_sub": payload.requestor_sub,
+            },
         )
     except Exception as exc:
         logger.warning("comment_pr failed", err=str(exc), pr_url=payload.pr_url)
