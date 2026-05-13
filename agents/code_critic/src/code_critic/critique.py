@@ -13,12 +13,11 @@ input to any implementer revision pass.
 
 from __future__ import annotations
 
-from functools import cache
 from typing import Annotated, Literal
 
-from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.templating import make_template_env
 from common.validators import NoneSafeList
 
 Severity = Literal["high", "medium", "low"]
@@ -82,19 +81,9 @@ def severity_counts(critique: Critique) -> dict[Severity, int]:
     return counts
 
 
-@cache
-def template_env() -> Environment:
-    """Cached Jinja environment loading templates from ``code_critic/templates/``."""
-    return Environment(
-        loader=PackageLoader("code_critic", "templates"),
-        autoescape=select_autoescape(disabled_extensions=("md", "j2"), default=False),
-        undefined=StrictUndefined,
-    )
-
-
 def render_critique(critique: Critique) -> str:
     """Render the critique as Markdown — used for both the S3 artifact and PR comment."""
-    template = template_env().get_template("critique.md.j2")
+    template = make_template_env(__package__).get_template("critique.md.j2")
     body = template.render(
         critique=critique,
         counts=severity_counts(critique),

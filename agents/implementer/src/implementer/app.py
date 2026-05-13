@@ -1,29 +1,19 @@
 """AgentCore Runtime entrypoint for the Implementer.
 
-The state-router invokes this once per dispatch — first run
-(``mode=implementation``) or revision (``mode=revision``). The
-entrypoint:
-
-  1. Validates the input as :class:`ImplementerInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the Claude Agent SDK session runs.
-  3. Spawns a daemon thread that runs one Claude Agent SDK session
-     and emits one of:
-
-       * ``IMPL_PR.OPENED`` (implementation mode succeeded; PR open),
-       * ``REVISION.READY`` (revision mode succeeded; impl branch
-         pushed),
-       * ``RUN.FAILED`` (uncaught exception or the agent produced no
-         diff).
-
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms so the state-router doesn't wait for the agent's full
-     runtime and AgentCore's frontend never retries the dispatch.
+Validates :class:`ImplementerInput`, dispatches one Claude Agent SDK
+session on a daemon thread (under a copied :mod:`contextvars` context
+— see :func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. ``mode=implementation`` runs the first pass and emits
+``IMPL_PR.OPENED``; ``mode=revision`` applies aggregated feedback to
+the impl branch and emits ``REVISION.READY``. Uncaught exceptions and
+empty-diff outcomes emit ``RUN.FAILED``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from typing import Any
 
@@ -58,9 +48,10 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         "implementer_run",
         {"run_id": payload.run_id, "mode": payload.mode},
     )
+    ctx = contextvars.copy_context()
     threading.Thread(
-        target=run_implementer,
-        args=(payload, task_id),
+        target=ctx.run,
+        args=(run_implementer, payload, task_id),
         daemon=True,
     ).start()
     return {

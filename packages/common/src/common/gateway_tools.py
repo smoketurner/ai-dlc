@@ -17,6 +17,7 @@ carry the runtime's ``WorkloadAccessToken`` across the boundary.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from typing import Any
@@ -42,11 +43,17 @@ def gateway_url() -> str:
 def fetch_gateway_token() -> str:
     """Fetch a Cognito M2M JWT for the agent's gateway via AgentCore Identity.
 
-    The decorator-wrapped inner function reads the workload access token
-    from :class:`BedrockAgentCoreContext`, exchanges it via
-    ``GetResourceOauth2Token`` for a Cognito JWT (M2M /
-    client_credentials), and returns the JWT string. The decorator
-    handles caching internally.
+    Reads the workload access token from :class:`BedrockAgentCoreContext`,
+    exchanges it via ``GetResourceOauth2Token`` for a Cognito JWT (M2M /
+    client_credentials), and returns the JWT. The decorator caches.
+
+    .. note::
+       The ``WorkloadAccessToken`` lives in a :mod:`contextvars`
+       ``ContextVar`` that does not auto-inherit into threads spawned via
+       :class:`threading.Thread`. Callers that dispatch the agent loop
+       onto a daemon thread MUST wrap the thread's target with
+       :func:`contextvars.copy_context().run` so this function can resolve
+       the token off the entrypoint's context.
     """
     provider_name = os.environ.get("AIDLC_GATEWAY_OAUTH_PROVIDER_NAME")
     if not provider_name:
@@ -130,3 +137,31 @@ def call_gateway_tool(
         name=name,
         arguments=arguments,
     )
+
+
+def extract_envelope(result: Any) -> dict[str, Any]:
+    """Pull a Lambda return envelope out of an MCPToolResult.
+
+    AgentCore Gateway invokes a Lambda target and returns the Lambda's
+    dict response as MCP content. The MCP server serialises dict
+    returns into both ``structuredContent`` (the raw dict) and
+    ``content[0].text`` (a JSON string of the same dict) per
+    ``mcp.server.lowlevel.server``'s serialisation path. This helper
+    prefers the structured form and falls back to parsing the first
+    text block so it's robust to servers that haven't enabled
+    structured output.
+
+    Raises ``RuntimeError`` when neither shape yields a parseable dict.
+    """
+    structured = result.get("structuredContent") if isinstance(result, dict) else None
+    if isinstance(structured, dict):
+        return structured
+    blocks = result.get("content", []) if isinstance(result, dict) else []
+    for block in blocks:
+        text = block.get("text") if isinstance(block, dict) else None
+        if isinstance(text, str):
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+    msg = f"gateway tool returned no parseable content: {result!r}"
+    raise RuntimeError(msg)

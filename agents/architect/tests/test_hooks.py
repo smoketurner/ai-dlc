@@ -27,19 +27,19 @@ def test_build_hooks_returns_one_require_prior_call() -> None:
     assert len(hooks) == 1
 
 
-def test_write_plan_doc_blocked_before_read_memory_md() -> None:
+def test_put_artifact_blocked_before_read_memory_md() -> None:
     hooks = build_hooks()
     require = hooks[0]
-    event = call(require, "write_plan_doc")
+    event = call(require, "put_artifact")
     assert event.cancel_tool is not None
     assert "read_memory_md" in event.cancel_tool
 
 
-def test_write_plan_doc_allowed_after_read_memory_md() -> None:
+def test_put_artifact_allowed_after_read_memory_md() -> None:
     hooks = build_hooks()
     require = hooks[0]
     call(require, "read_memory_md")
-    event = call(require, "write_plan_doc")
+    event = call(require, "put_artifact")
     assert event.cancel_tool is None
 
 
@@ -48,5 +48,5 @@ def test_each_invocation_gets_independent_hook_instances() -> None:
     a = build_hooks()[0]
     b = build_hooks()[0]
     call(a, "read_memory_md")
-    event_b = call(b, "write_plan_doc")
+    event_b = call(b, "put_artifact")
     assert event_b.cancel_tool is not None

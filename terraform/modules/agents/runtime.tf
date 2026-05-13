@@ -130,27 +130,43 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
-  # S3 access for direct (non-gateway) tool readers/writers. Critic has
-  # moved fully onto the gateway: it reads MEMORY.md / stack profile /
-  # spec docs via ``artifact_tool`` MCP and uploads its critique the
-  # same way. No agent role needs direct S3 once it migrates; drop the
-  # statement entirely for migrated agents.
+  # Direct S3 access for the two agents whose paths sit outside the
+  # gateway:
+  #   * architect — pre-agent clone-sync writes MEMORY.md +
+  #     stack_profile.json to ``memory_md_bucket`` (see
+  #     ``repo_grounding.sync_memory_md_from_clone`` /
+  #     ``common.memory_md.write_stack_profile``). GetObject backs the
+  #     content-MD5 idempotency check that skips re-puts of unchanged
+  #     bodies.
+  #   * triage — writes the run's triage decision JSON to
+  #     ``artifacts_bucket``. No gateway targets.
+  # Every other agent reaches S3 through the gateway's ``artifact_tool``.
   dynamic "statement" {
-    for_each = each.key == "critic" ? [] : [1]
+    for_each = each.key == "architect" ? [1] : []
     content {
-      sid    = "S3Artifacts"
+      sid    = "S3MemoryMd"
       effect = "Allow"
       actions = [
         "s3:GetObject",
         "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket",
       ]
       resources = [
-        var.artifacts_bucket_arn,
-        "${var.artifacts_bucket_arn}/*",
         var.memory_md_bucket_arn,
         "${var.memory_md_bucket_arn}/*",
+      ]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = each.key == "triage" ? [1] : []
+    content {
+      sid    = "S3TriageDecision"
+      effect = "Allow"
+      actions = [
+        "s3:PutObject",
+      ]
+      resources = [
+        "${var.artifacts_bucket_arn}/*",
       ]
     }
   }
@@ -256,18 +272,18 @@ data "aws_iam_policy_document" "runtime_inline" {
     }
   }
 
-  # Direct lambda:InvokeFunction on the agent's tool targets. Most agents
-  # call tools via the gateway (which has its own role) — this is the
-  # escape hatch for agents that orchestrate Lambdas directly (e.g., the
-  # Proposer calling repo_helper to commit + open a PR). The set is
-  # already bounded by `targets`, so least-privilege still holds. Critic
-  # is fully gateway-mediated; it gets no direct invoke.
+  # Direct lambda:InvokeFunction on the repo_helper Lambda for the
+  # three agents whose tool list includes ``common.sandbox.get_pr_diff``
+  # or ``run_pr_in_sandbox`` — both helpers invoke ``repo_helper``
+  # directly to fetch the PR diff / a short-lived archive URL for the
+  # Code Interpreter sandbox. All other agents reach repo_helper through
+  # the gateway.
   dynamic "statement" {
-    for_each = length(each.value.targets) > 0 && each.key != "critic" ? [1] : []
+    for_each = contains(["reviewer", "tester", "code_critic"], each.key) ? [1] : []
     content {
-      sid       = "DirectInvokeToolLambdas"
+      sid       = "SandboxInvokeRepoHelper"
       actions   = ["lambda:InvokeFunction"]
-      resources = [for tool in each.value.targets : module.tool_lambda[tool].lambda_function_arn]
+      resources = [module.tool_lambda["repo_helper"].lambda_function_arn]
     }
   }
 

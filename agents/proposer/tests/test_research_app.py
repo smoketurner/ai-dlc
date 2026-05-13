@@ -1,15 +1,15 @@
 """Tests for the Proposer's research-trigger path in ``app.py``.
 
 The agent itself is mocked — we focus on the orchestration: that
-``run_research`` posts a comment via ``repo_helper``, opens a PR only when
-the proposal has edits, and emits ``RUN.COMPLETED`` so the projector can
-advance the run state.
+``run_research`` posts a comment via the gateway-routed ``repo_helper``,
+opens a PR only when the proposal has edits, and emits ``RUN.COMPLETED``
+so the projector can advance the run state.
 """
 
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -45,7 +45,6 @@ def make_proposal(*, edits: list[FileEdit] | None = None, comment: str = "ok") -
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AIDLC_REPO_HELPER_FUNCTION_NAME", "ai-dlc-repo-helper")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
     monkeypatch.setenv("AIDLC_BROWSER_ID", "b-1")
 
@@ -53,15 +52,20 @@ def env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_research_posts_comment_and_emits_run_completed() -> None:
     payload = make_input()
     proposal = make_proposal(comment="- adopt minion-style one-shot agents")
+    mcp_client = MagicMock()
     with (
+        patch("proposer.app.build_agent") as p_build,
         patch("proposer.app.propose_research", return_value=proposal) as p_research,
         patch("proposer.app.invoke_repo_helper", return_value={"ok": True, "result": {}}) as p_repo,
         patch("proposer.app.publish") as p_publish,
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
+    p_build.assert_called_once()
+    assert p_build.call_args.kwargs["mcp_client"] is mcp_client
     p_research.assert_called_once()
     comment_call = p_repo.call_args
+    assert comment_call.args[0] is mcp_client
     assert comment_call.kwargs["op"] == "comment_issue"
     assert comment_call.kwargs["issue_number"] == 34
     assert "minion-style" in comment_call.kwargs["body"]
@@ -83,21 +87,23 @@ def test_research_opens_pr_when_proposal_has_edits() -> None:
             )
         ],
     )
+    mcp_client = MagicMock()
 
     open_pr_calls: list[tuple[str, dict[str, Any]]] = []
 
-    def fake_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
+    def fake_repo_helper(_client: Any, *, op: str, **fields: Any) -> dict[str, Any]:
         open_pr_calls.append((op, fields))
         if op == "open_pr":
             return {"ok": True, "result": {"pr_url": "https://github.com/x/y/pull/1"}}
         return {"ok": True, "result": {}}
 
     with (
+        patch("proposer.app.build_agent"),
         patch("proposer.app.propose_research", return_value=proposal),
         patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
         patch("proposer.app.publish") as p_publish,
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
     ops = [op for op, _ in open_pr_calls]
     assert "comment_issue" in ops
@@ -111,12 +117,14 @@ def test_research_opens_pr_when_proposal_has_edits() -> None:
 def test_research_skips_comment_when_summary_empty() -> None:
     payload = make_input()
     proposal = make_proposal(comment="")
+    mcp_client = MagicMock()
     with (
+        patch("proposer.app.build_agent"),
         patch("proposer.app.propose_research", return_value=proposal),
         patch("proposer.app.invoke_repo_helper") as p_repo,
         patch("proposer.app.publish") as p_publish,
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
     p_repo.assert_not_called()
     p_publish.assert_called_once()
@@ -124,25 +132,35 @@ def test_research_skips_comment_when_summary_empty() -> None:
 
 def test_research_requires_intent_and_issue_number() -> None:
     payload = make_input(intent=None)
+    mcp_client = MagicMock()
     with (
+        patch("proposer.app.build_agent") as p_build,
         patch("proposer.app.propose_research") as p_research,
         patch("proposer.app.invoke_repo_helper"),
         patch("proposer.app.publish"),
         pytest.raises(ValueError, match="intent"),
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
+    p_build.assert_not_called()
     p_research.assert_not_called()
 
 
-def test_run_proposer_invokes_research_and_completes_task() -> None:
+def test_run_proposer_opens_gateway_and_completes_task() -> None:
     payload = make_input()
+    fake_client = MagicMock()
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
     with (
+        patch("proposer.app.gateway_mcp_client", return_value=fake_client) as p_factory,
         patch("proposer.app.run_research") as p_research,
         patch.object(app.app, "complete_async_task") as p_done,
     ):
         app.run_proposer(payload, async_task_id=42)
 
-    p_research.assert_called_once_with(payload)
+    p_factory.assert_called_once_with()
+    p_research.assert_called_once()
+    assert p_research.call_args.args[0] is payload
+    assert p_research.call_args.kwargs["mcp_client"] is fake_client
     p_done.assert_called_once_with(42)
 
 
@@ -152,12 +170,14 @@ def test_research_forwards_triggering_comment_to_agent() -> None:
         triggering_commenter="jplock",
     )
     proposal = make_proposal(comment="ok")
+    mcp_client = MagicMock()
     with (
+        patch("proposer.app.build_agent"),
         patch("proposer.app.propose_research", return_value=proposal) as p_research,
         patch("proposer.app.invoke_repo_helper", return_value={"ok": True, "result": {}}),
         patch("proposer.app.publish"),
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
     kwargs = p_research.call_args.kwargs
     assert kwargs["triggering_comment_body"] == (
@@ -188,10 +208,11 @@ def test_research_spawns_issues_from_proposed_issues() -> None:
             ),
         ],
     )
+    mcp_client = MagicMock()
 
     repo_calls: list[tuple[str, dict[str, Any]]] = []
 
-    def fake_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
+    def fake_repo_helper(_client: Any, *, op: str, **fields: Any) -> dict[str, Any]:
         repo_calls.append((op, fields))
         if op == "create_issue":
             return {
@@ -206,11 +227,12 @@ def test_research_spawns_issues_from_proposed_issues() -> None:
         return {"ok": True, "result": {}}
 
     with (
+        patch("proposer.app.build_agent"),
         patch("proposer.app.propose_research", return_value=proposal),
         patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
         patch("proposer.app.publish"),
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
     create_calls = [fields for op, fields in repo_calls if op == "create_issue"]
     assert len(create_calls) == 2
@@ -232,9 +254,10 @@ def test_research_default_label_when_proposed_issue_omits_labels() -> None:
         summary_comment="ok",
         proposed_issues=[ProposedIssue(title="Adopt X", body="Body.")],
     )
+    mcp_client = MagicMock()
     repo_calls: list[tuple[str, dict[str, Any]]] = []
 
-    def fake_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
+    def fake_repo_helper(_client: Any, *, op: str, **fields: Any) -> dict[str, Any]:
         repo_calls.append((op, fields))
         if op == "create_issue":
             return {
@@ -249,11 +272,12 @@ def test_research_default_label_when_proposed_issue_omits_labels() -> None:
         return {"ok": True, "result": {}}
 
     with (
+        patch("proposer.app.build_agent"),
         patch("proposer.app.propose_research", return_value=proposal),
         patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
         patch("proposer.app.publish"),
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
     create_calls = [fields for op, fields in repo_calls if op == "create_issue"]
     assert create_calls[0]["labels"] == ["aidlc-spawned"]
@@ -262,18 +286,20 @@ def test_research_default_label_when_proposed_issue_omits_labels() -> None:
 def test_research_skips_create_issue_when_proposed_issues_empty() -> None:
     payload = make_input()
     proposal = make_proposal(comment="findings")  # no proposed_issues
+    mcp_client = MagicMock()
     repo_calls: list[str] = []
 
-    def fake_repo_helper(*, op: str, **_fields: Any) -> dict[str, Any]:
+    def fake_repo_helper(_client: Any, *, op: str, **_fields: Any) -> dict[str, Any]:
         repo_calls.append(op)
         return {"ok": True, "result": {}}
 
     with (
+        patch("proposer.app.build_agent"),
         patch("proposer.app.propose_research", return_value=proposal),
         patch("proposer.app.invoke_repo_helper", side_effect=fake_repo_helper),
         patch("proposer.app.publish"),
     ):
-        app.run_research(payload)
+        app.run_research(payload, mcp_client=mcp_client)
 
     assert "create_issue" not in repo_calls
 

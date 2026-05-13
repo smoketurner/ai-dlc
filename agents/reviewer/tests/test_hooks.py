@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from reviewer.hooks import READ_PLAN_DOC_CAP, build_hooks
+from reviewer.hooks import GET_ARTIFACT_CAP, build_hooks
 
 
 @dataclass
@@ -20,22 +20,22 @@ def call(hook: Any, name: str) -> StubBeforeToolCall:
     return event
 
 
-def test_read_plan_doc_cap_is_two() -> None:
-    assert READ_PLAN_DOC_CAP == 2
+def test_get_artifact_cap_is_two() -> None:
+    assert GET_ARTIFACT_CAP == 2
 
 
-def test_second_read_plan_doc_is_allowed() -> None:
+def test_second_get_artifact_is_allowed() -> None:
     counter = build_hooks()[0]
     for _ in range(2):
-        event = call(counter, "read_plan_doc")
+        event = call(counter, "get_artifact")
         assert event.cancel_tool is None
 
 
-def test_third_read_plan_doc_is_denied() -> None:
+def test_third_get_artifact_is_denied() -> None:
     counter = build_hooks()[0]
     for _ in range(2):
-        call(counter, "read_plan_doc")
-    third = call(counter, "read_plan_doc")
+        call(counter, "get_artifact")
+    third = call(counter, "get_artifact")
     assert third.cancel_tool is not None
 
 

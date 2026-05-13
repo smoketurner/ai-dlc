@@ -1,61 +1,40 @@
 """AgentCore Runtime entrypoint for the Proposer.
 
-The Proposer is invoked when triage classifies an issue as
-``research`` — the agent reads the URLs in the issue body, synthesises
-findings into a comment on the issue, optionally opens a PR with
-MEMORY.md / prompt edits, and may spawn follow-up issues when the
-triggering comment asks for it. The entrypoint:
-
-  1. Validates the input as :class:`ProposerInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the synthesis runs.
-  3. Spawns a daemon thread that runs the research flow, posts the
-     synthesis comment, opens a PR if there are edits, and emits
-     ``RUN.COMPLETED`` so the projector advances the run state.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms.
-
-The Proposer authenticates as ``ai-dlc[bot]`` (installation token).
+Invoked when triage classifies an issue as ``research``. Validates
+:class:`ProposerInput`, dispatches the agent loop on a daemon thread
+(under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon synthesises findings from the issue's URLs, posts
+the synthesis as an issue comment via the gateway, optionally opens a
+PR with MEMORY.md / prompt edits, may spawn follow-up issues, and
+emits ``RUN.COMPLETED``. The Proposer authenticates as ``ai-dlc[bot]``
+(installation token) downstream of the gateway.
 """
 
 from __future__ import annotations
 
-import json
-import os
+import contextvars
 import re
 import threading
-from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import EventEnvelope, RunCompleted
+from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ProposerInput
-from proposer.agent import propose_research
+from proposer.agent import build_agent, propose_research
 from proposer.proposal import FileEdit, Proposal
-
-if TYPE_CHECKING:
-    from mypy_boto3_lambda.client import LambdaClient
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
 
 BRANCH_SLUG_PATTERN = re.compile(r"[^a-z0-9-]+")
-
-
-@cache
-def lambda_client() -> LambdaClient:
-    """Process-cached boto3 Lambda client (for invoking repo_helper)."""
-    return boto3.client("lambda")
-
-
-def repo_helper_function_name() -> str:
-    """Lambda function name of the repo_helper tool."""
-    return os.environ["AIDLC_REPO_HELPER_FUNCTION_NAME"]
 
 
 @app.entrypoint
@@ -69,9 +48,10 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         trigger_reason=payload.trigger_reason,
     )
     task_id = app.add_async_task("proposer_run", {"run_id": payload.run_id})
+    ctx = contextvars.copy_context()
     threading.Thread(
-        target=run_proposer,
-        args=(payload, task_id),
+        target=ctx.run,
+        args=(run_proposer, payload, task_id),
         daemon=True,
     ).start()
     return {"status": "dispatched", "run_id": payload.run_id, "task_id": task_id}
@@ -86,41 +66,49 @@ def run_proposer(payload: ProposerInput, async_task_id: int) -> None:
     releases its session.
     """
     try:
-        run_research(payload)
+        with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
+            run_research(payload, mcp_client=mcp_client)
     except Exception:
         logger.exception("proposer run failed", run_id=payload.run_id)
     finally:
         app.complete_async_task(async_task_id)
 
 
-def run_research(payload: ProposerInput) -> None:
+def run_research(payload: ProposerInput, *, mcp_client: MCPClient) -> None:
     """Research path — synthesise the issue's URLs, comment on the issue, optional PR."""
     if payload.intent is None or payload.issue_number is None:
         msg = "research trigger requires intent + issue_number"
         raise ValueError(msg)
+    agent = build_agent(payload.run_id, mcp_client=mcp_client)
     proposal = propose_research(
+        agent,
         project_slug=payload.project_slug,
         intent=payload.intent,
         issue_number=payload.issue_number,
-        run_id=payload.run_id,
         target_repo=payload.target_repo,
         triggering_comment_body=payload.triggering_comment_body,
         triggering_commenter=payload.triggering_commenter,
     )
     if proposal.summary_comment.strip():
-        post_research_comment(payload=payload, body=proposal.summary_comment)
+        post_research_comment(mcp_client, payload=payload, body=proposal.summary_comment)
     else:
         logger.warning("research proposal had empty summary_comment", run_id=payload.run_id)
-    spawned_issue_urls = create_proposed_issues(payload=payload, proposal=proposal)
+    spawned_issue_urls = create_proposed_issues(mcp_client, payload=payload, proposal=proposal)
     pr_url: str | None = None
     if proposal.edits:
-        pr_url = open_proposal_pr(payload=payload, proposal=proposal)
+        pr_url = open_proposal_pr(mcp_client, payload=payload, proposal=proposal)
     publish_run_completed(payload, pr_url=pr_url, spawned_issue_urls=spawned_issue_urls)
 
 
-def post_research_comment(*, payload: ProposerInput, body: str) -> None:
+def post_research_comment(
+    mcp_client: MCPClient,
+    *,
+    payload: ProposerInput,
+    body: str,
+) -> None:
     """Post the synthesis as a comment on the source issue via repo_helper."""
     invoke_repo_helper(
+        mcp_client,
         op="comment_issue",
         repo=payload.target_repo,
         issue_number=payload.issue_number,
@@ -128,7 +116,12 @@ def post_research_comment(*, payload: ProposerInput, body: str) -> None:
     )
 
 
-def create_proposed_issues(*, payload: ProposerInput, proposal: Proposal) -> list[str]:
+def create_proposed_issues(
+    mcp_client: MCPClient,
+    *,
+    payload: ProposerInput,
+    proposal: Proposal,
+) -> list[str]:
     """Spawn one issue per ``proposal.proposed_issues`` entry. Returns URLs.
 
     Each spawned issue is backlinked to the parent via
@@ -142,6 +135,7 @@ def create_proposed_issues(*, payload: ProposerInput, proposal: Proposal) -> lis
     spawned: list[str] = []
     for proposed in proposal.proposed_issues:
         out = invoke_repo_helper(
+            mcp_client,
             op="create_issue",
             repo=payload.target_repo,
             title=proposed.title,
@@ -199,16 +193,23 @@ def publish_run_completed(
         )
 
 
-def open_proposal_pr(*, payload: ProposerInput, proposal: Proposal) -> str:
+def open_proposal_pr(
+    mcp_client: MCPClient,
+    *,
+    payload: ProposerInput,
+    proposal: Proposal,
+) -> str:
     """Create a branch, commit edits, open a PR — return the PR URL."""
     branch = branch_name(run_id=payload.run_id)
     invoke_repo_helper(
+        mcp_client,
         op="create_branch",
         repo=payload.target_repo,
         branch=branch,
         base=payload.base_branch,
     )
     invoke_repo_helper(
+        mcp_client,
         op="commit_files",
         repo=payload.target_repo,
         branch=branch,
@@ -216,6 +217,7 @@ def open_proposal_pr(*, payload: ProposerInput, proposal: Proposal) -> str:
         files=[edit_to_dict(edit) for edit in proposal.edits],
     )
     out = invoke_repo_helper(
+        mcp_client,
         op="open_pr",
         repo=payload.target_repo,
         base=payload.base_branch,
@@ -241,18 +243,30 @@ def edit_to_dict(edit: FileEdit) -> dict[str, str]:
     return {"path": edit.target_file, "content": edit.proposed_content}
 
 
-def invoke_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
-    """Invoke the repo_helper Lambda with one op + raise on the standard envelope."""
-    response = lambda_client().invoke(
-        FunctionName=repo_helper_function_name(),
-        InvocationType="RequestResponse",
-        Payload=json.dumps({"input": {"op": op, **fields}}).encode("utf-8"),
+def invoke_repo_helper(
+    mcp_client: MCPClient,
+    *,
+    op: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Invoke the repo_helper gateway target with one op + raise on error envelope.
+
+    Returns the Lambda's response envelope (``{"ok": True, "op": ...,
+    "result": {...}}``). The MCP server serializes dict tool returns
+    into both ``structuredContent`` (the raw dict) and ``content[0].text``
+    (a JSON string of the same dict); we prefer the structured form and
+    fall back to parsing the text block.
+    """
+    result = call_gateway_tool(
+        mcp_client,
+        name="repo_helper",
+        arguments={"op": op, **fields},
     )
-    body = json.loads(response["Payload"].read())
-    if not body.get("ok"):
-        msg = f"repo_helper.{op} failed: {body!r}"
+    envelope = extract_envelope(result)
+    if not envelope.get("ok"):
+        msg = f"repo_helper.{op} failed: {envelope!r}"
         raise RuntimeError(msg)
-    return body
+    return envelope
 
 
 if __name__ == "__main__":

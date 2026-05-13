@@ -1,0 +1,26 @@
+{{ memory_preamble }}
+Project: {{ project_slug }}
+Source: GitHub issue #{{ issue_number }}
+{%- if target_repo %}
+Target repo: {{ target_repo }}
+{%- endif %}
+Trigger: research
+
+Issue body:
+{{ intent | trim }}
+{%- if triggering_comment_body %}
+
+Follow-up comment{% if triggering_commenter %} by @{{ triggering_commenter }}{% endif %}:
+{{ triggering_comment_body | trim }}
+
+This run was triggered by the follow-up comment above. Read the prior thread on this issue with ``repo_helper(op='list_issue_comments', repo=..., issue_number=...)`` before deciding what to do — your earlier synthesis comment is the source the user is referring to.
+
+If the user explicitly asks you to create / spawn / file GitHub issues for follow-up work, populate `proposed_issues` with one entry per issue (title in short imperative form, body with scope + acceptance criteria, labels including `aidlc-spawned`). If the user asks for prioritization or summary without asking for issues, leave `proposed_issues` empty and use `summary_comment` to reply.
+{%- endif %}
+
+Steps:
+  1. read_memory_md to see current project conventions.
+  2. Identify URLs in the issue body and call browse_url on each. Skip this when the follow-up comment is asking about prior synthesis (call repo_helper(op='list_issue_comments', ...) instead).
+  3. Synthesise findings into `summary_comment` (this is posted as a comment on the issue). Aim for 8-15 short bullets an engineer can scan in 30 seconds; lead with what we should adopt, what we should avoid, and decisions worth deferring; cite the source URL on each bullet.
+  4. Optionally propose concrete `edits` to MEMORY.md or a prompts file when a finding warrants a change. Empty edits is fine — the comment is the primary deliverable.
+  5. Populate `proposed_issues` only when the human explicitly asked for issue creation in their follow-up comment. Empty `proposed_issues` is the default.

@@ -1,9 +1,8 @@
-"""Critic-local tool wiring.
+"""Critic-local Strands tools.
 
-All S3 access for the critic now flows through the per-agent AgentCore
-Gateway via MCP — ``common.gateway_tools`` builds the catalogue at
-``build_agent`` time. The only direct tool that remains here is
-``browse_url``, which hits AgentCore Browser (not a gateway target).
+``browse_url`` (AgentCore Browser) plus the S3-key helper for the
+critique artifact. Gateway-routed tools (``artifact_tool`` reads /
+writes) are spliced in by :func:`critic.agent.build_agent`.
 """
 
 from __future__ import annotations

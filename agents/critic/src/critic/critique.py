@@ -17,6 +17,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.templating import make_template_env
 from common.validators import NoneSafeList
 
 Severity = Literal["high", "medium", "low"]
@@ -81,28 +82,10 @@ def severity_counts(critique: Critique) -> dict[Severity, int]:
 
 def render_critique(critique: Critique) -> str:
     """Render the critique as a Markdown document."""
-    counts = severity_counts(critique)
-    lines = [
-        f"# Critique — run `{critique.run_id}`",
-        "",
-        f"> Issues: **{counts['high']}** high · **{counts['medium']}** medium · "
-        f"**{counts['low']}** low",
-        "",
-        "## Summary",
-        "",
-        critique.summary,
-        "",
-    ]
-    lines += ["## Issues", ""]
-    for ix, issue in enumerate(critique.issues, start=1):
-        lines.append(f"### {ix}. [{issue.severity}] {issue_anchor(issue)}")
-        lines.append("")
-        lines.append(f"**Problem:** {issue.description}")
-        lines.append("")
-        lines.append(f"**Recommendation:** {issue.recommendation}")
-        lines.append("")
-    if critique.strengths:
-        lines += ["## Strengths", ""]
-        lines += [f"- {item}" for item in critique.strengths]
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    template = make_template_env(__package__).get_template("critique.md.j2")
+    body = template.render(
+        critique=critique,
+        counts=severity_counts(critique),
+        anchor=issue_anchor,
+    )
+    return body.rstrip() + "\n"

@@ -12,12 +12,11 @@ a single summary comment is attempted on the impl PR via
 
 from __future__ import annotations
 
-from functools import cache
 from typing import Annotated, Literal
 
-from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.templating import make_template_env
 from common.validators import NoneSafeList
 
 Severity = Literal["high", "medium", "low"]
@@ -104,19 +103,9 @@ def severity_counts(review: Review) -> dict[Severity, int]:
     return counts
 
 
-@cache
-def template_env() -> Environment:
-    """Cached Jinja environment loading templates from ``reviewer/templates/``."""
-    return Environment(
-        loader=PackageLoader("reviewer", "templates"),
-        autoescape=select_autoescape(disabled_extensions=("md", "j2"), default=False),
-        undefined=StrictUndefined,
-    )
-
-
 def render_review(review: Review) -> str:
     """Render the review as Markdown — used for both the S3 artifact and PR comment."""
-    template = template_env().get_template("review.md.j2")
+    template = make_template_env(__package__).get_template("review.md.j2")
     body = template.render(
         review=review,
         counts=severity_counts(review),

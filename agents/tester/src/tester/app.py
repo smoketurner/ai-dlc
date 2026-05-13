@@ -1,35 +1,29 @@
 """AgentCore Runtime entrypoint for the Tester.
 
-The state-router invokes the runtime once per impl-PR validation pass.
-The entrypoint:
-
-  1. Validates the input as :class:`TesterInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the analysis runs.
-  3. Spawns a daemon thread that runs the Strands agent, uploads the
-     report to S3, posts a summary comment on the PR, and emits
-     ``TEST_REPORT.READY``. On exception the thread logs and
-     acknowledges the async task — Tester is advisory, so a crash
-     doesn't advance any state machine.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms.
+Validates :class:`TesterInput`, dispatches the agent loop on a daemon
+thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon runs the agent, uploads the report via the
+gateway, posts a summary comment on the PR, and emits
+``TEST_REPORT.READY``. Tester is advisory; exceptions are logged and
+swallowed.
 """
 
 from __future__ import annotations
 
-import json
-import os
+import contextvars
 import re
 import threading
-from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import EventEnvelope, TestReportReady
+from common.gateway_tools import call_gateway_tool, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TesterInput, TesterResult, usage_from_strands
 from tester.agent import analyze_gaps, build_agent, model_id
@@ -40,10 +34,7 @@ from tester.report import (
     render_report,
     suggestion_count,
 )
-from tester.tools import write_report
-
-if TYPE_CHECKING:
-    from mypy_boto3_lambda.client import LambdaClient
+from tester.tools import report_s3_key
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
@@ -65,9 +56,10 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         "tester_run",
         {"run_id": payload.run_id, "revision_number": payload.revision_number},
     )
+    ctx = contextvars.copy_context()
     threading.Thread(
-        target=run_tester,
-        args=(payload, async_task_id),
+        target=ctx.run,
+        args=(run_tester, payload, async_task_id),
         daemon=True,
     ).start()
     return {
@@ -86,33 +78,39 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
     gap analysis as input.
     """
     try:
-        agent = build_agent(payload.run_id)
-        report = analyze_gaps(
-            agent,
-            project_slug=payload.project_slug,
-            plan_s3_key=payload.plan_s3_key,
-            run_id=payload.run_id,
-            pr_url=payload.pr_url,
-            revision_number=payload.revision_number,
-        )
-        upload_report(report, run_id=payload.run_id, revision_number=payload.revision_number)
-        post_pr_comment(payload=payload, report=report)
+        with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
+            agent = build_agent(payload.run_id, mcp_client=mcp_client)
+            report = analyze_gaps(
+                agent,
+                project_slug=payload.project_slug,
+                plan_s3_key=payload.plan_s3_key,
+                run_id=payload.run_id,
+                pr_url=payload.pr_url,
+                revision_number=payload.revision_number,
+            )
+            upload_report(
+                mcp_client,
+                report,
+                run_id=payload.run_id,
+                revision_number=payload.revision_number,
+            )
+            post_pr_comment(mcp_client, payload=payload, report=report)
 
-        result = TesterResult(
-            pr_url=payload.pr_url,
-            gap_count=gap_count(report),
-            suggested_test_count=suggestion_count(report),
-            summary=event_summary(report.summary),
-            session_id=f"{payload.run_id}-tester-r{payload.revision_number}",
-            **usage_from_strands(agent, model_id=model_id()),
-        )
-        logger.info(
-            "test report ready",
-            run_id=payload.run_id,
-            gap_count=result.gap_count,
-            suggested_test_count=result.suggested_test_count,
-        )
-        publish_test_report_ready(payload, result)
+            result = TesterResult(
+                pr_url=payload.pr_url,
+                gap_count=gap_count(report),
+                suggested_test_count=suggestion_count(report),
+                summary=event_summary(report.summary),
+                session_id=f"{payload.run_id}-tester-r{payload.revision_number}",
+                **usage_from_strands(agent, model_id=model_id()),
+            )
+            logger.info(
+                "test report ready",
+                run_id=payload.run_id,
+                gap_count=result.gap_count,
+                suggested_test_count=result.suggested_test_count,
+            )
+            publish_test_report_ready(payload, result)
     except Exception:
         logger.exception(
             "tester run failed",
@@ -122,12 +120,22 @@ def run_tester(payload: TesterInput, async_task_id: int) -> None:
         app.complete_async_task(async_task_id)
 
 
-def upload_report(report: Report, *, run_id: str, revision_number: int) -> None:
-    """Render and upload the report Markdown to S3."""
-    write_report(
-        run_id=run_id,
-        revision_number=revision_number,
-        content=render_report(report),
+def upload_report(
+    mcp_client: MCPClient,
+    report: Report,
+    *,
+    run_id: str,
+    revision_number: int,
+) -> None:
+    """Render and upload the report Markdown via the artifact_tool gateway target."""
+    call_gateway_tool(
+        mcp_client,
+        name="artifact_tool",
+        arguments={
+            "op": "put_artifact",
+            "key": report_s3_key(run_id=run_id, revision_number=revision_number),
+            "content": render_report(report),
+        },
     )
 
 
@@ -162,42 +170,29 @@ def publish_test_report_ready(payload: TesterInput, result: TesterResult) -> Non
     publish(envelope)
 
 
-@cache
-def lambda_client() -> LambdaClient:
-    """Process-cached boto3 Lambda client for invoking ``repo_helper``."""
-    return boto3.client("lambda")
-
-
-def repo_helper_function_name() -> str | None:
-    """Lambda function name for ``repo_helper`` — empty when not wired in this env."""
-    return os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME") or None
-
-
-def post_pr_comment(*, payload: TesterInput, report: Report) -> None:
-    """Best-effort summary comment on the PR. Never raises — advisory only."""
-    fn = repo_helper_function_name()
-    if fn is None:
-        return
+def post_pr_comment(
+    mcp_client: MCPClient,
+    *,
+    payload: TesterInput,
+    report: Report,
+) -> None:
+    """Best-effort summary comment on the PR via the repo_helper gateway target."""
     parsed = PR_URL_PATTERN.match(payload.pr_url)
     if parsed is None:
         logger.warning("could not parse pr_url for comment", pr_url=payload.pr_url)
         return
     body = render_report(report)
     try:
-        lambda_client().invoke(
-            FunctionName=fn,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(
-                {
-                    "input": {
-                        "op": "comment_pr",
-                        "repo": parsed.group("repo"),
-                        "pr_number": int(parsed.group("num")),
-                        "body": body,
-                        "requestor_sub": payload.requestor_sub,
-                    },
-                },
-            ).encode("utf-8"),
+        call_gateway_tool(
+            mcp_client,
+            name="repo_helper",
+            arguments={
+                "op": "comment_pr",
+                "repo": parsed.group("repo"),
+                "pr_number": int(parsed.group("num")),
+                "body": body,
+                "requestor_sub": payload.requestor_sub,
+            },
         )
     except Exception as exc:
         logger.warning("comment_pr failed", err=str(exc), pr_url=payload.pr_url)

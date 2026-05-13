@@ -5,8 +5,12 @@ review the integrated impl PR against the **original GitHub issue**.
 Its primary lens is "does this PR solve the user's stated problem".
 It also flags drift from the architect's plan and missing edge cases.
 
-Emits a :class:`Critique` via Strands' ``structured_output_model``
-parameter.
+The agent loop runs with gateway-routed grounding tools
+(``artifact_tool`` ops for ``read_memory_md`` / ``read_stack_profile_md``
+/ ``get_artifact``) plus the local ``get_pr_diff`` (shared with
+reviewer/tester via :mod:`common.sandbox`) and ``browse_url``. It
+finishes by emitting a :class:`Critique` via Strands'
+``structured_output_model`` parameter.
 """
 
 from __future__ import annotations
@@ -15,15 +19,12 @@ import os
 
 from strands import Agent, tool
 from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
 
 from code_critic.critique import Critique
 from code_critic.hooks import build_hooks
-from code_critic.tools import (
-    browse_url_tool,
-    read_memory_md_tool,
-    read_plan_doc_tool,
-    read_stack_profile_md_tool,
-)
+from code_critic.tools import browse_url_tool
+from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
@@ -39,8 +40,15 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> Agent:
-    """Build a fresh Strands Agent for one code-critic invocation."""
+def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
+    """Build a fresh Strands Agent for one code-critic invocation.
+
+    The caller is responsible for starting ``mcp_client`` (typically via
+    ``with gateway_mcp_client() as mcp_client:``) and keeping it open
+    for the lifetime of the agent call. Tool definitions from the
+    gateway catalogue are spliced into the agent's tool list alongside
+    the local ``get_pr_diff`` and ``browse_url`` tools.
+    """
     variant = pick_variant(run_id, "code_critic")
     bedrock_model_id = model_id()
     return Agent(
@@ -53,9 +61,7 @@ def build_agent(run_id: str) -> Agent:
         ),
         system_prompt=load_system_prompt("code_critic", variant),
         tools=[
-            read_memory_md_tool,
-            read_stack_profile_md_tool,
-            read_plan_doc_tool,
+            *gateway_tools(mcp_client),
             get_pr_diff_tool,
             browse_url_tool,
         ],
@@ -133,7 +139,7 @@ def compose_message(
         parts += ["", "## Original issue body", "", source_issue_body.strip()]
     parts += [
         "",
-        f"Read the architect's plan via ``read_plan_doc(plan_s3_key='{plan_s3_key}')`` "
+        f"Read the architect's plan via ``get_artifact(key='{plan_s3_key}')`` "
         f"and the project's MEMORY.md (project_slug={project_slug}). Fetch the "
         "impl PR diff with ``get_pr_diff``. Then return a Critique JSON object — "
         "grade the diff against the issue body above (lens [issue→diff], "

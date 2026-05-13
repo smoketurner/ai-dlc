@@ -1,21 +1,12 @@
 """AgentCore Runtime entrypoint for the Critic.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. The state-router
-Lambda invokes this runtime when a run reaches ``critic_running``. The
-entrypoint:
-
-  1. Validates the input as :class:`CriticInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the work runs.
-  3. Spawns a daemon thread that critiques the architect's plan,
-     uploads the critique through the per-agent gateway, and emits
-     ``CRITIQUE.READY``. ``contextvars.copy_context()`` carries the
-     runtime's ``WorkloadAccessToken`` ContextVar into the thread so
-     :func:`common.gateway_tools.fetch_gateway_token` can exchange it
-     for a Cognito M2M JWT via AgentCore Identity.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms so the state-router sees a clean fast response and
-     AgentCore's frontend doesn't retry the dispatch.
+Validates :class:`CriticInput`, dispatches the agent loop on a daemon
+thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon critiques the architect's plan, uploads the
+critique via the gateway, and emits ``CRITIQUE.READY`` on success or
+``RUN.FAILED`` on exception.
 """
 
 from __future__ import annotations

@@ -1,8 +1,11 @@
 """Strands hooks for the Architect.
 
 Enforces a single rule: the agent must call ``read_memory_md`` before
-``write_plan_doc``. Without this, the agent could draft a plan without
-having seen the project's MEMORY.md conventions.
+``put_artifact``. Without this, the agent could draft a plan without
+having seen the project's MEMORY.md conventions. The target/prerequisite
+names match the gateway-routed ``artifact_tool`` operation names —
+critic uses the same naming axis (``ToolCallCounter({"get_artifact":
+...})``).
 """
 
 from __future__ import annotations
@@ -21,5 +24,5 @@ def build_hooks() -> list[HookProvider | HookCallback[Any]]:
     its own instances rather than sharing one across runs.
     """
     return [
-        RequirePriorCall(target="write_plan_doc", prerequisite="read_memory_md"),
+        RequirePriorCall(target="put_artifact", prerequisite="read_memory_md"),
     ]

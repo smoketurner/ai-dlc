@@ -90,8 +90,9 @@ Do not return JSON. Do not wrap the markdown in code fences. Do not
 include any prose outside the section headings above. The platform
 uploads your output verbatim to ``s3://artifacts/runs/{run_id}/plan.md``.
 
-After you've drafted the plan body, call ``write_plan_doc(content=...)``
-exactly once to persist it. The platform reads the same content back from
+After you've drafted the plan body, call ``put_artifact(key='runs/{run_id}/plan.md',
+content=...)`` exactly once to persist it. ``put_artifact`` is the gateway-routed
+artifact_tool operation; the platform reads the same content back from
 S3 to populate the DESIGN.READY event.
 
 Coordination (Architect):

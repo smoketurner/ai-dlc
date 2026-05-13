@@ -1,4 +1,4 @@
-"""Parser, renderer, and S3-snapshot reader for the ai-dlc ``MEMORY.md``.
+"""Parser, renderer, and stack-profile S3 reader/writer for the ai-dlc ``MEMORY.md``.
 
 A MEMORY.md has exactly six top-level ``## `` headers, in this order:
 
@@ -13,11 +13,10 @@ Anything else fails fast with :class:`MemoryDocParseError`. The strict
 schema is intentional — agents need to write to known sections without an
 LLM negotiating the structure on every save.
 
-This module also owns :func:`read_memory_md` — the canonical read of
-the per-project MEMORY.md S3 snapshot the architect syncs from the
-cloned repo. Each Strands agent imports and registers it directly so
-the read semantics (freshness header, empty-on-missing) live in one
-place rather than four near-identical copies.
+Agents read MEMORY.md / stack_profile through the per-agent
+AgentCore Gateway (``artifact_tool`` ops); the only direct-S3
+consumer that remains is the architect's pre-agent clone-sync
+(:func:`write_stack_profile`).
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.errors import MemoryDocParseError
-from common.stack_discovery import StackProfile, render_stack_profile
+from common.stack_discovery import StackProfile
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
@@ -182,42 +181,6 @@ def memory_md_bucket() -> str:
     return os.environ["AIDLC_MEMORY_MD_BUCKET"]
 
 
-def read_memory_md(project_slug: str) -> str:
-    """Read the canonical MEMORY.md for a project, prefixed with sync time.
-
-    The architect syncs the project's ``MEMORY.md`` (root, or
-    ``docs/MEMORY.md`` for legacy repos) + ``AGENTS.md`` from the
-    cloned repo into ``s3://{bucket}/projects/{project_slug}/MEMORY.md``
-    on every architect run (see
-    ``architect.repo_grounding.sync_memory_md_from_clone``). The four
-    Strands agents (architect, critic, reviewer, proposer) register
-    this function directly as a tool — no per-agent wrapper.
-
-    The freshness header is injected at read time rather than baked
-    into the stored body so two syncs of identical source content
-    produce a byte-identical S3 object — that's what keeps the
-    architect's MD5 idempotency check valid.
-
-    Args:
-        project_slug: Project identifier — e.g., ``ai-dlc``.
-
-    Returns:
-        The Markdown body prefixed with ``_(synced from clone on
-        <iso>)_``, or the empty string when no snapshot exists for
-        the project.
-    """
-    key = f"projects/{project_slug}/MEMORY.md"
-    try:
-        obj = memory_md_s3_client().get_object(Bucket=memory_md_bucket(), Key=key)
-    except Exception:
-        return ""
-    body = obj["Body"].read().decode("utf-8")
-    last_modified = obj.get("LastModified")
-    if last_modified is None:
-        return body
-    return f"_(synced from clone on {last_modified.isoformat()})_\n\n{body}"
-
-
 STACK_PROFILE_KEY_TEMPLATE: Final = "projects/{project_slug}/stack_profile.json"
 
 
@@ -281,27 +244,3 @@ def stack_profile_unchanged(client: S3Client, bucket: str, key: str, body: str) 
     except BotoCoreError, ClientError:
         return False
     return existing == body
-
-
-def read_stack_profile_md(project_slug: str) -> str:
-    """Read the project's stack profile and render it as Markdown for an agent.
-
-    Companion to :func:`read_memory_md`. Each Strands agent registers
-    this function directly as a tool so the rendering semantics
-    (compact, component-grouped, ``<stack_profile>``-style block) live
-    in one place rather than four near-identical copies.
-
-    Args:
-        project_slug: Project identifier — e.g., ``ai-dlc``.
-
-    Returns:
-        Rendered Markdown, or the empty string when no profile has been
-        written yet for the project (e.g., the architect hasn't run, or
-        the run had no ``target_repo``). Callers treat ``""`` as "no
-        stack signal" and fall back to manual file inspection via
-        ``list_repo_paths`` / ``read_repo_file``.
-    """
-    profile = read_stack_profile(project_slug)
-    if profile is None:
-        return ""
-    return render_stack_profile(profile)

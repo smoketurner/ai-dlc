@@ -8,6 +8,7 @@ AgentCore Identity. We patch ``streamablehttp_client`` and
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -110,3 +111,23 @@ def test_call_gateway_tool_uses_call_tool_sync() -> None:
     assert kwargs["arguments"] == {"op": "put_artifact", "key": "k", "content": "c"}
     assert isinstance(kwargs["tool_use_id"], str)
     assert len(kwargs["tool_use_id"]) > 0
+
+
+def test_extract_envelope_prefers_structured_content() -> None:
+    """When structuredContent is present, the helper returns it directly."""
+    envelope = {"ok": True, "op": "get_artifact", "result": {"key": "k", "content": "c"}}
+    out = gateway_tools.extract_envelope({"structuredContent": envelope, "content": []})
+    assert out is envelope
+
+
+def test_extract_envelope_falls_back_to_text_block() -> None:
+    """Servers that don't emit structuredContent still surface the dict as JSON text."""
+    envelope = {"ok": True, "op": "get_artifact", "result": {"key": "k", "content": "c"}}
+    out = gateway_tools.extract_envelope({"content": [{"text": json.dumps(envelope)}]})
+    assert out == envelope
+
+
+def test_extract_envelope_raises_on_garbage() -> None:
+    """An empty result envelope produces a clear error."""
+    with pytest.raises(RuntimeError, match="no parseable content"):
+        gateway_tools.extract_envelope({"content": []})

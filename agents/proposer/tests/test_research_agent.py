@@ -42,7 +42,7 @@ def test_compose_research_message_includes_follow_up_block(
     )
     assert "Follow-up comment by @jplock" in msg
     assert "@aidlc-bot please create issues" in msg
-    assert "list_issue_comments" in msg
+    assert "repo_helper(op='list_issue_comments'" in msg
     assert "proposed_issues" in msg
 
 

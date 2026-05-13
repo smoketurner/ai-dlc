@@ -7,44 +7,46 @@ The implementer needs to:
     App's installation token (commits attribute to ``ai-dlc[bot]``),
   * clone the target repo into ``/workspace/repo`` using that token,
   * fetch the architect's ``plan.md`` and the critic's ``critique.md``
-    from S3 into ``/workspace/spec/``,
+    from S3 into ``/workspace/spec/`` via the per-agent gateway's
+    ``artifact_tool`` target,
   * configure local git author from the resolved identity,
   * create the run's single impl branch ``aidlc/impl/{run_id}``,
-  * let Claude edit, commit, push, and open one PR via the
-    repo_helper Lambda.
+  * let Claude edit, commit, push, and (post-agent) open one PR via the
+    gateway's ``repo_helper`` target.
+
+Git operations against the working tree stay on the container's
+``git`` CLI — the agent loop iteratively edits + commits, and routing
+each commit through a Lambda would batch-defer commits and break the
+iterative model. GitHub API operations (open_pr, comment_pr, etc.)
+flow through the gateway via :func:`invoke_repo_helper`.
 
 The :class:`RepoSession` holds the token + author identity + target repo
 for one Implementer invocation. ``execute_implementation`` builds the
-session at the start of a run and passes it through every git/GitHub
+session at the start of a run and passes it through every git
 operation — no module-level env-var reads in this code path.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
 import subprocess
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import boto3
 import httpx
 import structlog
+from strands.tools.mcp import MCPClient
 
+from common.gateway_tools import call_gateway_tool, extract_envelope
 from common.github_app import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
 )
 
 logger = structlog.get_logger()
-
-if TYPE_CHECKING:
-    from mypy_boto3_lambda.client import LambdaClient
-    from mypy_boto3_s3.client import S3Client
 
 GIT_BIN = "/usr/bin/git"
 GITHUB_API = "https://api.github.com"
@@ -62,17 +64,6 @@ class RepoSession:
     author_login: str  # git config user.name
     author_email: str  # git config user.email
     on_behalf_of_user: bool  # True when commits attribute to a real user
-
-
-@cache
-def s3_client() -> S3Client:
-    """Process-cached boto3 S3 client."""
-    return boto3.client("s3")
-
-
-def artifacts_bucket() -> str:
-    """Bucket holding plan/critique artifacts."""
-    return os.environ["AIDLC_ARTIFACTS_BUCKET"]
 
 
 def workspace_root() -> Path:
@@ -199,24 +190,29 @@ def configure_git_author(session: RepoSession) -> None:
 
 
 def fetch_plan_and_critique(
+    mcp_client: MCPClient,
     *,
     plan_s3_key: str | None,
     critique_s3_key: str | None,
 ) -> None:
-    """Download the plan + critique markdown bodies from S3 into ``/workspace/spec/``.
+    """Download the plan + critique markdown bodies via the gateway into ``/workspace/spec/``.
 
-    Best-effort: a missing object is logged but does not raise — the
+    Best-effort: a missing artifact is logged but does not raise — the
     implementer can still proceed when only one of the artifacts is
     present (e.g., a re-run before the critic finished).
     """
     target = spec_path()
     target.mkdir(parents=True, exist_ok=True)
-    bucket = artifacts_bucket()
     for name, key in (("plan", plan_s3_key), ("critique", critique_s3_key)):
         if not key:
             continue
         try:
-            body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
+            envelope = call_artifact_tool(
+                mcp_client,
+                op="get_artifact",
+                key=key,
+            )
+            body = str((envelope.get("result") or {}).get("content") or "")
         except Exception as exc:
             logger.warning(
                 "fetch_plan_and_critique missed object",
@@ -225,7 +221,10 @@ def fetch_plan_and_critique(
                 error=str(exc),
             )
             continue
-        (target / f"{name}.md").write_bytes(body)
+        if not body:
+            logger.warning("fetch_plan_and_critique got empty body", name=name, key=key)
+            continue
+        (target / f"{name}.md").write_text(body, encoding="utf-8")
 
 
 def impl_branch_name(run_id: str) -> str:
@@ -300,21 +299,10 @@ def shell_safe_join(args: list[str]) -> str:
 
 
 # ----------------------------------------------------------------------
-# repo_helper Lambda invocation
+# Gateway-routed repo_helper / artifact_tool invocation
 # ----------------------------------------------------------------------
 
 PR_NUMBER_PATTERN = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)$")
-
-
-@cache
-def lambda_client() -> LambdaClient:
-    """Process-cached boto3 Lambda client (for invoking ``repo_helper``)."""
-    return boto3.client("lambda")
-
-
-def repo_helper_function_name() -> str | None:
-    """Lambda function name for ``repo_helper`` — empty when not wired in this env."""
-    return os.environ.get("AIDLC_REPO_HELPER_FUNCTION_NAME") or None
 
 
 def parse_pr_number(pr_url: str) -> int:
@@ -329,26 +317,60 @@ def parse_pr_number(pr_url: str) -> int:
     return int(match.group(1))
 
 
-def invoke_repo_helper(*, op: str, requestor_sub: str | None, **fields: Any) -> dict[str, Any]:
-    """Synchronously invoke the ``repo_helper`` Lambda and return its result."""
-    fn = repo_helper_function_name()
-    if fn is None:
-        msg = "AIDLC_REPO_HELPER_FUNCTION_NAME unset; cannot invoke repo_helper"
-        raise RuntimeError(msg)
-    payload: dict[str, Any] = {"input": {"op": op, "requestor_sub": requestor_sub, **fields}}
-    response = lambda_client().invoke(
-        FunctionName=fn,
-        InvocationType="RequestResponse",
-        Payload=json.dumps(payload).encode("utf-8"),
+def invoke_repo_helper(
+    mcp_client: MCPClient,
+    *,
+    op: str,
+    requestor_sub: str | None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Invoke the gateway-routed ``repo_helper`` target and return ``result`` dict.
+
+    Raises ``RuntimeError`` on an ``ok: false`` envelope. The returned
+    value is the Lambda's inner ``result`` payload (not the full
+    envelope), matching the previous direct-Lambda contract that
+    callers depend on.
+    """
+    response = call_gateway_tool(
+        mcp_client,
+        name="repo_helper",
+        arguments={"op": op, "requestor_sub": requestor_sub, **fields},
     )
-    body = json.loads(response["Payload"].read())
-    if not body.get("ok"):
-        msg = f"repo_helper.{op} failed: {body.get('error')}"
+    envelope = extract_envelope(response)
+    if not envelope.get("ok"):
+        msg = f"repo_helper.{op} failed: {envelope.get('error')}"
         raise RuntimeError(msg)
-    return body.get("result", {})
+    result = envelope.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def call_artifact_tool(
+    mcp_client: MCPClient,
+    *,
+    op: str,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Invoke the gateway-routed ``artifact_tool`` target and return the full envelope.
+
+    Returns the Lambda's envelope (``{"ok": True, "op": ..., "result":
+    {...}}``); callers extract the inner ``result`` themselves so
+    they can distinguish ``result.content == ""`` from a missing key.
+    Raises ``RuntimeError`` on an ``ok: false`` envelope.
+    """
+    response = call_gateway_tool(
+        mcp_client,
+        name="artifact_tool",
+        arguments={"op": op, **fields},
+    )
+    envelope = extract_envelope(response)
+    if not envelope.get("ok"):
+        msg = f"artifact_tool.{op} failed: {envelope.get('error')}"
+        raise RuntimeError(msg)
+    return envelope
 
 
 def post_inline_replies(
+    mcp_client: MCPClient,
     *,
     repo: str,
     pr_number: int,
@@ -359,6 +381,7 @@ def post_inline_replies(
     for comment_id, body in replies:
         try:
             invoke_repo_helper(
+                mcp_client,
                 op="reply_pr_review_comment",
                 requestor_sub=requestor_sub,
                 repo=repo,
@@ -377,6 +400,7 @@ def post_inline_replies(
 
 
 def fetch_failed_check_runs(
+    mcp_client: MCPClient,
     *,
     repo: str,
     head_sha: str,
@@ -384,6 +408,7 @@ def fetch_failed_check_runs(
 ) -> list[dict[str, Any]]:
     """Return only the failing check runs for ``head_sha`` — for prompt context."""
     result = invoke_repo_helper(
+        mcp_client,
         op="list_check_runs",
         requestor_sub=requestor_sub,
         repo=repo,
