@@ -22,6 +22,7 @@ from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from common.templating import make_template_env
+from proposer.hooks import build_hooks
 from proposer.proposal import Proposal
 from proposer.tools import browse_url_tool
 
@@ -59,6 +60,7 @@ def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
             *gateway_tools(mcp_client),
             browse_url_tool,
         ],
+        hooks=build_hooks(),
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 

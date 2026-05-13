@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from common.hooks import RequirePriorCall, ToolCallCounter, validate_no_spec_dump
+from common.hooks import (
+    InputValidator,
+    RequireAllPriorCalls,
+    RequirePriorCall,
+    ToolCallCounter,
+    validate_no_spec_dump,
+)
 
 
 @dataclass
@@ -127,3 +133,117 @@ def test_require_prior_call_ignores_unrelated_tools() -> None:
     hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
     event = call_required(hook, "search_codebase")
     assert event.cancel_tool is None
+
+
+def call_multi(hook: RequireAllPriorCalls, name: str) -> StubBeforeToolCall:
+    event = StubBeforeToolCall(tool_use={"name": name})
+    hook.check(event)  # ty: ignore[invalid-argument-type]
+    return event
+
+
+def test_require_all_rejects_when_no_prerequisites_called() -> None:
+    hook = RequireAllPriorCalls(
+        target="put_artifact",
+        prerequisites=["read_memory_md", "read_stack_profile_md"],
+    )
+    event = call_multi(hook, "put_artifact")
+    assert event.cancel_tool is not None
+    assert "`read_memory_md`" in event.cancel_tool
+    assert "`read_stack_profile_md`" in event.cancel_tool
+
+
+def test_require_all_rejects_when_some_prerequisites_missing() -> None:
+    hook = RequireAllPriorCalls(
+        target="put_artifact",
+        prerequisites=["read_memory_md", "read_stack_profile_md"],
+    )
+    call_multi(hook, "read_memory_md")
+    event = call_multi(hook, "put_artifact")
+    assert event.cancel_tool is not None
+    assert "`read_stack_profile_md`" in event.cancel_tool
+    assert "`read_memory_md`" not in event.cancel_tool
+
+
+def test_require_all_allows_after_every_prerequisite_called() -> None:
+    hook = RequireAllPriorCalls(
+        target="put_artifact",
+        prerequisites=["read_memory_md", "read_stack_profile_md"],
+    )
+    call_multi(hook, "read_memory_md")
+    call_multi(hook, "read_stack_profile_md")
+    event = call_multi(hook, "put_artifact")
+    assert event.cancel_tool is None
+
+
+def test_require_all_resets_on_invocation() -> None:
+    hook = RequireAllPriorCalls(target="put_artifact", prerequisites=["read_memory_md"])
+    call_multi(hook, "read_memory_md")
+    hook.reset(StubBeforeInvocation())  # ty: ignore[invalid-argument-type]
+    after_reset = call_multi(hook, "put_artifact")
+    assert after_reset.cancel_tool is not None
+
+
+def test_require_all_rejects_empty_prerequisites_list() -> None:
+    import pytest  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="at least one prerequisite"):
+        RequireAllPriorCalls(target="x", prerequisites=[])
+
+
+def test_input_validator_passes_when_validator_returns_empty_list() -> None:
+    hook = InputValidator(tool_names=("put_artifact",), validate=lambda _: [])
+    event = StubBeforeToolCall(tool_use={"name": "put_artifact", "input": {"content": "..."}})
+    hook.check(event)  # ty: ignore[invalid-argument-type]
+    assert event.cancel_tool is None
+
+
+def test_input_validator_cancels_with_problems_joined() -> None:
+    def validate(_: dict[str, Any]) -> list[str]:
+        return ["missing Context section", "missing Approach section"]
+
+    hook = InputValidator(tool_names=("put_artifact",), validate=validate)
+    event = StubBeforeToolCall(tool_use={"name": "put_artifact", "input": {"content": "x"}})
+    hook.check(event)  # ty: ignore[invalid-argument-type]
+    assert event.cancel_tool is not None
+    assert "missing Context section" in event.cancel_tool
+    assert "missing Approach section" in event.cancel_tool
+
+
+def test_input_validator_ignores_unmatched_tools() -> None:
+    def validate(_: dict[str, Any]) -> list[str]:
+        return ["should not be called"]
+
+    hook = InputValidator(tool_names=("put_artifact",), validate=validate)
+    event = StubBeforeToolCall(tool_use={"name": "get_artifact", "input": {}})
+    hook.check(event)  # ty: ignore[invalid-argument-type]
+    assert event.cancel_tool is None
+
+
+def test_input_validator_handles_non_dict_input() -> None:
+    """Defensive: tool input shapes vary; non-dict must not crash."""
+
+    def validate(_: dict[str, Any]) -> list[str]:
+        return ["should not be called"]
+
+    hook = InputValidator(tool_names=("put_artifact",), validate=validate)
+    event = StubBeforeToolCall(tool_use={"name": "put_artifact", "input": "not a dict"})
+    hook.check(event)  # ty: ignore[invalid-argument-type]
+    assert event.cancel_tool is None
+
+
+def test_input_validator_rejects_empty_tool_names() -> None:
+    import pytest  # noqa: PLC0415
+
+    with pytest.raises(ValueError, match="at least one tool name"):
+        InputValidator(tool_names=(), validate=lambda _: [])
+
+
+def test_input_validator_supports_multiple_tool_names() -> None:
+    def validate(_: dict[str, Any]) -> list[str]:
+        return ["nope"]
+
+    hook = InputValidator(tool_names=("comment_pr", "comment_issue"), validate=validate)
+    for tool in ("comment_pr", "comment_issue"):
+        event = StubBeforeToolCall(tool_use={"name": tool, "input": {"body": "x"}})
+        hook.check(event)  # ty: ignore[invalid-argument-type]
+        assert event.cancel_tool is not None

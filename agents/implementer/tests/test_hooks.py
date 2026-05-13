@@ -9,10 +9,12 @@ from typing import Any, cast
 import pytest
 from claude_agent_sdk.types import HookContext, HookInput
 
+from common.steering import Accept, Retry
 from implementer.hooks import (
     audit_log_writes,
     deny_dangerous_bash,
     deny_sensitive_writes,
+    judge_finish_report,
     validate_finish_report,
 )
 
@@ -277,3 +279,33 @@ async def test_audit_log_swallows_io_errors(monkeypatch: pytest.MonkeyPatch) -> 
         stub_context(),
     )
     assert result == {}
+
+
+def test_judge_finish_report_accepts_clean_payload() -> None:
+    args = {
+        "summary": "Added /healthz endpoint.",
+        "files_changed": ["app/main.py"],
+        "tests_run": [{"name": "test_health", "status": "pass"}],
+        "risks": [],
+        "status": "done",
+    }
+    assert judge_finish_report(args) == Accept()
+
+
+def test_judge_finish_report_retries_on_invalid_payload() -> None:
+    verdict = judge_finish_report({"summary": "x", "status": "blocked"})
+    assert isinstance(verdict, Retry)
+    assert "validation failed" in verdict.reason.lower()
+
+
+def test_judge_finish_report_retries_on_spec_dump() -> None:
+    args = {
+        "summary": "Did the work.\n\n# Requirements\n\nThe agent shall...",
+        "files_changed": ["app/main.py"],
+        "tests_run": [],
+        "risks": [],
+        "status": "done",
+    }
+    verdict = judge_finish_report(args)
+    assert isinstance(verdict, Retry)
+    assert "spec content" in verdict.reason

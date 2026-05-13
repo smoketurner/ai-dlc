@@ -18,6 +18,7 @@ from implementer.hooks import (
 from implementer.prompts import RESOLVER_SYSTEM_PROMPT
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+FALLBACK_MODEL_ID = "us.anthropic.claude-haiku-4-5"
 DEFAULT_BUDGET_USD = 5.0
 DEFAULT_MAX_TURNS = 50
 RESOLVER_BUDGET_USD = 1.0
@@ -61,11 +62,14 @@ def build_options(run_id: str, *, finish_sink: FinishSink) -> ClaudeAgentOptions
     finish_server = build_finish_server(finish_sink)
     return ClaudeAgentOptions(
         model=model_id(),
+        fallback_model=FALLBACK_MODEL_ID,
         system_prompt=load_system_prompt("implementer", variant),
         cwd=working_dir(),
         permission_mode="acceptEdits",
         max_turns=DEFAULT_MAX_TURNS,
         max_budget_usd=DEFAULT_BUDGET_USD,
+        thinking={"type": "adaptive"},
+        effort="high",
         allowed_tools=[
             "Read",
             "Write",
@@ -130,6 +134,7 @@ def build_resolver_options() -> ClaudeAgentOptions:
     """
     return ClaudeAgentOptions(
         model=model_id(),
+        fallback_model=FALLBACK_MODEL_ID,
         system_prompt=RESOLVER_SYSTEM_PROMPT,
         cwd=working_dir(),
         permission_mode="acceptEdits",

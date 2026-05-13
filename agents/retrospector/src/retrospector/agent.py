@@ -25,6 +25,7 @@ from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from common.templating import make_template_env
 from retrospector.decision import RetrospectiveDecision
+from retrospector.hooks import build_hooks
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -59,6 +60,7 @@ def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
         ),
         system_prompt=load_system_prompt("retrospector", variant),
         tools=list(gateway_tools(mcp_client)),
+        hooks=build_hooks(),
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 
