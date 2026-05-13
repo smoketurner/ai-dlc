@@ -15,6 +15,35 @@ locals {
     tpd = { metric_name = "EstimatedTPMQuotaUsage", period = 86400 }
   }
 
+  # Service Quotas codes are AWS-global catalog identifiers, not
+  # account/region-specific — same code in every account where the
+  # quota exists. `model_id` is the CloudWatch `ModelId` dimension
+  # Bedrock publishes for the `us.*` cross-region inference profile.
+  # `tpd` resolves to "Model invocation max tokens per day (doubled
+  # for cross-region calls)" — the only daily-token quota that
+  # applies to `us.*` profiles; the "Global cross-region" variants
+  # cover `global.*` profiles and are deliberately not used here.
+  bedrock_quota_catalog = {
+    opus_4_6 = {
+      model_id = "us.anthropic.claude-opus-4-6-v1"
+      tpm      = "L-0AD9BBE8"
+      rpm      = "L-11DFF789"
+      tpd      = "L-82CD9B28"
+    }
+    sonnet_4_6 = {
+      model_id = "us.anthropic.claude-sonnet-4-6"
+      tpm      = "L-15B8E632"
+      rpm      = "L-00FF3314"
+      tpd      = "L-B29C9321"
+    }
+    haiku_4_5 = {
+      model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+      tpm      = "L-58BE175A"
+      rpm      = "L-CCA5DF70"
+      tpd      = "L-6120CF2D"
+    }
+  }
+
   bedrock_quota_thresholds = {
     warn     = var.bedrock_quota_threshold_pct.warn
     high     = var.bedrock_quota_threshold_pct.high
@@ -23,16 +52,15 @@ locals {
 
   bedrock_quota_lookups = {
     for pair in flatten([
-      for model_key, model_id in var.bedrock_quota_models : [
+      for model_key in var.bedrock_quota_models : [
         for qt in ["tpm", "rpm", "tpd"] : {
           key        = "${model_key}-${qt}"
           model_key  = model_key
           quota_type = qt
-          quota_code = try(var.bedrock_quota_codes[model_key][qt], null)
+          quota_code = local.bedrock_quota_catalog[model_key][qt]
         }
       ]
     ]) : pair.key => pair
-    if pair.quota_code != null && pair.quota_code != ""
   }
 
   bedrock_quota_alarm_specs = {
@@ -42,7 +70,7 @@ locals {
           key           = "${lookup.model_key}-${lookup.quota_type}-${severity}"
           lookup_key    = lookup_key
           model_key     = lookup.model_key
-          model_id      = var.bedrock_quota_models[lookup.model_key]
+          model_id      = local.bedrock_quota_catalog[lookup.model_key].model_id
           quota_type    = lookup.quota_type
           severity      = severity
           threshold_pct = threshold_pct
