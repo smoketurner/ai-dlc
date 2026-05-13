@@ -41,6 +41,7 @@ class GatesBlockedError(Exception):
     """
 
     def __init__(self, command: str, output: str) -> None:
+        """Record the last failing command and its combined output."""
         super().__init__(f"gates blocked after exhausting passes: {command}")
         self.command = command
         self.output = output

@@ -48,6 +48,7 @@ def install_implementation_mocks(
     made_real_changes: bool,
     has_uncommitted_changes: bool,
     pr_url: str = "https://github.com/owner/name/pull/77",
+    gates_raise: Exception | None = None,
 ) -> dict[str, list[Any]]:
     """Wire the side-effecting helpers in ``execute_implementation`` to fakes."""
     calls: dict[str, list[Any]] = {
@@ -99,6 +100,12 @@ def install_implementation_mocks(
         return drive_agent_report, usage
 
     monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+
+    async def fake_run_lint_gates(run_id: str, drive_agent_fn: Any) -> None:
+        if gates_raise is not None:
+            raise gates_raise
+
+    monkeypatch.setattr(client, "run_lint_gates", fake_run_lint_gates)
     return calls
 
 

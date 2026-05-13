@@ -10,52 +10,9 @@ import pytest
 
 from implementer.gates import GatesBlockedError, run_lint_gates
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_make_results(
-    *,
-    targets: tuple[str, ...] = ("test", "lint", "type", "format"),
-    results: dict[str, tuple[int, str]],
-) -> dict[str, tuple[int, str]]:
-    """Build a target→(exit_code, output) map from a partial spec.
-
-    Targets not present in ``results`` default to (0, "").
-    """
-    return {t: results.get(t, (0, "")) for t in targets}
-
-
-def _fake_run_make(results_by_pass: list[dict[str, tuple[int, str]]]):
-    """Return a callable that pops one pass-dict per call sequence.
-
-    Each element of ``results_by_pass`` is a target→(exit_code, output)
-    dict consumed in order across all ``run_make_command`` calls.
-    """
-    call_counter: dict[str, int] = {"pass": 0, "target_in_pass": 0}
-    targets_order = ("test", "lint", "type", "format")
-
-    per_pass_counters: list[int] = [0] * len(results_by_pass)
-
-    def inner(target: str) -> tuple[int, str]:
-        # Determine which pass we are in based on which targets have been
-        # consumed already.  We track this by walking the pass list and
-        # checking if the current call number matches a boundary.
-        nonlocal call_counter
-        current_pass = call_counter["pass"]
-        if current_pass >= len(results_by_pass):
-            # Fallback: all passes succeeded.
-            return (0, "")
-        result = results_by_pass[current_pass].get(target, (0, ""))
-        per_pass_counters[current_pass] += 1
-        if target == "format" or result[0] != 0:
-            # End of pass (either completed all 4, or bailed on failure).
-            call_counter["pass"] += 1
-        return result
-
-    return inner
 
 
 async def _noop_drive_agent(_prompt: str, *, run_id: str) -> tuple[None, dict[str, Any]]:
@@ -72,7 +29,7 @@ async def test_clean_run_all_pass_first_try(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """All four targets exit 0 on the first pass → agent never called, returns None."""
+    """All four targets exit 0 on first pass → agent never called, returns None."""
     monkeypatch.setattr("implementer.gates.repo_path", lambda: tmp_path)
     (tmp_path / "Makefile").write_text("# stub\n")
 
@@ -88,7 +45,12 @@ async def test_clean_run_all_pass_first_try(
 
     assert not drive_calls, "agent should not be called when all targets pass"
     assert mock_make.call_count == 4
-    assert mock_make.call_args_list == [call("test"), call("lint"), call("type"), call("format")]
+    assert mock_make.call_args_list == [
+        call("test"),
+        call("lint"),
+        call("type"),
+        call("format"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -106,30 +68,26 @@ async def test_one_pass_remediation_fail_then_pass(
         drive_calls.append(prompt)
         return None, {}
 
-    # First pass: test ok, lint fails, type+format never reached.
-    # Second pass: all ok.
+    # Pass 1: test ok, lint fails (stops pass).
+    # Pass 2: all ok.
     call_seq: list[tuple[int, str]] = [
-        (0, ""),   # test pass 1
+        (0, ""),  # test pass 1
         (1, "lint error"),  # lint pass 1 → failure triggers remediation
-        (0, ""),   # test pass 2
-        (0, ""),   # lint pass 2
-        (0, ""),   # type pass 2
-        (0, ""),   # format pass 2
+        (0, ""),  # test pass 2
+        (0, ""),  # lint pass 2
+        (0, ""),  # type pass 2
+        (0, ""),  # format pass 2
     ]
     seq_iter = iter(call_seq)
 
-    def fake_make(target: str) -> tuple[int, str]:
-        return next(seq_iter)
-
     commit_calls: list[str] = []
 
-    def fake_commit(msg: str) -> str:
+    def fake_commit_1(msg: str) -> None:
         commit_calls.append(msg)
-        return "abc123"
 
-    monkeypatch.setattr("implementer.gates.run_make_command", fake_make)
+    monkeypatch.setattr("implementer.gates.run_make_command", lambda _t: next(seq_iter))
     monkeypatch.setattr("implementer.gates.has_uncommitted_changes", lambda: False)
-    monkeypatch.setattr("implementer.gates.commit_changes", fake_commit)
+    monkeypatch.setattr("implementer.gates.commit_changes", fake_commit_1)
 
     await run_lint_gates("r-1", fake_drive)
 
@@ -153,7 +111,6 @@ async def test_exhausted_remediation_raises_blocked(
         drive_calls.append(prompt)
         return None, {}
 
-    # Every pass fails on "test".
     def fake_make(target: str) -> tuple[int, str]:
         if target == "test":
             return (1, "FAILED: 3 tests")
@@ -161,7 +118,7 @@ async def test_exhausted_remediation_raises_blocked(
 
     monkeypatch.setattr("implementer.gates.run_make_command", fake_make)
     monkeypatch.setattr("implementer.gates.has_uncommitted_changes", lambda: False)
-    monkeypatch.setattr("implementer.gates.commit_changes", lambda msg: "abc")
+    monkeypatch.setattr("implementer.gates.commit_changes", lambda _msg: None)
 
     with pytest.raises(GatesBlockedError) as exc_info:
         await run_lint_gates("r-1", fake_drive, max_passes=3)
@@ -177,34 +134,29 @@ async def test_per_command_exit_code_handling(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """First non-zero exit in a pass stops that pass immediately (no further commands)."""
+    """First non-zero exit in a pass stops that pass immediately (no further commands run)."""
     monkeypatch.setattr("implementer.gates.repo_path", lambda: tmp_path)
     (tmp_path / "Makefile").write_text("# stub\n")
 
     called_targets: list[str] = []
-
-    # Pass 1: lint fails, type+format must NOT be called in the same pass.
-    # Pass 2: all green so we exit cleanly.
-    pass_num = {"n": 0}
+    lint_failed: list[bool] = [False]
 
     def fake_make(target: str) -> tuple[int, str]:
         called_targets.append(target)
-        if pass_num["n"] == 0 and target == "lint":
-            pass_num["n"] += 1  # first failure ends pass 1
+        if target == "lint" and not lint_failed[0]:
+            lint_failed[0] = True
             return (1, "lint failed")
         return (0, "")
 
     monkeypatch.setattr("implementer.gates.run_make_command", fake_make)
     monkeypatch.setattr("implementer.gates.has_uncommitted_changes", lambda: False)
-    monkeypatch.setattr("implementer.gates.commit_changes", lambda msg: "abc")
+    monkeypatch.setattr("implementer.gates.commit_changes", lambda _msg: None)
 
-    async def fake_drive(prompt: str, *, run_id: str) -> tuple[None, dict[str, Any]]:
-        return None, {}
+    await run_lint_gates("r-1", _noop_drive_agent)
 
-    await run_lint_gates("r-1", fake_drive)
-
-    # Pass 1 must not include "type" or "format" after lint failed.
-    pass1_targets = called_targets[: called_targets.index("lint") + 1]
+    # Pass 1 must stop at lint; type and format must not be called in that pass.
+    lint_index = called_targets.index("lint")
+    pass1_targets = called_targets[: lint_index + 1]
     assert "type" not in pass1_targets
     assert "format" not in pass1_targets
 
@@ -220,19 +172,12 @@ async def test_format_changes_committed_after_format_succeeds(
 
     commit_calls: list[str] = []
 
-    def fake_commit(msg: str) -> str:
+    def fake_commit_2(msg: str) -> None:
         commit_calls.append(msg)
-        return "abc123"
 
-    # All targets pass, but format leaves uncommitted changes.
-    uncommitted = {"flag": True}
-
-    def fake_uncommitted() -> bool:
-        return uncommitted["flag"]
-
-    monkeypatch.setattr("implementer.gates.run_make_command", lambda target: (0, ""))
-    monkeypatch.setattr("implementer.gates.has_uncommitted_changes", fake_uncommitted)
-    monkeypatch.setattr("implementer.gates.commit_changes", fake_commit)
+    monkeypatch.setattr("implementer.gates.run_make_command", lambda _t: (0, ""))
+    monkeypatch.setattr("implementer.gates.has_uncommitted_changes", lambda: True)
+    monkeypatch.setattr("implementer.gates.commit_changes", fake_commit_2)
 
     await run_lint_gates("r-1", _noop_drive_agent)
 
