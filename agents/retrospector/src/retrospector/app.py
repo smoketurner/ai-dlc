@@ -35,7 +35,6 @@ continues to function without retrospectives if the agent or
 from __future__ import annotations
 
 import contextvars
-import json
 import re
 import threading
 from typing import Any
@@ -44,7 +43,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands.tools.mcp import MCPClient
 
-from common.gateway_tools import call_gateway_tool, gateway_mcp_client
+from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
 from common.memory_md import MemoryDoc, parse, render
 from common.runtime import RetrospectorInput
 from retrospector.agent import build_agent, retrospect
@@ -285,28 +284,6 @@ def branch_name(*, run_id: str) -> str:
     """Deterministic branch name per run — keeps re-fires idempotent on the remote."""
     safe = RUN_ID_BRANCH_RE.sub("-", run_id.lower())
     return f"retrospective/{safe}"
-
-
-def extract_envelope(result: Any) -> dict[str, Any]:
-    """Pull the Lambda return envelope out of an MCPToolResult.
-
-    The MCP server serializes dict tool returns into both
-    ``structuredContent`` (the raw dict) and ``content[0].text`` (a
-    JSON string of the same dict); prefer the structured form and fall
-    back to parsing the text block.
-    """
-    structured = result.get("structuredContent") if isinstance(result, dict) else None
-    if isinstance(structured, dict):
-        return structured
-    blocks = result.get("content", []) if isinstance(result, dict) else []
-    for block in blocks:
-        text = block.get("text") if isinstance(block, dict) else None
-        if isinstance(text, str):
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-    msg = f"repo_helper returned no parseable content: {result!r}"
-    raise RuntimeError(msg)
 
 
 def invoke_repo_helper(

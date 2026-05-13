@@ -17,6 +17,7 @@ carry the runtime's ``WorkloadAccessToken`` across the boundary.
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from typing import Any
@@ -130,3 +131,31 @@ def call_gateway_tool(
         name=name,
         arguments=arguments,
     )
+
+
+def extract_envelope(result: Any) -> dict[str, Any]:
+    """Pull a Lambda return envelope out of an MCPToolResult.
+
+    AgentCore Gateway invokes a Lambda target and returns the Lambda's
+    dict response as MCP content. The MCP server serialises dict
+    returns into both ``structuredContent`` (the raw dict) and
+    ``content[0].text`` (a JSON string of the same dict) per
+    ``mcp.server.lowlevel.server``'s serialisation path. This helper
+    prefers the structured form and falls back to parsing the first
+    text block so it's robust to servers that haven't enabled
+    structured output.
+
+    Raises ``RuntimeError`` when neither shape yields a parseable dict.
+    """
+    structured = result.get("structuredContent") if isinstance(result, dict) else None
+    if isinstance(structured, dict):
+        return structured
+    blocks = result.get("content", []) if isinstance(result, dict) else []
+    for block in blocks:
+        text = block.get("text") if isinstance(block, dict) else None
+        if isinstance(text, str):
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+    msg = f"gateway tool returned no parseable content: {result!r}"
+    raise RuntimeError(msg)

@@ -141,26 +141,6 @@ def test_run_architect_publishes_run_failed_on_agent_exception(
     complete.assert_called_once_with(8)
 
 
-def test_extract_artifact_envelope_prefers_structured_content() -> None:
-    """When structuredContent is present, the helper returns it directly."""
-    envelope = {"ok": True, "op": "get_artifact", "result": {"key": "k", "content": "c"}}
-    out = app.extract_artifact_envelope({"structuredContent": envelope, "content": []})
-    assert out is envelope
-
-
-def test_extract_artifact_envelope_falls_back_to_text_block() -> None:
-    """Servers that don't emit structuredContent still surface the dict as JSON text."""
-    envelope = {"ok": True, "op": "get_artifact", "result": {"key": "k", "content": "c"}}
-    out = app.extract_artifact_envelope({"content": [{"text": json.dumps(envelope)}]})
-    assert out == envelope
-
-
-def test_extract_artifact_envelope_raises_on_garbage() -> None:
-    """An empty result envelope produces a clear error."""
-    with pytest.raises(RuntimeError, match="no parseable content"):
-        app.extract_artifact_envelope({"content": []})
-
-
 def test_fetch_plan_body_returns_content_string(monkeypatch: pytest.MonkeyPatch) -> None:
     """fetch_plan_body unwraps structuredContent.result.content."""
     monkeypatch.setattr(

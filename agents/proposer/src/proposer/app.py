@@ -27,7 +27,6 @@ Cognito M2M JWT via AgentCore Identity. The Proposer authenticates as
 from __future__ import annotations
 
 import contextvars
-import json
 import re
 import threading
 from typing import Any
@@ -38,7 +37,7 @@ from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import EventEnvelope, RunCompleted
-from common.gateway_tools import call_gateway_tool, gateway_mcp_client
+from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ProposerInput
 from proposer.agent import build_agent, propose_research
@@ -275,27 +274,11 @@ def invoke_repo_helper(
         name="repo_helper",
         arguments={"op": op, **fields},
     )
-    envelope = extract_repo_helper_envelope(result)
+    envelope = extract_envelope(result)
     if not envelope.get("ok"):
         msg = f"repo_helper.{op} failed: {envelope!r}"
         raise RuntimeError(msg)
     return envelope
-
-
-def extract_repo_helper_envelope(result: Any) -> dict[str, Any]:
-    """Pull the Lambda return envelope out of an MCPToolResult."""
-    structured = result.get("structuredContent") if isinstance(result, dict) else None
-    if isinstance(structured, dict):
-        return structured
-    blocks = result.get("content", []) if isinstance(result, dict) else []
-    for block in blocks:
-        text = block.get("text") if isinstance(block, dict) else None
-        if isinstance(text, str):
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-    msg = f"repo_helper returned no parseable content: {result!r}"
-    raise RuntimeError(msg)
 
 
 if __name__ == "__main__":

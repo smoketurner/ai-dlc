@@ -28,7 +28,6 @@ operation — no module-level env-var reads in this code path.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -41,7 +40,7 @@ import httpx
 import structlog
 from strands.tools.mcp import MCPClient
 
-from common.gateway_tools import call_gateway_tool
+from common.gateway_tools import call_gateway_tool, extract_envelope
 from common.github_app import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
@@ -316,28 +315,6 @@ def parse_pr_number(pr_url: str) -> int:
         msg = f"unparseable pr_url: {pr_url!r}"
         raise ValueError(msg)
     return int(match.group(1))
-
-
-def extract_envelope(result: Any) -> dict[str, Any]:
-    """Pull the Lambda return envelope out of an MCPToolResult.
-
-    The MCP server serializes dict tool returns into both
-    ``structuredContent`` (the raw dict) and ``content[0].text`` (a
-    JSON string of the same dict); prefer the structured form and fall
-    back to parsing the text block.
-    """
-    structured = result.get("structuredContent") if isinstance(result, dict) else None
-    if isinstance(structured, dict):
-        return structured
-    blocks = result.get("content", []) if isinstance(result, dict) else []
-    for block in blocks:
-        text = block.get("text") if isinstance(block, dict) else None
-        if isinstance(text, str):
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-    msg = f"gateway tool returned no parseable content: {result!r}"
-    raise RuntimeError(msg)
 
 
 def invoke_repo_helper(

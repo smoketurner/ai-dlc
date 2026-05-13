@@ -27,7 +27,6 @@ Cognito M2M JWT via AgentCore Identity.
 from __future__ import annotations
 
 import contextvars
-import json
 import threading
 from typing import Any
 
@@ -45,7 +44,7 @@ from architect.repo_grounding import (
 from architect.tools import plan_s3_key
 from common.event_emit import publish
 from common.events import DesignReady, EventEnvelope, RunFailed
-from common.gateway_tools import call_gateway_tool, gateway_mcp_client
+from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ArchitectInput, ArchitectResult, usage_from_strands
 
@@ -144,7 +143,7 @@ def fetch_plan_body(mcp_client: MCPClient, run_id: str) -> str:
         name="artifact_tool",
         arguments={"op": "get_artifact", "key": plan_s3_key(run_id)},
     )
-    envelope = extract_artifact_envelope(result)
+    envelope = extract_envelope(result)
     if not envelope.get("ok"):
         msg = f"artifact_tool.get_artifact returned an error envelope: {envelope!r}"
         raise RuntimeError(msg)
@@ -153,22 +152,6 @@ def fetch_plan_body(mcp_client: MCPClient, run_id: str) -> str:
         msg = f"artifact_tool.get_artifact envelope missing result.content: {envelope!r}"
         raise RuntimeError(msg)
     return str(inner["content"])
-
-
-def extract_artifact_envelope(result: Any) -> dict[str, Any]:
-    """Pull the Lambda return envelope out of an MCPToolResult."""
-    structured = result.get("structuredContent") if isinstance(result, dict) else None
-    if isinstance(structured, dict):
-        return structured
-    blocks = result.get("content", []) if isinstance(result, dict) else []
-    for block in blocks:
-        text = block.get("text") if isinstance(block, dict) else None
-        if isinstance(text, str):
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-                return parsed
-    msg = f"artifact_tool returned no parseable content: {result!r}"
-    raise RuntimeError(msg)
 
 
 def publish_design_ready(payload: ArchitectInput, result: ArchitectResult) -> None:

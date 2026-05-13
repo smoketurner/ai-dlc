@@ -40,23 +40,6 @@ def fake_repo_helper_result(envelope: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def test_extract_envelope_prefers_structured_content() -> None:
-    envelope = {"ok": True, "op": "open_pr", "result": {"pr_url": "url"}}
-    out = app.extract_repo_helper_envelope({"structuredContent": envelope, "content": []})
-    assert out is envelope
-
-
-def test_extract_envelope_falls_back_to_text_block() -> None:
-    envelope = {"ok": True, "op": "open_pr", "result": {"pr_url": "url"}}
-    out = app.extract_repo_helper_envelope({"content": [{"text": json.dumps(envelope)}]})
-    assert out == envelope
-
-
-def test_extract_envelope_raises_on_garbage() -> None:
-    with pytest.raises(RuntimeError, match="no parseable content"):
-        app.extract_repo_helper_envelope({"content": []})
-
-
 def test_invoke_repo_helper_calls_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     """invoke_repo_helper dispatches to call_gateway_tool with the op + fields merged."""
     envelope = {"ok": True, "op": "comment_issue", "result": {}}

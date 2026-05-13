@@ -19,7 +19,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 | Path | Role |
 |------|------|
-| `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), boto3 helpers (`ddb.py`, `s3.py`, `runs.py`), `MEMORY.md` utility (`memory_md.py`), settings (`settings.py`). |
+| `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), gateway-MCP plumbing (`gateway_tools.py`), boto3 helpers (`ddb.py`, `runs.py`), `MEMORY.md` parser + stack-profile S3 reader/writer (`memory_md.py`). |
 | `agents/architect/` | Strands agent — writes a single structured `plan.md` to S3 (Context → Assumptions → Approach → Files → Reuse → Implementation steps → Verification → Out of scope). No PR. |
 | `agents/critic/` | Strands agent — adversarially reviews the plan (advisory; reads `plan.md` from S3, writes `critique.md` to S3). |
 | `agents/code_critic/` | Strands agent — adversarially reviews the impl PR against the **original GitHub issue** (advisory; runs in parallel with reviewer + tester). |
