@@ -63,9 +63,7 @@ def test_next_steps_mirrors_run_transitions() -> None:
     for (event, current), nxt in RUN_TRANSITIONS.items():
         if current is None:
             continue
-        assert (event, nxt) in next_steps(current), (
-            f"missing inverse for {event}@{current}"
-        )
+        assert (event, nxt) in next_steps(current), f"missing inverse for {event}@{current}"
 
 
 def test_next_steps_excludes_wildcards() -> None:

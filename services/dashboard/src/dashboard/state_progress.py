@@ -105,8 +105,7 @@ def progress_dict(
         "since": updated_at,
         "stuck_threshold_seconds": stuck_threshold_seconds(state),
         "expected_next": [
-            {"event": event, "state": next_state.value}
-            for event, next_state in next_steps(state)
+            {"event": event, "state": next_state.value} for event, next_state in next_steps(state)
         ],
     }
 
@@ -121,6 +120,4 @@ def _build_next_steps() -> dict[RunState, list[tuple[EventType, RunState]]]:
     return dict(inverse)
 
 
-_NEXT_STEPS: Final[Mapping[RunState, list[tuple[EventType, RunState]]]] = (
-    _build_next_steps()
-)
+_NEXT_STEPS: Final[Mapping[RunState, list[tuple[EventType, RunState]]]] = _build_next_steps()
