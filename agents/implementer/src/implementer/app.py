@@ -24,6 +24,7 @@ entrypoint:
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from typing import Any
 
@@ -58,9 +59,10 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         "implementer_run",
         {"run_id": payload.run_id, "mode": payload.mode},
     )
+    ctx = contextvars.copy_context()
     threading.Thread(
-        target=run_implementer,
-        args=(payload, task_id),
+        target=ctx.run,
+        args=(run_implementer, payload, task_id),
         daemon=True,
     ).start()
     return {

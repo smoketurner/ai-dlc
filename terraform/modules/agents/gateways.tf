@@ -173,7 +173,7 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
               property {
                 name        = "op"
                 type        = "string"
-                description = "Operation: open_pr | comment_pr | create_branch | commit_files | get_pr | comment_issue | create_issue | list_issue_comments."
+                description = "Operation: open_pr | comment_pr | create_branch | commit_files | get_pr | comment_issue | create_issue | list_issue_comments | list_check_runs | reply_pr_review_comment."
                 required    = true
               }
               property {
@@ -244,6 +244,25 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
                 name        = "requestor_sub"
                 type        = "string"
                 description = "Cognito sub of the human requestor for on-behalf-of token minting (optional; falls back to the GitHub App installation token when absent)."
+              }
+              property {
+                name        = "ref"
+                type        = "string"
+                description = "Git ref / commit SHA (used by list_check_runs)."
+              }
+              property {
+                name        = "filter_conclusions"
+                type        = "array"
+                description = "GitHub check-run conclusion filter (used by list_check_runs); each entry is one of failure | timed_out | cancelled | action_required | stale | neutral | success | skipped."
+
+                items {
+                  type = "string"
+                }
+              }
+              property {
+                name        = "comment_id"
+                type        = "integer"
+                description = "GitHub review-comment id to reply to (used by reply_pr_review_comment)."
               }
               property {
                 name        = "files"

@@ -4,15 +4,21 @@ Two flows:
 
 * ``mode="implementation"`` (default for the first dispatch per run):
   clone main, create the impl branch ``aidlc/impl/{run_id}``, download
-  the architect's ``plan.md`` and the critic's ``critique.md`` from
-  S3, run Claude on the work, commit, push, open the unified impl PR
-  via ``repo_helper.open_pr``, and emit ``IMPL_PR.OPENED``.
+  the architect's ``plan.md`` and the critic's ``critique.md`` via the
+  per-agent gateway, run Claude on the work, commit, push, open the
+  unified impl PR via ``repo_helper.open_pr``, and emit
+  ``IMPL_PR.OPENED``.
 
 * ``mode="revision"``: clone, check out the existing impl branch,
   fetch the previous validator artifacts + any per-revision feedback
   (CI failures, human @aidlc-bot mentions, reviewer changes_requested
-  reviews) from S3, run Claude on a unified prompt, commit + push
-  directly to the impl branch (no PR open), and emit ``REVISION.READY``.
+  reviews) via the gateway, run Claude on a unified prompt, commit +
+  push directly to the impl branch (no PR open), and emit
+  ``REVISION.READY``.
+
+All GitHub API operations and S3 reads flow through the per-agent
+AgentCore Gateway (MCP). Git operations on the working tree stay on
+the container's ``git`` CLI — the agent loop iteratively commits.
 """
 
 from __future__ import annotations
@@ -24,7 +30,9 @@ from typing import TYPE_CHECKING, Any
 import boto3
 import structlog
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
+from strands.tools.mcp import MCPClient
 
+from common.gateway_tools import gateway_mcp_client
 from common.memory import agent_memory_preamble
 from common.runtime import (
     CiFailureFeedback,
@@ -39,6 +47,7 @@ from common.runtime import (
 from implementer.finish import FinishReport, FinishSink
 from implementer.options import build_options
 from implementer.repo_ops import (
+    call_artifact_tool,
     checkout_impl_branch,
     clone_repo,
     commit_changes,
@@ -65,10 +74,10 @@ logger = structlog.get_logger()
 async def execute_implementation(payload: ImplementerInput) -> ImplementerResult:
     """First-pass flow: branch off main, agent edits, push, open PR.
 
-    Reads ``plan.md`` and ``critique.md`` from S3 into
+    Reads ``plan.md`` and ``critique.md`` via the gateway into
     ``/workspace/spec/``, runs Claude on the issue, commits + pushes to
     ``aidlc/impl/{run_id}``, then opens the unified impl PR via the
-    repo_helper Lambda.
+    gateway's ``repo_helper`` target.
     """
     target_repo = resolve_target_repo(payload)
     session = make_session(target_repo=target_repo, requestor_sub=payload.requestor_sub)
@@ -83,34 +92,38 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
 
     clone_repo(session)
     create_branch(impl_branch)
-    fetch_plan_and_critique(
-        plan_s3_key=payload.plan_s3_key,
-        critique_s3_key=payload.critique_s3_key,
-    )
 
-    user_prompt = compose_implementation_prompt(payload)
-    report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
+    with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
+        fetch_plan_and_critique(
+            mcp_client,
+            plan_s3_key=payload.plan_s3_key,
+            critique_s3_key=payload.critique_s3_key,
+        )
 
-    if report is not None and report.status == "blocked":
-        msg = f"implementer blocked: {report.blocked_reason or 'agent reported blocked'}"
-        raise RuntimeError(msg)
-    if not repo_made_real_changes():
-        msg = "implementer produced no diff — nothing to PR"
-        raise RuntimeError(msg)
+        user_prompt = compose_implementation_prompt(payload)
+        report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    commit_message = build_commit_message(payload.run_id, report=report)
-    if has_uncommitted_changes():
-        commit_changes(commit_message)
-    push_branch(impl_branch)
+        if report is not None and report.status == "blocked":
+            msg = f"implementer blocked: {report.blocked_reason or 'agent reported blocked'}"
+            raise RuntimeError(msg)
+        if not repo_made_real_changes():
+            msg = "implementer produced no diff — nothing to PR"
+            raise RuntimeError(msg)
 
-    pr_url = open_impl_pr(
-        session_target_repo=session.target_repo,
-        requestor_sub=payload.requestor_sub,
-        impl_branch=impl_branch,
-        run_id=payload.run_id,
-        report=report,
-        source_issue_url=payload.source_issue_url,
-    )
+        commit_message = build_commit_message(payload.run_id, report=report)
+        if has_uncommitted_changes():
+            commit_changes(commit_message)
+        push_branch(impl_branch)
+
+        pr_url = open_impl_pr(
+            mcp_client,
+            session_target_repo=session.target_repo,
+            requestor_sub=payload.requestor_sub,
+            impl_branch=impl_branch,
+            run_id=payload.run_id,
+            report=report,
+            source_issue_url=payload.source_issue_url,
+        )
 
     return ImplementerResult(
         pr_url=pr_url,
@@ -147,36 +160,41 @@ async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResu
 
     clone_repo(session)
     checkout_impl_branch(impl_branch)
-    if payload.plan_s3_key or payload.critique_s3_key:
-        fetch_plan_and_critique(
-            plan_s3_key=payload.plan_s3_key,
-            critique_s3_key=payload.critique_s3_key,
-        )
 
-    inputs = fetch_revision_inputs(
-        run_id=payload.run_id,
-        revision_number=prior_revision,
-    )
-    user_prompt = compose_revision_prompt(
-        payload,
-        revision_number=revision_number,
-        inputs=inputs,
-    )
-    report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
+    with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
+        if payload.plan_s3_key or payload.critique_s3_key:
+            fetch_plan_and_critique(
+                mcp_client,
+                plan_s3_key=payload.plan_s3_key,
+                critique_s3_key=payload.critique_s3_key,
+            )
 
-    if has_uncommitted_changes():
-        commit_changes(
-            f"revision r{revision_number}: address aggregated feedback",
+        inputs = fetch_revision_inputs(
+            mcp_client,
+            run_id=payload.run_id,
+            revision_number=prior_revision,
         )
-    push_branch(impl_branch)
+        user_prompt = compose_revision_prompt(
+            payload,
+            revision_number=revision_number,
+            inputs=inputs,
+        )
+        report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-    if report is not None and report.inline_replies and payload.pr_url is not None:
-        post_inline_replies(
-            repo=target_repo,
-            pr_number=parse_pr_number(payload.pr_url),
-            requestor_sub=payload.requestor_sub,
-            replies=[(r.comment_id, r.body) for r in report.inline_replies],
-        )
+        if has_uncommitted_changes():
+            commit_changes(
+                f"revision r{revision_number}: address aggregated feedback",
+            )
+        push_branch(impl_branch)
+
+        if report is not None and report.inline_replies and payload.pr_url is not None:
+            post_inline_replies(
+                mcp_client,
+                repo=target_repo,
+                pr_number=parse_pr_number(payload.pr_url),
+                requestor_sub=payload.requestor_sub,
+                replies=[(r.comment_id, r.body) for r in report.inline_replies],
+            )
 
     pr_url = payload.pr_url or ""
     return ImplementerRevisionResult(
@@ -188,18 +206,21 @@ async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResu
     )
 
 
-def fetch_revision_inputs(*, run_id: str, revision_number: int) -> dict[str, str]:
-    """Read the three validator artifacts + any per-revision context from S3.
+def fetch_revision_inputs(
+    mcp_client: MCPClient,
+    *,
+    run_id: str,
+    revision_number: int,
+) -> dict[str, str]:
+    """Read the three validator artifacts + any per-revision context via the gateway.
 
     Returns a dict with keys ``review`` / ``test_report`` / ``critique``
     (the three validator outputs from the prior pass) plus ``mention``
-    and ``checks`` if per-revision context exists in S3. Each key is
+    and ``checks`` if per-revision context exists. Each key is
     best-effort — a missing artifact maps to an empty string rather
     than raising. The revision can still proceed with whichever
     sources are available.
     """
-    s3 = boto3.client("s3")
-    bucket = os.environ.get("AIDLC_ARTIFACTS_BUCKET", "")
     inputs: dict[str, str] = {}
     sources = (
         ("review", f"runs/{run_id}/validation/review-r{revision_number}.md"),
@@ -210,10 +231,12 @@ def fetch_revision_inputs(*, run_id: str, revision_number: int) -> dict[str, str
     )
     for name, key in sources:
         try:
-            obj = s3.get_object(Bucket=bucket, Key=key)
-            inputs[name] = obj["Body"].read().decode("utf-8")
+            envelope = call_artifact_tool(mcp_client, op="get_artifact", key=key)
         except Exception:
             inputs[name] = ""
+            continue
+        body = (envelope.get("result") or {}).get("content") or ""
+        inputs[name] = str(body)
     return inputs
 
 
@@ -339,6 +362,7 @@ def build_commit_message(run_id: str, *, report: FinishReport | None) -> str:
 
 
 def open_impl_pr(
+    mcp_client: MCPClient,
     *,
     session_target_repo: str,
     requestor_sub: str | None,
@@ -347,10 +371,11 @@ def open_impl_pr(
     report: FinishReport | None,
     source_issue_url: str | None,
 ) -> str:
-    """Open the unified impl PR via ``repo_helper.open_pr`` and return its URL."""
+    """Open the unified impl PR via the gateway-routed ``repo_helper.open_pr``."""
     body = render_pr_body(report=report, run_id=run_id, source_issue_url=source_issue_url)
     title = pr_title(report=report, run_id=run_id)
     result = invoke_repo_helper(
+        mcp_client,
         op="open_pr",
         requestor_sub=requestor_sub,
         repo=session_target_repo,

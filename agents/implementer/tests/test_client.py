@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -60,15 +61,20 @@ def install_implementation_mocks(
         calls["commit_changes"].append(msg)
         return "deadbeef"
 
-    def fake_fetch(**kw: Any) -> None:
+    def fake_fetch(_mcp_client: Any, **kw: Any) -> None:
         calls["fetch_plan_and_critique"].append(kw)
 
-    def fake_invoke_repo_helper(**kw: Any) -> dict[str, Any]:
+    def fake_invoke_repo_helper(_mcp_client: Any, **kw: Any) -> dict[str, Any]:
         calls["invoke_repo_helper"].append(kw)
         if kw.get("op") == "open_pr":
             return {"pr_url": pr_url}
         return {}
 
+    fake_client = MagicMock()
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
+
+    monkeypatch.setattr(client, "gateway_mcp_client", lambda: fake_client)
     monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
     monkeypatch.setattr(client, "clone_repo", calls["clone_repo"].append)
     monkeypatch.setattr(client, "create_branch", calls["create_branch"].append)
@@ -215,3 +221,32 @@ def test_compose_implementation_prompt_mentions_plan_and_critique(
     assert "https://github.com/owner/repo/issues/3" in prompt
     assert "/workspace/spec/plan.md" in prompt
     assert "high-severity finding" in prompt.lower()
+
+
+def test_fetch_revision_inputs_pulls_via_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fetch_revision_inputs uses gateway artifact_tool.get_artifact for each source."""
+    fetched: list[dict[str, Any]] = []
+
+    def fake_call(_client: Any, *, op: str, **fields: Any) -> dict[str, Any]:
+        fetched.append({"op": op, **fields})
+        # Simulate one of the keys missing — helper should swallow.
+        if fields.get("key", "").endswith("mention.md"):
+            msg = "not found"
+            raise RuntimeError(msg)
+        return {
+            "ok": True,
+            "op": op,
+            "result": {"key": fields["key"], "content": f"<body for {fields['key']}>"},
+        }
+
+    monkeypatch.setattr(client, "call_artifact_tool", fake_call)
+
+    inputs = client.fetch_revision_inputs(MagicMock(), run_id="r-1", revision_number=0)
+
+    assert {f["op"] for f in fetched} == {"get_artifact"}
+    keys = [f["key"] for f in fetched]
+    assert "runs/r-1/validation/review-r0.md" in keys
+    assert "runs/r-1/validation/test_report-r0.md" in keys
+    assert "runs/r-1/validation/critique-r0.md" in keys
+    assert inputs["review"].startswith("<body for ")
+    assert inputs["mention"] == ""  # raised → swallowed → empty
