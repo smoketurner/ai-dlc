@@ -25,7 +25,12 @@ from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import EventEnvelope, RunCompleted
-from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
+from common.gateway_tools import (
+    REPO_HELPER,
+    call_gateway_tool,
+    extract_envelope,
+    gateway_mcp_client,
+)
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ProposerInput
 from proposer.agent import build_agent, propose_research
@@ -259,8 +264,8 @@ def invoke_repo_helper(
     """
     result = call_gateway_tool(
         mcp_client,
-        name=op,
-        arguments=fields,
+        name=REPO_HELPER,
+        arguments={"op": op, **fields},
     )
     envelope = extract_envelope(result)
     if not envelope.get("ok"):

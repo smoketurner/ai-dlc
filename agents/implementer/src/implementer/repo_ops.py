@@ -40,7 +40,7 @@ import httpx
 import structlog
 from strands.tools.mcp import MCPClient
 
-from common.gateway_tools import call_gateway_tool, extract_envelope
+from common.gateway_tools import ARTIFACT_TOOL, REPO_HELPER, call_gateway_tool, extract_envelope
 from common.github_app import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
@@ -333,8 +333,8 @@ def invoke_repo_helper(
     """
     response = call_gateway_tool(
         mcp_client,
-        name=op,
-        arguments={"requestor_sub": requestor_sub, **fields},
+        name=REPO_HELPER,
+        arguments={"op": op, "requestor_sub": requestor_sub, **fields},
     )
     envelope = extract_envelope(response)
     if not envelope.get("ok"):
@@ -359,8 +359,8 @@ def call_artifact_tool(
     """
     response = call_gateway_tool(
         mcp_client,
-        name=op,
-        arguments=fields,
+        name=ARTIFACT_TOOL,
+        arguments={"op": op, **fields},
     )
     envelope = extract_envelope(response)
     if not envelope.get("ok"):

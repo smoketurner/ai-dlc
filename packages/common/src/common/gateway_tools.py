@@ -31,6 +31,19 @@ from strands.tools.mcp.mcp_agent_tool import MCPAgentTool
 logger = logging.getLogger(__name__)
 
 
+ARTIFACT_TOOL = "artifact-tool___artifact_tool"
+"""MCP tool name AgentCore Gateway exposes for the artifact_tool Lambda target.
+
+Gateway concatenates the target's ``name`` (``artifact-tool``) with the
+inline payload's tool ``name`` (``artifact_tool``) using ``___`` as the
+separator. Out-of-band callers must use this composite name. The agent
+loop discovers it automatically via ``list_tools``.
+"""
+
+REPO_HELPER = "repo-helper___repo_helper"
+"""MCP tool name for the repo_helper Lambda target — same naming rule as ARTIFACT_TOOL."""
+
+
 def gateway_url() -> str:
     """Return ``AIDLC_AGENT_GATEWAY_URL`` or raise."""
     url = os.environ.get("AIDLC_AGENT_GATEWAY_URL")

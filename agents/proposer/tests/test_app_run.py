@@ -57,8 +57,9 @@ def test_invoke_repo_helper_calls_gateway(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert out == envelope
     kwargs = call_tool.call_args.kwargs
-    assert kwargs["name"] == "comment_issue"
+    assert kwargs["name"] == "repo-helper___repo_helper"
     assert kwargs["arguments"] == {
+        "op": "comment_issue",
         "repo": "owner/repo",
         "issue_number": 42,
         "body": "hello",

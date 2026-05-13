@@ -29,7 +29,12 @@ from architect.repo_grounding import (
 from architect.tools import plan_s3_key
 from common.event_emit import publish
 from common.events import DesignReady, EventEnvelope, RunFailed
-from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
+from common.gateway_tools import (
+    ARTIFACT_TOOL,
+    call_gateway_tool,
+    extract_envelope,
+    gateway_mcp_client,
+)
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import ArchitectInput, ArchitectResult, usage_from_strands
 
@@ -125,8 +130,8 @@ def fetch_plan_body(mcp_client: MCPClient, run_id: str) -> str:
     """
     result = call_gateway_tool(
         mcp_client,
-        name="get_artifact",
-        arguments={"key": plan_s3_key(run_id)},
+        name=ARTIFACT_TOOL,
+        arguments={"op": "get_artifact", "key": plan_s3_key(run_id)},
     )
     envelope = extract_envelope(result)
     if not envelope.get("ok"):

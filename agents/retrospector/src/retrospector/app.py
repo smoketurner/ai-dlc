@@ -28,7 +28,12 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands.tools.mcp import MCPClient
 
-from common.gateway_tools import call_gateway_tool, extract_envelope, gateway_mcp_client
+from common.gateway_tools import (
+    REPO_HELPER,
+    call_gateway_tool,
+    extract_envelope,
+    gateway_mcp_client,
+)
 from common.memory_md import MemoryDoc, parse, render
 from common.runtime import RetrospectorInput
 from retrospector.agent import build_agent, retrospect
@@ -285,8 +290,8 @@ def invoke_repo_helper(
     """
     response = call_gateway_tool(
         mcp_client,
-        name=op,
-        arguments=fields,
+        name=REPO_HELPER,
+        arguments={"op": op, **fields},
     )
     envelope = extract_envelope(response)
     if not envelope.get("ok"):

@@ -23,7 +23,12 @@ from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import EventEnvelope, TestReportReady
-from common.gateway_tools import call_gateway_tool, gateway_mcp_client
+from common.gateway_tools import (
+    ARTIFACT_TOOL,
+    REPO_HELPER,
+    call_gateway_tool,
+    gateway_mcp_client,
+)
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TesterInput, TesterResult, usage_from_strands
 from tester.agent import analyze_gaps, build_agent, model_id
@@ -130,8 +135,9 @@ def upload_report(
     """Render and upload the report Markdown via the artifact_tool gateway target."""
     call_gateway_tool(
         mcp_client,
-        name="put_artifact",
+        name=ARTIFACT_TOOL,
         arguments={
+            "op": "put_artifact",
             "key": report_s3_key(run_id=run_id, revision_number=revision_number),
             "content": render_report(report),
         },
@@ -184,8 +190,9 @@ def post_pr_comment(
     try:
         call_gateway_tool(
             mcp_client,
-            name="comment_pr",
+            name=REPO_HELPER,
             arguments={
+                "op": "comment_pr",
                 "repo": parsed.group("repo"),
                 "pr_number": int(parsed.group("num")),
                 "body": body,

@@ -21,7 +21,7 @@ from strands.tools.mcp import MCPClient
 
 from common.event_emit import publish
 from common.events import CritiqueReady, EventEnvelope, RunFailed
-from common.gateway_tools import call_gateway_tool, gateway_mcp_client
+from common.gateway_tools import ARTIFACT_TOOL, call_gateway_tool, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import CriticInput, CriticResult, usage_from_strands
 from critic.agent import build_agent, critique_plan, model_id
@@ -150,8 +150,9 @@ def upload_critique(mcp_client: MCPClient, critique: Critique, *, run_id: str) -
     """Render the critique and upload via the artifact_tool gateway target."""
     call_gateway_tool(
         mcp_client,
-        name="put_artifact",
+        name=ARTIFACT_TOOL,
         arguments={
+            "op": "put_artifact",
             "key": critique_s3_key(run_id),
             "content": render_critique(critique),
         },

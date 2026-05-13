@@ -89,8 +89,8 @@ def test_run_code_critic_uses_gateway_and_publishes(
     # Two gateway calls: put_artifact (upload critique) + comment_pr (post comment).
     assert call_tool.call_count == 2
     upload_kwargs = call_tool.call_args_list[0].kwargs
-    assert upload_kwargs["name"] == "put_artifact"
-    assert "op" not in upload_kwargs["arguments"]
+    assert upload_kwargs["name"] == "artifact-tool___artifact_tool"
+    assert upload_kwargs["arguments"]["op"] == "put_artifact"
     assert upload_kwargs["arguments"]["key"] == critique_s3_key(
         run_id="r-1",
         revision_number=0,
@@ -98,8 +98,8 @@ def test_run_code_critic_uses_gateway_and_publishes(
     assert upload_kwargs["arguments"]["content"]
 
     comment_kwargs = call_tool.call_args_list[1].kwargs
-    assert comment_kwargs["name"] == "comment_pr"
-    assert "op" not in comment_kwargs["arguments"]
+    assert comment_kwargs["name"] == "repo-helper___repo_helper"
+    assert comment_kwargs["arguments"]["op"] == "comment_pr"
     assert comment_kwargs["arguments"]["repo"] == "owner/repo"
     assert comment_kwargs["arguments"]["pr_number"] == 42
     assert comment_kwargs["arguments"]["body"]

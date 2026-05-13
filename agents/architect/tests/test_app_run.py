@@ -96,8 +96,11 @@ def test_run_architect_uses_gateway_and_publishes(
 
     call_tool.assert_called_once()
     tool_kwargs = call_tool.call_args.kwargs
-    assert tool_kwargs["name"] == "get_artifact"
-    assert tool_kwargs["arguments"] == {"key": plan_s3_key("r-1")}
+    assert tool_kwargs["name"] == "artifact-tool___artifact_tool"
+    assert tool_kwargs["arguments"] == {
+        "op": "get_artifact",
+        "key": plan_s3_key("r-1"),
+    }
 
     assert len(published) == 1
     assert published[0].type == "DESIGN.READY"
