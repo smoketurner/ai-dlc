@@ -1,26 +1,21 @@
 """Pure event → state transition logic.
 
-The event_projector imports :func:`apply_run_transition` /
-:func:`apply_task_transition` and applies the result with a DDB
-``ConditionExpression`` on the previous state, so the same event re-
-delivered is a no-op (idempotency).
+The event_projector imports :func:`apply_run_transition` and applies the
+result with a DDB ``ConditionExpression`` on the previous state, so the
+same event re-delivered is a no-op (idempotency).
 
 Two layers:
 
 * **Single-source transitions** — most events advance state from one
   specific predecessor to one specific successor. These live in the
-  :data:`RUN_TRANSITIONS` and :data:`TASK_TRANSITIONS` mappings.
+  :data:`RUN_TRANSITIONS` mapping.
 * **Wildcard transitions** — ``RUN.FAILED`` and ``RUN.CANCEL_REQUESTED``
   may arrive in any non-terminal state. These are handled inline in
   :func:`apply_run_transition`.
 
-Advisory events (``REVIEW.READY``, ``TEST_REPORT.READY``,
-``CRITIQUE.READY`` for the spec gate, ``ISSUE.ASK_POSTED``,
+Advisory events (``TEST_REPORT.READY``, ``CODE_CRITIQUE.READY``,
 ``EVAL.DRIFT_DETECTED``) intentionally have no entry — they update
-side data on the run/task row but do not advance the state cursor.
-``CRITIQUE.READY`` IS a state-advancing event for the run-level
-state machine (architect → critic gate); only the spec-quality
-metrics it carries are advisory.
+side data on the run row but do not advance the state cursor.
 """
 
 from __future__ import annotations
@@ -30,63 +25,31 @@ from collections.abc import Mapping
 from common.events import EventType
 from common.state import (
     TERMINAL_RUN_STATES,
-    TERMINAL_TASK_STATES,
     RunState,
-    TaskState,
 )
 
 RUN_TRANSITIONS: Mapping[tuple[EventType, RunState | None], RunState] = {
     ("REQUEST.RECEIVED", None): RunState.received,
     ("ISSUE.TRIAGED", RunState.triaging): RunState.triage_decided,
-    ("SPEC.READY", RunState.architect_running): RunState.spec_drafted,
-    ("CRITIQUE.READY", RunState.critic_running): RunState.spec_critiqued,
-    ("SPEC.APPROVED", RunState.spec_pr_open): RunState.spec_approved,
-    ("SPEC.REJECTED", RunState.spec_pr_open): RunState.failed,
-    ("SPEC.ITERATION_REQUESTED", RunState.spec_pr_open): RunState.spec_pending,
+    ("DESIGN.READY", RunState.architect_running): RunState.designed,
+    ("CRITIQUE.READY", RunState.critic_running): RunState.critiqued,
+    ("IMPL_PR.OPENED", RunState.implementer_running): RunState.impl_pr_open,
     ("REVIEW.READY", RunState.validation_running): RunState.validation_complete,
     ("REVISION.READY", RunState.revising): RunState.validation_running,
+    ("CHECKS.PASSED", RunState.validation_complete): RunState.awaiting_human_merge,
+    ("CHECKS.PASSED", RunState.awaiting_checks): RunState.awaiting_human_merge,
+    ("CHECKS.FAILED", RunState.validation_complete): RunState.revising,
+    ("CHECKS.FAILED", RunState.awaiting_checks): RunState.revising,
+    ("CHECKS.FAILED", RunState.awaiting_human_merge): RunState.revising,
+    ("IMPL.ITERATION_REQUESTED", RunState.awaiting_checks): RunState.revising,
+    ("IMPL.ITERATION_REQUESTED", RunState.awaiting_human_merge): RunState.revising,
+    ("IMPL.ITERATION_REQUESTED", RunState.impl_pr_open): RunState.revising,
+    ("IMPL.ITERATION_REQUESTED", RunState.validation_running): RunState.revising,
+    ("IMPL.ITERATION_REQUESTED", RunState.validation_complete): RunState.revising,
     ("RUN.COMPLETED", RunState.awaiting_human_merge): RunState.done,
     ("RUN.COMPLETED", RunState.proposer_running): RunState.done,
 }
 """Run-level state transitions keyed by (event_type, current_state)."""
-
-
-SPEC_ITERATION_ACCUMULATOR_STATES = frozenset(
-    {
-        RunState.architect_running,
-        RunState.spec_drafted,
-        RunState.critic_running,
-        RunState.spec_critiqued,
-    },
-)
-"""States in which a fresh ``SPEC.ITERATION_REQUESTED`` is queued, not advanced.
-
-Mirrors the task-level ``ITERATION_ACCUMULATOR_STATES``: a reviewer can
-post a second ``@<bot>`` mention while the architect is still mid-cycle
-on the first. There's no state transition for those moments (no
-``architect_running → architect_running``), so the projector
-accumulates the new feedback onto the run row in place and lets the
-in-flight iteration finish; whichever iteration flushes
-``pending_spec_feedback`` consumes it.
-"""
-
-
-TASK_TRANSITIONS: Mapping[tuple[EventType, TaskState], TaskState] = {
-    ("TASK.READY", TaskState.implementer_running): TaskState.pr_open,
-    ("TASK.READY", TaskState.iterating): TaskState.pr_open,
-    ("TASK.BLOCKED", TaskState.implementer_running): TaskState.blocked,
-    ("TASK.BLOCKED", TaskState.iterating): TaskState.blocked,
-    ("TASK.ITERATION_REQUESTED", TaskState.pr_open): TaskState.iterating,
-    ("TASK.ITERATION_REQUESTED", TaskState.pending_approval): TaskState.iterating,
-    ("TASK.ITERATION_REQUESTED", TaskState.blocked): TaskState.iterating,
-    ("TASK.APPROVED", TaskState.pr_open): TaskState.merged,
-    ("TASK.APPROVED", TaskState.pending_approval): TaskState.merged,
-    ("TASK.APPROVED", TaskState.blocked): TaskState.merged,
-    ("TASK.REJECTED", TaskState.pr_open): TaskState.closed,
-    ("TASK.REJECTED", TaskState.pending_approval): TaskState.closed,
-    ("TASK.REJECTED", TaskState.blocked): TaskState.closed,
-}
-"""Task-level state transitions keyed by (event_type, current_state)."""
 
 
 def apply_run_transition(
@@ -116,27 +79,3 @@ def apply_run_transition(
             return None
         return RunState.cancelled
     return RUN_TRANSITIONS.get((event_type, current_state))
-
-
-def apply_task_transition(
-    *,
-    event_type: EventType,
-    current_state: TaskState,
-) -> TaskState | None:
-    """Compute the next task state for ``event_type`` from ``current_state``.
-
-    Returns ``None`` if the event does not advance task state from that
-    cursor — most commonly because the event is advisory
-    (``REVIEW.READY``, ``TEST_REPORT.READY``) or already-applied
-    (re-delivery while task is in ``pr_open`` and the same TASK.READY
-    event arrives twice, etc.).
-
-    Wildcard handling: ``TASK.REJECTED`` and ``TASK.APPROVED`` are
-    only valid from ``pending_approval``. A task closed via PR-close
-    webhook on a non-pending state (e.g., user closes a PR while
-    advisors are still running) is handled by the dashboard webhook
-    emitting the right event after a state-aware lookup.
-    """
-    if current_state in TERMINAL_TASK_STATES:
-        return None
-    return TASK_TRANSITIONS.get((event_type, current_state))

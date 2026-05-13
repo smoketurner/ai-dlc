@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
-  "title": "TASK.READY",
-  "description": "The implementer agent opened a PR for one task and is awaiting approval.",
+  "title": "IMPL_PR.OPENED",
+  "description": "The implementer opened the single impl PR for this run. Advances the run from implementer_running to impl_pr_open; the state router dispatches the three validators (reviewer, tester, code-critic) next.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   "properties": {
     "schema_version": { "type": "string", "enum": ["1.0"] },
     "event_id": { "type": "string", "format": "uuid" },
-    "type": { "type": "string", "enum": ["TASK.READY"] },
+    "type": { "type": "string", "enum": ["IMPL_PR.OPENED"] },
     "timestamp": { "type": "string", "format": "date-time" },
     "run_id": { "type": "string", "format": "uuid" },
     "correlation_id": { "type": "string", "format": "uuid" },
@@ -26,21 +26,21 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "project_slug",
-        "spec_slug",
-        "task_id",
-        "pr_url",
-        "diff_summary",
-        "session_id"
-      ],
+      "required": ["project_slug", "pr_url", "diff_summary", "session_id"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "task_id": { "type": "string", "minLength": 1, "maxLength": 32 },
-        "pr_url": { "type": "string", "format": "uri" },
+        "pr_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^https://github\\.com/.+/pull/[0-9]+$"
+        },
         "diff_summary": { "type": "string", "maxLength": 4096 },
-        "session_id": { "type": "string", "minLength": 1 }
+        "session_id": { "type": "string", "minLength": 1 },
+        "token_in": { "type": "integer", "minimum": 0 },
+        "token_out": { "type": "integer", "minimum": 0 },
+        "cost_usd": { "type": "number", "minimum": 0.0 },
+        "duration_ms": { "type": "integer", "minimum": 0 }
       }
     }
   }

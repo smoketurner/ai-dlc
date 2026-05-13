@@ -1,13 +1,14 @@
-"""Strands hooks for the Critic.
+"""Strands hooks for the Code-Critic.
 
-Caps ``read_spec_doc`` at 3 calls per invocation (one per spec document).
-A 4th call indicates a stuck loop, not legitimate re-reading.
+Caps ``read_plan_doc`` at 2 calls per invocation. The code-critic
+reads the architect's plan to ground "plan-drift" findings; a higher
+count indicates a stuck loop.
 
-The "Critic must find at least one issue" rule lives on
-:class:`critic.critique.Critique` itself as a ``min_length=1`` constraint
-on ``issues``. Strands' structured-output mode surfaces the resulting
-Pydantic ``ValidationError`` to the agent, giving it a chance to
-self-correct before the run completes.
+The "Code-Critic must find at least one issue" rule lives on
+:class:`code_critic.critique.Critique` itself as a ``min_length=1``
+constraint on ``issues``. Strands' structured-output mode surfaces the
+resulting Pydantic ``ValidationError`` to the agent, giving it a chance
+to self-correct before the run completes.
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ from strands.hooks import HookCallback, HookProvider
 
 from common.hooks import ToolCallCounter
 
-READ_SPEC_DOC_CAP = 3
+READ_PLAN_DOC_CAP = 2
 
 
 def build_hooks() -> list[HookProvider | HookCallback[Any]]:
     """Build a fresh list of hook providers for one agent invocation."""
     return [
-        ToolCallCounter({"read_spec_doc": READ_SPEC_DOC_CAP}),
+        ToolCallCounter({"read_plan_doc": READ_PLAN_DOC_CAP}),
     ]

@@ -7,8 +7,8 @@ entrypoint:
   1. Validates the input as :class:`CriticInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
      reports ``HealthyBusy`` while the work runs.
-  3. Spawns a daemon thread that critiques the spec, uploads the
-     critique through the per-agent gateway, and emits
+  3. Spawns a daemon thread that critiques the architect's plan,
+     uploads the critique through the per-agent gateway, and emits
      ``CRITIQUE.READY``. ``contextvars.copy_context()`` carries the
      runtime's ``WorkloadAccessToken`` ContextVar into the thread so
      :func:`common.gateway_tools.fetch_gateway_token` can exchange it
@@ -33,7 +33,7 @@ from common.events import CritiqueReady, EventEnvelope, RunFailed
 from common.gateway_tools import call_gateway_tool, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import CriticInput, CriticResult, usage_from_strands
-from critic.agent import build_agent, critique_spec, model_id
+from critic.agent import build_agent, critique_plan, model_id
 from critic.critique import Critique, render_critique, severity_counts
 from critic.tools import critique_s3_key
 
@@ -49,7 +49,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         "critic invoked",
         run_id=payload.run_id,
         project_slug=payload.project_slug,
-        spec_slug=payload.spec_slug,
+        plan_s3_key=payload.plan_s3_key,
     )
     task_id = app.add_async_task("critic_run", {"run_id": payload.run_id})
     ctx = contextvars.copy_context()
@@ -73,17 +73,20 @@ def run_critic(payload: CriticInput, task_id: int) -> None:
     try:
         with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
             agent = build_agent(payload.run_id, mcp_client=mcp_client)
-            critique = critique_spec(
+            critique = critique_plan(
                 agent,
                 project_slug=payload.project_slug,
-                spec_slug=payload.spec_slug,
+                run_id=payload.run_id,
+                plan_s3_key=payload.plan_s3_key,
                 intent=payload.intent,
+                source_issue_url=payload.source_issue_url,
+                source_issue_title=payload.source_issue_title,
+                source_issue_body=payload.source_issue_body,
             )
             upload_critique(mcp_client, critique, run_id=payload.run_id)
 
             counts = severity_counts(critique)
             result = CriticResult(
-                spec_slug=critique.spec_slug,
                 critique_s3_key=critique_s3_key(payload.run_id),
                 issue_count=len(critique.issues),
                 high_severity_count=counts["high"],
@@ -96,7 +99,6 @@ def run_critic(payload: CriticInput, task_id: int) -> None:
             logger.info(
                 "critique ready",
                 run_id=payload.run_id,
-                spec_slug=critique.spec_slug,
                 issue_count=result.issue_count,
                 high=result.high_severity_count,
             )
@@ -109,7 +111,7 @@ def run_critic(payload: CriticInput, task_id: int) -> None:
 
 
 def publish_critique_ready(payload: CriticInput, result: CriticResult) -> None:
-    """Emit CRITIQUE.READY so the projector advances the run to ``spec_critiqued``."""
+    """Emit CRITIQUE.READY so the projector advances the run to ``critiqued``."""
     envelope = EventEnvelope[CritiqueReady](
         event_id=new_event_id(),
         type="CRITIQUE.READY",
@@ -118,7 +120,6 @@ def publish_critique_ready(payload: CriticInput, result: CriticResult) -> None:
         actor_id="critic",
         payload=CritiqueReady(
             project_slug=payload.project_slug,
-            spec_slug=result.spec_slug,
             critique_s3_key=result.critique_s3_key,
             issue_count=result.issue_count,
             high_severity_count=result.high_severity_count,

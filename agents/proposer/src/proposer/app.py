@@ -187,8 +187,7 @@ def publish_run_completed(
         actor_id="proposer",
         payload=RunCompleted(
             project_slug=payload.project_slug,
-            spec_slug=f"research-issue-{payload.issue_number}",
-            tasks_completed=1 if pr_url else 0,
+            pr_url=pr_url,
         ),
     )
     publish(envelope)

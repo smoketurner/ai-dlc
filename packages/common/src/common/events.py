@@ -10,18 +10,22 @@ The envelope and payload are kept structurally separate from the EventBridge
 move off EventBridge without rewriting any model. The bus fields are derived
 from envelope fields at publish time.
 
-The platform follows a spec-driven SDLC pipeline:
+The platform follows a single-PR-per-issue SDLC pipeline:
 
   REQUEST.RECEIVED
-    → SPEC.READY        (Architect writes requirements + design + tasks)
-    → CRITIQUE.READY    (Critic adversarially reviews the spec — advisory)
-    → SPEC.APPROVED     (gate 1 — human reviewer)
-    → TASK.READY        ┐
-    → REVIEW.READY      │ Reviewer code-reviews the PR — advisory
-    → TEST_REPORT.READY │ Tester flags test gaps — advisory
-    → TASK.APPROVED     │ loop while tasks remain
-    → ...               ┘
-    → RUN.COMPLETED
+    → ISSUE.TRIAGED       (Triage classifies a tagged GitHub issue)
+    → DESIGN.READY        (Architect writes plan.md to S3)
+    → CRITIQUE.READY      (Critic adversarially reviews the plan — advisory)
+    → IMPL_PR.OPENED      (Implementer opens the single impl PR)
+    → REVIEW.READY        (Reviewer code-reviews the PR — gating)
+    → TEST_REPORT.READY   (Tester flags test gaps — advisory)
+    → CODE_CRITIQUE.READY (Code-Critic adversarial review — advisory)
+    → CHECKS.PASSED       (all required GitHub Checks green) →
+                          awaiting_human_merge → RUN.COMPLETED
+    or
+    → CHECKS.FAILED       → revising → REVISION.READY → re-validate
+    or
+    → IMPL.ITERATION_REQUESTED (human @aidlc-bot mention) → revising → ...
 """
 
 from __future__ import annotations
@@ -32,22 +36,16 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.ids import CorrelationId, EventId, RunId, new_event_id
-from common.runtime import FeedbackItem
-from common.validators import NoneSafeList
 
 EventType = Literal[
     "REQUEST.RECEIVED",
     "ISSUE.TRIAGED",
-    "SPEC.READY",
-    "SPEC.APPROVED",
-    "SPEC.REJECTED",
+    "DESIGN.READY",
     "CRITIQUE.READY",
-    "TASK.READY",
-    "TASK.BLOCKED",
-    "TASK.APPROVED",
-    "TASK.REJECTED",
-    "TASK.ITERATION_REQUESTED",
-    "SPEC.ITERATION_REQUESTED",
+    "IMPL_PR.OPENED",
+    "IMPL.ITERATION_REQUESTED",
+    "CHECKS.PASSED",
+    "CHECKS.FAILED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
     "CODE_CRITIQUE.READY",
@@ -60,7 +58,9 @@ EventType = Literal[
 
 ReviewVerdict = Literal["approve", "request_changes", "comment"]
 
-GateKind = Literal["spec", "task", "deploy", "prod_write"]
+CheckConclusion = Literal[
+    "success", "failure", "timed_out", "cancelled", "action_required", "stale"
+]
 
 
 class Payload(BaseModel):
@@ -120,27 +120,16 @@ class RequestReceived(Payload):
         ]
         | None
     ) = None
-    # Triage agent's workflow classification. Step Functions branches on
-    # this right after the run is recorded — ``spec_driven`` runs the
-    # full Architect/Critic/spec-gate flow; ``bug_fix`` / ``upgrade`` /
-    # ``docs`` skip the spec phase and run a synthetic 1-task spec the
-    # dispatcher generated from the issue context; ``research`` invokes
-    # the Proposer to read external URLs and post a synthesis comment
-    # (plus an optional PR for prompt / MEMORY.md edits).
-    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"] = "spec_driven"
-    # Slug of the synthetic spec the state_router writes to S3 for
-    # non-``spec_driven`` runs (bug_fix / upgrade / docs). ``None`` for
-    # ``spec_driven`` — the Architect produces the spec at runtime.
-    synthetic_spec_slug: Annotated[str, Field(min_length=1, max_length=128)] | None = None
 
 
 class IssueTriaged(Payload):
     """The Triage agent has classified a tagged GitHub issue.
 
-    Step Functions branches on :attr:`action` (and :attr:`workflow_kind`
-    when ``action == "proceed"``). The full :class:`common.triage.TriageDecision`
-    object is stored at :attr:`decision_s3_key`; the dashboard renders
-    the decision history per repo.
+    The full :class:`common.triage.TriageDecision` object is stored at
+    :attr:`decision_s3_key`; the dashboard renders the decision history
+    per repo. ``action="proceed"`` advances the run to architect dispatch;
+    ``action="research"`` branches to the Proposer; ``ask`` / ``defer`` /
+    ``decline`` terminate the run (with an explanatory comment on the issue).
     """
 
     project_slug: str
@@ -149,73 +138,37 @@ class IssueTriaged(Payload):
         str, Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+$")
     ]
     issue_number: Annotated[int, Field(ge=1)]
-    action: Literal["proceed", "ask", "defer", "decline"]
-    workflow_kind: Literal["spec_driven", "bug_fix", "upgrade", "docs", "research"] | None = None
+    action: Literal["proceed", "ask", "defer", "decline", "research"]
     decision_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     rationale: Annotated[str, Field(min_length=1, max_length=2048)]
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = 1.0
     session_id: str
 
 
-class SpecReady(UsagePayload):
-    """The architect agent has produced a spec bundle and is awaiting approval.
+class DesignReady(UsagePayload):
+    """The Architect has produced an implementation plan.
 
-    The bundle is the three-document set (requirements, design, tasks) under
-    ``s3://artifacts/specs/{spec_slug}/`` plus any new ADRs proposed in the
-    design that are committed under ``docs/ADRs/`` when the spec is approved.
-
-    ``task_ids`` carries the per-task identifiers the Architect minted; the
-    event_projector persists them on the run STATE row so the state-router's
-    ``spec_approved`` handler can seed one TASK row per id without re-reading
-    the spec from S3.
+    The plan is a single markdown document at ``s3://artifacts/runs/{run_id}/plan.md``
+    structured like a Claude Code plan-mode plan: Context, Assumptions,
+    Approach, Files-to-modify, Reuse, Implementation-steps, Verification,
+    Out-of-scope. The Critic reads this next; advances run to ``designed``.
     """
 
     project_slug: str
-    spec_slug: Annotated[str, Field(min_length=1, max_length=128)]
-    spec_s3_prefix: str
-    requirements_summary: Annotated[str, Field(max_length=1024)]
-    design_summary: Annotated[str, Field(max_length=1024)]
-    task_count: Annotated[int, Field(ge=1)]
-    task_ids: Annotated[list[str], Field(min_length=1, max_length=64)]
-    # task_id → list of predecessor task_ids. Tasks without dependencies
-    # are omitted (empty dict is the common case). The state router
-    # blocks a pending task from dispatching until every predecessor has
-    # reached ``pr_open`` or later.
-    task_depends_on: dict[str, list[str]] = Field(default_factory=dict)
-    proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
+    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
+    summary: Annotated[str, Field(max_length=2048)]
     session_id: str
 
 
-class SpecApproved(Payload):
-    """A reviewer approved the spec; task execution may begin."""
-
-    project_slug: str
-    spec_slug: str
-    spec_s3_prefix: str
-    reviewer: str
-    comment: str | None = None
-
-
-class SpecRejected(Payload):
-    """A reviewer rejected the spec. The architect may retry with feedback."""
-
-    project_slug: str
-    spec_slug: str
-    spec_s3_prefix: str
-    reviewer: str
-    reason: str
-
-
 class CritiqueReady(UsagePayload):
-    """Critic agent produced an adversarial review of the spec — advisory.
+    """Critic agent produced an adversarial review of the architect's plan — advisory.
 
     The critique is rendered to ``s3://artifacts/runs/{run_id}/critique.md``;
     the event payload references it via :attr:`critique_s3_key`. This event
-    does not gate the pipeline — humans still own SPEC.APPROVED.
+    does not gate the pipeline — its findings inform the implementer.
     """
 
     project_slug: str
-    spec_slug: str
     critique_s3_key: str
     issue_count: Annotated[int, Field(ge=0)]
     high_severity_count: Annotated[int, Field(ge=0)] = 0
@@ -225,112 +178,98 @@ class CritiqueReady(UsagePayload):
     session_id: str
 
 
-class TaskReady(UsagePayload):
-    """The implementer merged its task branch into the run's impl branch.
+class ImplPrOpened(UsagePayload):
+    """The Implementer has opened the single impl PR for this run.
 
-    The unified impl PR is opened by the event projector on the first
-    ``TASK.READY`` for a run; ``pr_url`` is left empty by the
-    implementer and populated by the projector after the PR is open.
+    Marks the transition from ``implementer_running`` → ``impl_pr_open``.
+    The state router dispatches the three validators (reviewer, tester,
+    code-critic) next.
     """
 
     project_slug: str
-    spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str = ""
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
     diff_summary: Annotated[str, Field(max_length=4096)]
     session_id: str
 
 
-class TaskBlocked(UsagePayload):
-    """The implementer could not advance one task.
+class ImplIterationRequested(Payload):
+    """A signal arrived on the impl PR that should trigger an implementer revision.
 
-    A ``BLOCKED.md`` commit on the task branch carries the explanation;
-    the human advances by commenting ``@aidlc-bot <guidance>`` on the
-    unified impl PR (which fires ``TASK.ITERATION_REQUESTED``).
+    Emitted by the dashboard webhook handler on:
+
+    * ``@aidlc-bot`` mention in an issue comment, PR review, or review comment
+      on the impl PR (uncapped — the human is actively steering).
+
+    Carries the mention text or feedback as a free-form string the implementer
+    uses as input to its next revision. The event_projector appends
+    ``delivery_id`` to the run row's ``delivery_ids`` set for idempotency.
     """
 
     project_slug: str
-    spec_slug: str
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str = ""
-    blocked_reason: Annotated[str, Field(min_length=1, max_length=2048)]
-    session_id: str
-
-
-class TaskApproved(Payload):
-    """A reviewer approved the task PR. The next task may start."""
-
-    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    task_id: str
-    pr_url: str
-    reviewer: str
-
-
-class TaskRejected(Payload):
-    """A reviewer rejected the task PR. The implementer may retry with feedback."""
-
-    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    task_id: str
-    pr_url: str
-    reviewer: str
-    reason: str
-
-
-class TaskIterationRequested(Payload):
-    """A webhook reported a PR signal that should trigger the implementer.
-
-    Emitted by the dashboard webhook handler on CI failure, review
-    ``changes_requested``, or a bot @-mention in a review or PR comment.
-    Carries enough context (one :class:`FeedbackItem`) for the state
-    router to dispatch the implementer with concrete feedback when it
-    transitions the task to ``iterating``.
-
-    The event_projector appends ``delivery_id`` to the task row's
-    ``delivery_ids`` set for idempotency — duplicate webhook deliveries
-    do not stack triggers.
-    """
-
-    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    spec_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    task_id: Annotated[str, Field(min_length=1, max_length=32)]
-    pr_url: str
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
     delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
-    feedback: FeedbackItem
-
-
-class SpecIterationRequested(Payload):
-    """A reviewer commented ``@<bot> ...`` on a spec PR — re-run architect.
-
-    Emitted by the dashboard webhook handler when a non-bot human
-    @-mentions the bot on the spec PR. The projector accumulates
-    ``feedback_body`` onto the run row's ``pending_spec_feedback`` list
-    and advances ``spec_pr_open → spec_pending``; the state router then
-    dispatches the architect again with the accumulated feedback as
-    ``prior_feedback``. The architect rewrites the docs onto the same
-    branch, the existing PR auto-updates, the review thread stays
-    continuous.
-    """
-
-    project_slug: str
-    spec_slug: str
-    pr_url: str
-    delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
+    source: Literal[
+        "issue_comment_mention",
+        "review_comment_mention",
+        "review_changes_requested",
+    ]
     commenter: Annotated[str, Field(min_length=1, max_length=128)]
-    comment_id: Annotated[int, Field(ge=1)]
     feedback_body: Annotated[str, Field(min_length=1, max_length=8192)]
+
+
+class ChecksPassed(Payload):
+    """All required GitHub Checks for the impl PR's HEAD sha are conclusion=success.
+
+    Emitted by the dashboard webhook handler after aggregating
+    ``check_suite`` / ``check_run`` / ``workflow_run`` events for the
+    PR's current HEAD sha. Advances the run to ``awaiting_human_merge``
+    (or directly transitions ``validation_complete`` → ``awaiting_human_merge``
+    when validation finished before CI did).
+    """
+
+    project_slug: str
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
+    head_sha: Annotated[str, Field(min_length=7, max_length=40)]
+    delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class ChecksFailed(Payload):
+    """One or more required GitHub Checks for the impl PR's HEAD sha did not succeed.
+
+    Emitted by the dashboard webhook handler after aggregating Checks
+    events for the current HEAD sha. Triggers an implementer revision
+    (counted toward ``MAX_REVISIONS``); the failing workflow names +
+    URLs are passed to the implementer as :class:`common.runtime.CiFailureFeedback`.
+    """
+
+    project_slug: str
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
+    head_sha: Annotated[str, Field(min_length=7, max_length=40)]
+    delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
+    failed_workflow_count: Annotated[int, Field(ge=1)]
+    summary: Annotated[str, Field(max_length=2048)]
 
 
 class RunCancelRequested(Payload):
     """A user or system requested cancellation of an in-flight run.
 
     Emitted by the dashboard webhook on ``issues.unassigned`` (the bot
-    was unassigned from the source issue) or ``issues.closed`` (the
-    user is done with the issue), and by the state-router when triage
-    decides to ``ask`` / ``defer`` / ``decline`` (``comment_command``).
-    May be emitted by other surfaces (dashboard button) as the
-    cancellation UX expands.
+    was unassigned from the source issue), ``issues.closed``, or
+    ``pull_request.closed`` with ``merged=false`` on the impl PR; also
+    by the state-router when triage decides to ``ask`` / ``defer`` /
+    ``decline``.
     """
 
     project_slug: str
@@ -349,15 +288,14 @@ class ReviewReady(UsagePayload):
     """Reviewer agent code-reviewed the unified impl PR — gating.
 
     Reviewer runs once per validation pass, against the integrated impl
-    PR (not per-task). Its ``verdict`` drives the run-level state
-    machine: ``approve`` / ``comment`` advances the run to
-    ``awaiting_human_merge``; ``request_changes`` triggers a revision
-    pass by the implementer (capped at ``MAX_REVISIONS``). Comments
-    land on the impl PR via ``repo_helper.comment_pr``.
+    PR. Its ``verdict`` drives the run-level state machine: ``approve`` /
+    ``comment`` advances the run to ``awaiting_checks`` (then
+    ``awaiting_human_merge`` once Checks are green); ``request_changes``
+    triggers a revision pass by the implementer (capped at ``MAX_REVISIONS``).
+    Comments land on the impl PR via ``repo_helper.comment_pr``.
     """
 
     project_slug: str
-    spec_slug: str
     pr_url: str
     verdict: ReviewVerdict
     comment_count: Annotated[int, Field(ge=0)]
@@ -381,7 +319,6 @@ class TestReportReady(UsagePayload):
     __test__ = False  # opt out of pytest collection (Test*-prefix collision)
 
     project_slug: str
-    spec_slug: str
     pr_url: str
     gap_count: Annotated[int, Field(ge=0)]
     suggested_test_count: Annotated[int, Field(ge=0)]
@@ -394,13 +331,12 @@ class CodeCritiqueReady(UsagePayload):
 
     Code-critic runs once per validation pass, in parallel with
     reviewer + tester. Its findings (logical gaps, missing edge cases,
-    drift from the spec) land on the impl PR as comments and inform
-    the reviewer's verdict + a revision pass if one is triggered.
+    drift from the plan's intent) land on the impl PR as comments and
+    inform the reviewer's verdict + a revision pass if one is triggered.
     Does not gate the pipeline.
     """
 
     project_slug: str
-    spec_slug: str
     pr_url: str
     critique_s3_key: str
     issue_count: Annotated[int, Field(ge=0)]
@@ -412,18 +348,17 @@ class CodeCritiqueReady(UsagePayload):
 
 
 class RevisionReady(UsagePayload):
-    """Implementer revised the impl branch in response to reviewer feedback.
+    """Implementer revised the impl branch in response to feedback.
 
     Emitted after the implementer runs in ``mode=revision`` — clones
     the repo, checks out the impl branch, applies the aggregated
-    reviewer + tester + code-critic feedback, commits directly to the
-    impl branch (no task branch), pushes. Advances the run from
-    ``revising`` back to ``validation_running`` so the validators
-    re-evaluate the updated diff.
+    reviewer + tester + code-critic feedback (and any CI failure or
+    human-mention context), commits directly to the impl branch (no
+    task branch), pushes. Advances the run from ``revising`` back to
+    ``validation_running`` so the validators re-evaluate the updated diff.
     """
 
     project_slug: str
-    spec_slug: str
     pr_url: str
     diff_summary: Annotated[str, Field(max_length=4096)]
     revision_number: Annotated[int, Field(ge=1)]
@@ -440,33 +375,45 @@ class RunCompleted(Payload):
     """
 
     project_slug: str
-    spec_slug: str
-    tasks_completed: int
+    pr_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+        ]
+        | None
+    ) = None
 
 
 class RunFailed(Payload):
-    """The run reached a terminal failure state."""
+    """The run reached a terminal failure state.
+
+    ``revision_count`` is populated when the failure is the validator
+    revision cap (``error_class="RevisionCapReached"``). The retrospector
+    dispatcher uses it to reconstruct the per-round validator artifact
+    S3 keys (``runs/{run_id}/validation/{reviewer,tester,code_critic}-r{N}.md``)
+    so the retrospector can read every revision's findings and propose
+    prompt / ``MEMORY.md`` updates that would have prevented the failure.
+    """
 
     project_slug: str
     failed_state: str
     error_class: str
     error_message: str
     retryable: bool
+    pr_url: Annotated[str, Field(max_length=512)] = ""
+    source_issue_url: Annotated[str, Field(max_length=512)] = ""
+    revision_count: Annotated[int, Field(ge=0, le=16)] = 0
 
 
 type AnyPayload = (
     RequestReceived
     | IssueTriaged
-    | SpecReady
-    | SpecApproved
-    | SpecRejected
+    | DesignReady
     | CritiqueReady
-    | TaskReady
-    | TaskBlocked
-    | TaskApproved
-    | TaskRejected
-    | TaskIterationRequested
-    | SpecIterationRequested
+    | ImplPrOpened
+    | ImplIterationRequested
+    | ChecksPassed
+    | ChecksFailed
     | ReviewReady
     | TestReportReady
     | CodeCritiqueReady

@@ -49,9 +49,9 @@ class InlineReply(BaseModel):
 
     The Implementer's wrapper (after the SDK loop) walks
     :attr:`FinishReport.inline_replies` and posts each via
-    ``repo_helper.reply_pr_review_comment``. Only meaningful on iteration
-    runs — on the initial PR (iteration_count == 0) there are no review
-    threads yet so the agent leaves this list empty.
+    ``repo_helper.reply_pr_review_comment``. Only meaningful on
+    revision runs — on the initial implementation pass there are no
+    review threads yet so the agent leaves this list empty.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)

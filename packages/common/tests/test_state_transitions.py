@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from common.state import RunState, TaskState
+import common.state_transitions as st_module
+from common.state import RunState
 from common.state_transitions import (
     RUN_TRANSITIONS,
-    TASK_TRANSITIONS,
     apply_run_transition,
-    apply_task_transition,
 )
 
 
@@ -32,13 +31,13 @@ class TestRunTransitions:
             == RunState.triage_decided
         )
 
-    def test_spec_ready_advances_run(self) -> None:
+    def test_design_ready_advances_run(self) -> None:
         assert (
             apply_run_transition(
-                event_type="SPEC.READY",
+                event_type="DESIGN.READY",
                 current_state=RunState.architect_running,
             )
-            == RunState.spec_drafted
+            == RunState.designed
         )
 
     def test_critique_ready_advances_run(self) -> None:
@@ -47,34 +46,16 @@ class TestRunTransitions:
                 event_type="CRITIQUE.READY",
                 current_state=RunState.critic_running,
             )
-            == RunState.spec_critiqued
+            == RunState.critiqued
         )
 
-    def test_spec_approved_advances_run(self) -> None:
+    def test_impl_pr_opened_advances_run(self) -> None:
         assert (
             apply_run_transition(
-                event_type="SPEC.APPROVED",
-                current_state=RunState.spec_pr_open,
+                event_type="IMPL_PR.OPENED",
+                current_state=RunState.implementer_running,
             )
-            == RunState.spec_approved
-        )
-
-    def test_spec_rejected_fails_run(self) -> None:
-        assert (
-            apply_run_transition(
-                event_type="SPEC.REJECTED",
-                current_state=RunState.spec_pr_open,
-            )
-            == RunState.failed
-        )
-
-    def test_run_completed_advances_to_done_from_awaiting_human_merge(self) -> None:
-        assert (
-            apply_run_transition(
-                event_type="RUN.COMPLETED",
-                current_state=RunState.awaiting_human_merge,
-            )
-            == RunState.done
+            == RunState.impl_pr_open
         )
 
     def test_review_ready_advances_validation_running_to_complete(self) -> None:
@@ -95,6 +76,96 @@ class TestRunTransitions:
             == RunState.validation_running
         )
 
+    def test_checks_passed_from_validation_complete(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="CHECKS.PASSED",
+                current_state=RunState.validation_complete,
+            )
+            == RunState.awaiting_human_merge
+        )
+
+    def test_checks_passed_from_awaiting_checks(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="CHECKS.PASSED",
+                current_state=RunState.awaiting_checks,
+            )
+            == RunState.awaiting_human_merge
+        )
+
+    def test_checks_failed_from_validation_complete(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="CHECKS.FAILED",
+                current_state=RunState.validation_complete,
+            )
+            == RunState.revising
+        )
+
+    def test_checks_failed_from_awaiting_checks(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="CHECKS.FAILED",
+                current_state=RunState.awaiting_checks,
+            )
+            == RunState.revising
+        )
+
+    def test_checks_failed_from_awaiting_human_merge(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="CHECKS.FAILED",
+                current_state=RunState.awaiting_human_merge,
+            )
+            == RunState.revising
+        )
+
+    def test_impl_iteration_requested_from_awaiting_checks(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="IMPL.ITERATION_REQUESTED",
+                current_state=RunState.awaiting_checks,
+            )
+            == RunState.revising
+        )
+
+    def test_impl_iteration_requested_from_awaiting_human_merge(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="IMPL.ITERATION_REQUESTED",
+                current_state=RunState.awaiting_human_merge,
+            )
+            == RunState.revising
+        )
+
+    def test_impl_iteration_requested_from_impl_pr_open(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="IMPL.ITERATION_REQUESTED",
+                current_state=RunState.impl_pr_open,
+            )
+            == RunState.revising
+        )
+
+    def test_run_completed_advances_to_done_from_awaiting_human_merge(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="RUN.COMPLETED",
+                current_state=RunState.awaiting_human_merge,
+            )
+            == RunState.done
+        )
+
+    def test_run_completed_advances_to_done_from_proposer_running(self) -> None:
+        assert (
+            apply_run_transition(
+                event_type="RUN.COMPLETED",
+                current_state=RunState.proposer_running,
+            )
+            == RunState.done
+        )
+
 
 class TestRunWildcards:
     @pytest.mark.parametrize(
@@ -103,8 +174,9 @@ class TestRunWildcards:
             RunState.received,
             RunState.triaging,
             RunState.architect_running,
-            RunState.tasks_in_progress,
-            RunState.spec_pr_open,
+            RunState.implementer_running,
+            RunState.impl_pr_open,
+            RunState.validation_running,
         ],
     )
     def test_run_failed_advances_any_non_terminal_to_failed(
@@ -137,8 +209,9 @@ class TestRunWildcards:
         [
             RunState.received,
             RunState.triaging,
-            RunState.spec_pr_open,
-            RunState.tasks_in_progress,
+            RunState.implementer_running,
+            RunState.impl_pr_open,
+            RunState.awaiting_human_merge,
         ],
     )
     def test_cancel_requested_advances_any_non_terminal_to_cancelled(
@@ -172,7 +245,7 @@ class TestRunInvalidTransitions:
         assert (
             apply_run_transition(
                 event_type="REVIEW.READY",
-                current_state=RunState.tasks_in_progress,
+                current_state=RunState.architect_running,
             )
             is None
         )
@@ -180,7 +253,7 @@ class TestRunInvalidTransitions:
     def test_event_from_wrong_state_returns_none(self) -> None:
         assert (
             apply_run_transition(
-                event_type="SPEC.READY",
+                event_type="DESIGN.READY",
                 current_state=RunState.received,
             )
             is None
@@ -190,7 +263,7 @@ class TestRunInvalidTransitions:
         assert (
             apply_run_transition(
                 event_type="EVAL.DRIFT_DETECTED",
-                current_state=RunState.tasks_in_progress,
+                current_state=RunState.validation_running,
             )
             is None
         )
@@ -207,177 +280,16 @@ class TestRunInvalidTransitions:
         )
 
 
-class TestTaskTransitions:
-    def test_task_ready_from_implementer_running(self) -> None:
-        assert (
-            apply_task_transition(
-                event_type="TASK.READY",
-                current_state=TaskState.implementer_running,
-            )
-            == TaskState.pr_open
-        )
-
-    def test_task_ready_from_iterating(self) -> None:
-        # Iteration commit re-emits TASK.READY against an iterating task.
-        assert (
-            apply_task_transition(
-                event_type="TASK.READY",
-                current_state=TaskState.iterating,
-            )
-            == TaskState.pr_open
-        )
-
-    def test_iteration_requested_from_pr_open(self) -> None:
-        assert (
-            apply_task_transition(
-                event_type="TASK.ITERATION_REQUESTED",
-                current_state=TaskState.pr_open,
-            )
-            == TaskState.iterating
-        )
-
-    def test_iteration_requested_from_pending_approval(self) -> None:
-        # A reviewer can change_requested while the task is in pending_approval.
-        assert (
-            apply_task_transition(
-                event_type="TASK.ITERATION_REQUESTED",
-                current_state=TaskState.pending_approval,
-            )
-            == TaskState.iterating
-        )
-
-    def test_task_approved_to_merged(self) -> None:
-        assert (
-            apply_task_transition(
-                event_type="TASK.APPROVED",
-                current_state=TaskState.pending_approval,
-            )
-            == TaskState.merged
-        )
-
-    def test_task_rejected_to_closed(self) -> None:
-        assert (
-            apply_task_transition(
-                event_type="TASK.REJECTED",
-                current_state=TaskState.pending_approval,
-            )
-            == TaskState.closed
-        )
-
-    def test_task_blocked_from_implementer_running(self) -> None:
-        assert (
-            apply_task_transition(
-                event_type="TASK.BLOCKED",
-                current_state=TaskState.implementer_running,
-            )
-            == TaskState.blocked
-        )
-
-    def test_task_blocked_from_iterating(self) -> None:
-        # Iteration that remains blocked re-emits TASK.BLOCKED against
-        # an iterating task; the cursor goes back to ``blocked``.
-        assert (
-            apply_task_transition(
-                event_type="TASK.BLOCKED",
-                current_state=TaskState.iterating,
-            )
-            == TaskState.blocked
-        )
-
-    def test_iteration_requested_from_blocked(self) -> None:
-        # Comment on a blocked draft PR fires the existing
-        # TASK.ITERATION_REQUESTED webhook path; the new transition
-        # flips ``blocked → iterating`` so the implementer re-runs.
-        assert (
-            apply_task_transition(
-                event_type="TASK.ITERATION_REQUESTED",
-                current_state=TaskState.blocked,
-            )
-            == TaskState.iterating
-        )
-
-    def test_task_rejected_from_blocked(self) -> None:
-        # Closing a blocked draft PR ends the task; other tasks in the
-        # run keep going.
-        assert (
-            apply_task_transition(
-                event_type="TASK.REJECTED",
-                current_state=TaskState.blocked,
-            )
-            == TaskState.closed
-        )
-
-    def test_task_approved_from_blocked(self) -> None:
-        # Edge case: human marks ready + merges a blocked draft. Draft
-        # status normally prevents this, but the transition exists so
-        # the cursor doesn't stick if it does happen.
-        assert (
-            apply_task_transition(
-                event_type="TASK.APPROVED",
-                current_state=TaskState.blocked,
-            )
-            == TaskState.merged
-        )
-
-
-class TestTaskInvalidTransitions:
-    @pytest.mark.parametrize(
-        "current",
-        [TaskState.merged, TaskState.closed, TaskState.failed],
-    )
-    def test_terminal_task_states_never_transition(self, current: TaskState) -> None:
-        # Even a re-delivered TASK.APPROVED from a merged task is a no-op.
-        assert (
-            apply_task_transition(
-                event_type="TASK.APPROVED",
-                current_state=current,
-            )
-            is None
-        )
-
-    def test_review_ready_does_not_advance_task(self) -> None:
-        # Advisory event — should not transition state.
-        assert (
-            apply_task_transition(
-                event_type="REVIEW.READY",
-                current_state=TaskState.reviewer_running,
-            )
-            is None
-        )
-
-    def test_test_report_ready_does_not_advance_task(self) -> None:
-        # Advisory event — should not transition state.
-        assert (
-            apply_task_transition(
-                event_type="TEST_REPORT.READY",
-                current_state=TaskState.tester_running,
-            )
-            is None
-        )
-
-    def test_iteration_requested_from_implementer_running_no_op(self) -> None:
-        # While implementer is in flight, an iteration request is queued
-        # via delivery_ids/pending feedback but does not change state.
-        assert (
-            apply_task_transition(
-                event_type="TASK.ITERATION_REQUESTED",
-                current_state=TaskState.implementer_running,
-            )
-            is None
-        )
-
-
-class TestTransitionTablesShape:
+class TestTransitionTableShape:
     def test_run_transitions_targets_are_run_states(self) -> None:
         for target in RUN_TRANSITIONS.values():
             assert isinstance(target, RunState)
 
-    def test_task_transitions_targets_are_task_states(self) -> None:
-        for target in TASK_TRANSITIONS.values():
-            assert isinstance(target, TaskState)
-
     def test_no_transition_creates_a_self_loop(self) -> None:
         for (_event, current), target in RUN_TRANSITIONS.items():
             assert target != current, f"self-loop for run {current}"
-        for (_event, current), target in TASK_TRANSITIONS.items():
-            assert target != current, f"self-loop for task {current}"
+
+    def test_no_task_transitions_exported(self) -> None:
+        """The task-level state machine was removed in the single-PR refactor."""
+        assert not hasattr(st_module, "TASK_TRANSITIONS")
+        assert not hasattr(st_module, "apply_task_transition")

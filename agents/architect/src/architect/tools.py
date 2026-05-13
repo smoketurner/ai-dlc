@@ -1,4 +1,4 @@
-"""Strands tools the Architect uses to read MEMORY.md and write spec docs.
+"""Strands tools the Architect uses to read context and write the plan.
 
 The architect runs in the AgentCore Runtime container, which has IAM
 credentials scoped to the artifacts + memory_md S3 buckets. Tools
@@ -26,8 +26,6 @@ from common.memory_md import read_memory_md, read_stack_profile_md
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
 
-_VALID_DOCS = frozenset({"requirements", "design", "tasks"})
-
 
 @cache
 def s3_client() -> S3Client:
@@ -36,26 +34,27 @@ def s3_client() -> S3Client:
 
 
 def artifacts_bucket() -> str:
-    """Bucket holding run artifacts (specs, ADRs, code diffs)."""
+    """Bucket holding run artifacts (plans, critiques, validation reports)."""
     return os.environ["AIDLC_ARTIFACTS_BUCKET"]
 
 
-def write_spec_doc(spec_slug: str, doc: str, content: str) -> str:
-    """Write one of the three spec documents to S3.
+def plan_s3_key(run_id: str) -> str:
+    """S3 key under the artifacts bucket for a run's plan document."""
+    return f"runs/{run_id}/plan.md"
+
+
+def write_plan_doc(run_id: str, content: str) -> str:
+    """Write the architect's plan markdown to ``runs/{run_id}/plan.md``.
 
     Args:
-        spec_slug: Slug folder under ``specs/`` — e.g., ``add-healthz``.
-        doc: One of ``requirements`` | ``design`` | ``tasks``.
-        content: Markdown body to upload.
+        run_id: The run UUID7 string.
+        content: Markdown body to upload — the full plan document.
 
     Returns:
         The full ``s3://...`` URI of the uploaded object.
     """
-    if doc not in _VALID_DOCS:
-        msg = f"doc must be one of {sorted(_VALID_DOCS)}, got {doc!r}"
-        raise ValueError(msg)
     bucket = artifacts_bucket()
-    key = f"specs/{spec_slug}/{doc}.md"
+    key = plan_s3_key(run_id)
     s3_client().put_object(
         Bucket=bucket,
         Key=key,
@@ -65,11 +64,19 @@ def write_spec_doc(spec_slug: str, doc: str, content: str) -> str:
     return f"s3://{bucket}/{key}"
 
 
+def read_plan_doc(run_id: str) -> str:
+    """Read a previously-written plan body back from S3 (best-effort)."""
+    bucket = artifacts_bucket()
+    key = plan_s3_key(run_id)
+    obj = s3_client().get_object(Bucket=bucket, Key=key)
+    return obj["Body"].read().decode("utf-8")
+
+
 # Strands wrappers — added to the agent's tool list. Each wraps the plain
 # function above so the agent can call it through the LLM tool-use protocol.
 read_memory_md_tool = tool(read_memory_md)
 read_stack_profile_md_tool = tool(read_stack_profile_md)
-write_spec_doc_tool = tool(write_spec_doc)
+write_plan_doc_tool = tool(write_plan_doc)
 list_repo_paths_tool = tool(list_repo_paths)
 read_repo_file_tool = tool(read_repo_file)
 browse_url_tool = tool(browse_url)

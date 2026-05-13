@@ -1,4 +1,4 @@
-"""Tests for the iteration-mode additions to ``common.runtime``."""
+"""Tests for the revision-mode additions to ``common.runtime``."""
 
 from __future__ import annotations
 
@@ -19,9 +19,6 @@ def base_input(**overrides: object) -> ImplementerInput:
     """Build a minimum-valid ImplementerInput, allowing per-test overrides."""
     fields: dict[str, object] = {
         "project_slug": "demo",
-        "spec_slug": "add-healthz",
-        "spec_s3_prefix": "specs/add-healthz/",
-        "task_id": "T-001",
         "run_id": "r1",
         "correlation_id": "c1",
         "target_repo": "owner/repo",
@@ -30,13 +27,14 @@ def base_input(**overrides: object) -> ImplementerInput:
     return ImplementerInput.model_validate(fields)
 
 
-def test_implementer_input_defaults_no_iteration() -> None:
+def test_implementer_input_defaults_no_revision() -> None:
     payload = base_input()
-    assert payload.iteration_count == 0
-    assert payload.iteration_feedback is None
+    assert payload.revision_number == 0
+    assert payload.revision_feedback is None
+    assert payload.mode == "implementation"
 
 
-def test_implementer_input_iteration_round_trip() -> None:
+def test_implementer_input_revision_round_trip() -> None:
     feedback: list[FeedbackItem] = [
         CiFailureFeedback(
             workflow_name="CI / test",
@@ -53,18 +51,23 @@ def test_implementer_input_iteration_round_trip() -> None:
             commenter="alice",
         ),
     ]
-    payload = base_input(iteration_count=1, iteration_feedback=feedback)
+    payload = base_input(
+        mode="revision",
+        revision_number=1,
+        revision_feedback=feedback,
+        pr_url="https://github.com/x/y/pull/1",
+    )
     parsed = ImplementerInput.model_validate_json(payload.model_dump_json())
-    assert parsed.iteration_count == 1
-    assert parsed.iteration_feedback is not None
-    assert len(parsed.iteration_feedback) == 2
-    assert parsed.iteration_feedback[0].kind == "ci_failure"
-    assert parsed.iteration_feedback[1].kind == "review_comment_mention"
+    assert parsed.revision_number == 1
+    assert parsed.revision_feedback is not None
+    assert len(parsed.revision_feedback) == 2
+    assert parsed.revision_feedback[0].kind == "ci_failure"
+    assert parsed.revision_feedback[1].kind == "review_comment_mention"
 
 
-def test_implementer_input_rejects_iteration_over_cap() -> None:
+def test_implementer_input_rejects_revision_over_cap() -> None:
     with pytest.raises(ValidationError):
-        base_input(iteration_count=17)
+        base_input(revision_number=17)
 
 
 def test_feedback_discriminator_picks_right_class() -> None:

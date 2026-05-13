@@ -159,17 +159,10 @@ module "state_router" {
         resources = [var.bus_arn]
       }
       invoke_repo_helper = {
-        # Open spec / task PRs, post comments.
+        # Open the impl PR, post comments, query check state.
         effect    = "Allow"
         actions   = ["lambda:InvokeFunction"]
         resources = [var.repo_helper_function_arn]
-      }
-      write_synthetic_spec = {
-        # 1-task synthetic specs for non-spec_driven workflows
-        # (bug_fix / upgrade / docs) — three .md files per spec.
-        effect    = "Allow"
-        actions   = ["s3:PutObject"]
-        resources = ["${var.artifacts_bucket_arn}/specs/*"]
       }
     },
     length(local.state_router_runtime_arns) > 0 ? {

@@ -1,9 +1,8 @@
 """Strands hooks for the Architect.
 
 Enforces a single rule: the agent must call ``read_memory_md`` before
-``write_spec_doc``. Without this, the agent could draft a spec without
-having seen the project's MEMORY.md conventions — exactly the failure
-mode that drove issue #18.
+``write_plan_doc``. Without this, the agent could draft a plan without
+having seen the project's MEMORY.md conventions.
 """
 
 from __future__ import annotations
@@ -22,5 +21,5 @@ def build_hooks() -> list[HookProvider | HookCallback[Any]]:
     its own instances rather than sharing one across runs.
     """
     return [
-        RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md"),
+        RequirePriorCall(target="write_plan_doc", prerequisite="read_memory_md"),
     ]

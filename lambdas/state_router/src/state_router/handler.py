@@ -3,10 +3,10 @@
 The beacon is an interrupt, not a heartbeat: a beacon means "the router
 has work to do right now". Each receive triggers this handler:
 
-1. Read the run's STATE row + every TASK row from DynamoDB.
+1. Read the run's STATE row from DynamoDB.
 2. Compute the next :data:`~.actions.Action` via :func:`.dispatch.decide`.
 3. Execute the action via :func:`.execute.execute` — invoke an agent,
-   emit an event, write a synthetic spec, etc.
+   emit an event, call repo_helper, etc.
 4. Delete the beacon (success ack to SQS). The next state-advancing
    event re-emits a fresh beacon from the projector.
 
@@ -96,7 +96,13 @@ def process_record(record: dict[str, Any]) -> None:
 
 @tracer.capture_method
 def read_run(run_id: str) -> Run | None:
-    """Fetch the run's STATE row + every TASK row in one Query."""
+    """Fetch the run's STATE row in one Query.
+
+    The Query also surfaces any lingering TASK rows for the same ``pk``
+    (left over from a pre-refactor run); we pass them through to
+    :func:`parse_run` which discards them — there is no Task model any
+    more.
+    """
     resp = ddb().query(
         TableName=runs_table(),
         KeyConditionExpression="pk = :pk",

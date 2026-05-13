@@ -1,10 +1,8 @@
 """Strands hooks for the Reviewer.
 
-Caps ``read_spec_doc`` at 3 calls per invocation. The Reviewer reads each
-of the three spec documents (``requirements``, ``design``, ``tasks``) at
-most once each; a 4th call indicates either a re-read on a cleared
-context (rare, allowable as a 4th if we ever raise the cap) or a stuck
-loop. Capping at 3 forces the agent to use what it already has.
+Caps ``read_plan_doc`` at 2 calls per invocation. The Reviewer reads
+the architect's plan at most once (twice if re-reading after a long
+agent loop is justified). A higher count indicates a stuck loop.
 """
 
 from __future__ import annotations
@@ -15,11 +13,11 @@ from strands.hooks import HookCallback, HookProvider
 
 from common.hooks import ToolCallCounter
 
-READ_SPEC_DOC_CAP = 3
+READ_PLAN_DOC_CAP = 2
 
 
 def build_hooks() -> list[HookProvider | HookCallback[Any]]:
     """Build a fresh list of hook providers for one agent invocation."""
     return [
-        ToolCallCounter({"read_spec_doc": READ_SPEC_DOC_CAP}),
+        ToolCallCounter({"read_plan_doc": READ_PLAN_DOC_CAP}),
     ]

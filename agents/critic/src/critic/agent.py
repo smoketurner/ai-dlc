@@ -1,7 +1,7 @@
 """Strands Agent factory for the Critic.
 
 The Critic uses Claude Opus 4.7 on Bedrock with a strict-JSON output
-contract: the agent loop runs with the gateway-routed spec-reading
+contract: the agent loop runs with the gateway-routed plan-reading
 tools plus :func:`browse_url` and finishes by emitting a
 :class:`Critique` via Strands' ``structured_output_model`` parameter
 — that constrains the Bedrock model to produce JSON matching the
@@ -64,34 +64,64 @@ def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
     )
 
 
-def critique_spec(
+def critique_plan(
     agent: Agent,
     *,
     project_slug: str,
-    spec_slug: str,
+    run_id: str,
+    plan_s3_key: str,
     intent: str,
+    source_issue_url: str | None = None,
+    source_issue_title: str | None = None,
+    source_issue_body: str | None = None,
 ) -> Critique:
     """Run the agent and return the validated Critique.
 
     Caller constructs the agent (via :func:`build_agent`) so the caller
     can read usage metrics off it after this returns.
     """
-    user_message = compose_message(project_slug=project_slug, spec_slug=spec_slug, intent=intent)
+    user_message = compose_message(
+        project_slug=project_slug,
+        run_id=run_id,
+        plan_s3_key=plan_s3_key,
+        intent=intent,
+        source_issue_url=source_issue_url,
+        source_issue_title=source_issue_title,
+        source_issue_body=source_issue_body,
+    )
     return run_for_structured_output(agent, output_model=Critique, prompt=user_message)
 
 
-def compose_message(*, project_slug: str, spec_slug: str, intent: str) -> str:
+def compose_message(
+    *,
+    project_slug: str,
+    run_id: str,
+    plan_s3_key: str,
+    intent: str,
+    source_issue_url: str | None,
+    source_issue_title: str | None,
+    source_issue_body: str | None,
+) -> str:
     """Compose the user-message prompt for the critic."""
     parts = [
         agent_memory_preamble(project_slug=project_slug, query=intent),
         f"Project: {project_slug}",
-        f"Spec slug: {spec_slug}",
+        f"Run id: {run_id}",
+        f"Plan S3 key: {plan_s3_key}",
+    ]
+    if source_issue_url:
+        parts.append(f"GitHub issue: {source_issue_url}")
+    if source_issue_title:
+        parts.append(f"Issue title: {source_issue_title}")
+    parts += ["", "Original intent:", intent.strip()]
+    if source_issue_body:
+        parts += ["", "Issue body:", source_issue_body.strip()]
+    parts += [
         "",
-        "Original intent:",
-        intent.strip(),
-        "",
-        "Read the three spec documents in order — requirements, design, tasks "
-        f"(spec_slug={spec_slug}) — and the project's MEMORY.md "
-        f"(project_slug={project_slug}). Then return a Critique JSON object.",
+        f"Read the architect's plan via ``get_artifact(key='{plan_s3_key}')`` and "
+        f"the project's MEMORY.md (project_slug={project_slug}). Then return "
+        "a Critique JSON object — adversarial review of the plan focused on "
+        "missing edge cases, weak assumptions, architectural risk, and gaps "
+        "in the plan's Verification section.",
     ]
     return "\n".join(parts)
