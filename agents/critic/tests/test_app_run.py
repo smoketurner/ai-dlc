@@ -21,8 +21,7 @@ from critic.tools import critique_s3_key
 def make_input() -> CriticInput:
     return CriticInput(
         project_slug="demo",
-        spec_slug="add-healthz",
-        spec_s3_prefix="specs/add-healthz/",
+        plan_s3_key="runs/r-1/plan.md",
         intent="Add /healthz",
         run_id="r-1",
         correlation_id="c-1",
@@ -31,12 +30,12 @@ def make_input() -> CriticInput:
 
 def make_critique() -> Critique:
     return Critique(
-        spec_slug="add-healthz",
+        run_id="r-1",
         summary="ok",
         issues=[
             Issue(
                 severity="low",
-                path="docs/specs/add-healthz/design.md",
+                path="runs/r-1/plan.md",
                 description="nit only.",
                 recommendation="ok as-is.",
             ),
@@ -89,7 +88,7 @@ def test_run_critic_uploads_via_mcp_and_publishes(
     fake_agent.event_loop_metrics = None
     build = MagicMock(return_value=fake_agent)
     monkeypatch.setattr(app, "build_agent", build)
-    monkeypatch.setattr(app, "critique_spec", MagicMock(return_value=make_critique()))
+    monkeypatch.setattr(app, "critique_plan", MagicMock(return_value=make_critique()))
     monkeypatch.setattr(
         app,
         "usage_from_strands",
@@ -136,7 +135,7 @@ def test_run_critic_publishes_run_failed_on_agent_exception(
     monkeypatch.setattr(app, "build_agent", MagicMock())
     monkeypatch.setattr(
         app,
-        "critique_spec",
+        "critique_plan",
         MagicMock(side_effect=ValueError("agent blew up")),
     )
 

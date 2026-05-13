@@ -32,7 +32,10 @@
         "failed_state": { "type": "string", "minLength": 1 },
         "error_class": { "type": "string", "minLength": 1 },
         "error_message": { "type": "string", "minLength": 1 },
-        "retryable": { "type": "boolean" }
+        "retryable": { "type": "boolean" },
+        "pr_url": { "type": "string", "maxLength": 512 },
+        "source_issue_url": { "type": "string", "maxLength": 512 },
+        "revision_count": { "type": "integer", "minimum": 0, "maximum": 16 }
       }
     }
   }

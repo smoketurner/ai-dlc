@@ -81,19 +81,6 @@ def seed_event(run_id: str, *, event_id: str, event_type: str, payload: dict) ->
     )
 
 
-def seed_task(run_id: str, task_id: str, *, status: str, pr_url: str, at: str) -> None:
-    ddb().put_item(
-        TableName=RUNS,
-        Item={
-            "pk": {"S": f"RUN#{run_id}"},
-            "sk": {"S": f"TASK#{task_id}"},
-            "status": {"S": status},
-            "pr_url": {"S": pr_url},
-            "last_event_at": {"S": at},
-        },
-    )
-
-
 def test_renders_issue_and_repo_links_in_header() -> None:
     seed_state(
         "r1",
@@ -116,39 +103,21 @@ def test_renders_issue_and_repo_links_in_header() -> None:
     assert "add login" in body
 
 
-def test_renders_pull_requests_section_with_spec_and_task_prs() -> None:
-    seed_state("r2", pr_url="https://github.com/o/r/pull/1", current_state="tasks_in_progress")
-    seed_event("r2", event_id="0001", event_type="SPEC.READY", payload={})
-    seed_task(
-        "r2",
-        "t1",
-        status="approved",
-        pr_url="https://github.com/o/r/pull/2",
-        at="2026-05-11T00:00:00Z",
-    )
-    seed_task(
-        "r2",
-        "t2",
-        status="rejected",
-        pr_url="https://github.com/o/r/pull/3",
-        at="2026-05-11T01:00:00Z",
-    )
+def test_renders_impl_pr_card_when_pr_url_present() -> None:
+    """The detail page surfaces the single impl PR + verdict / check-state pills."""
+    seed_state("r2", pr_url="https://github.com/o/r/pull/1", current_state="awaiting_human_merge")
+    seed_event("r2", event_id="0001", event_type="IMPL_PR.OPENED", payload={})
 
     with TestClient(app) as client:
         resp = client.get("/runs/r2")
 
     assert resp.status_code == 200
     body = resp.text
-    assert "Pull requests" in body
+    assert "Implementation PR" in body
     assert "https://github.com/o/r/pull/1" in body
-    assert "https://github.com/o/r/pull/2" in body
-    assert "https://github.com/o/r/pull/3" in body
-    # Status pills use literal classes — both terminal states are present.
-    assert "bg-emerald-100" in body
-    assert "bg-rose-100" in body
 
 
-def test_omits_pull_requests_section_when_no_prs() -> None:
+def test_omits_pull_request_card_when_no_pr() -> None:
     seed_state("r3")
     seed_event("r3", event_id="0001", event_type="ISSUE.TRIAGED", payload={"action": "decline"})
 
@@ -156,7 +125,7 @@ def test_omits_pull_requests_section_when_no_prs() -> None:
         resp = client.get("/runs/r3")
 
     assert resp.status_code == 200
-    assert "Pull requests" not in resp.text
+    assert "Implementation PR" not in resp.text
 
 
 def test_renders_link_pill_on_event_with_pr_url() -> None:
@@ -164,8 +133,8 @@ def test_renders_link_pill_on_event_with_pr_url() -> None:
     seed_event(
         "r4",
         event_id="0001",
-        event_type="TASK.READY",
-        payload={"task_id": "t1", "pr_url": "https://github.com/o/r/pull/9"},
+        event_type="IMPL_PR.OPENED",
+        payload={"pr_url": "https://github.com/o/r/pull/9"},
     )
 
     with TestClient(app) as client:
@@ -201,7 +170,7 @@ def test_dedupes_links_when_pr_url_equals_html_url() -> None:
     seed_event(
         "r6",
         event_id="0001",
-        event_type="TASK.READY",
+        event_type="IMPL_PR.OPENED",
         payload={"pr_url": url, "html_url": url},
     )
 

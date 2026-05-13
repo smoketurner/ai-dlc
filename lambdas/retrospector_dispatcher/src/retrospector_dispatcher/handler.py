@@ -1,18 +1,19 @@
 """Dispatcher Lambda — invokes the Retrospector for every terminal event.
 
-Subscribed to EventBridge for the five terminal event types:
+Subscribed to EventBridge for the three run-terminal event types in the
+single-PR-per-issue model:
 
-  * ``SPEC.APPROVED`` — spec PR merged.
-  * ``SPEC.REJECTED`` — spec PR closed without merge.
-  * ``TASK.APPROVED`` — task PR merged.
-  * ``TASK.REJECTED`` — task PR closed without merge.
-  * ``RUN.CANCEL_REQUESTED`` — issue closed or bot unassigned.
+  * ``RUN.COMPLETED`` — the impl PR merged and the run reached ``done``.
+  * ``RUN.FAILED``    — a terminal failure projected the run to ``failed``.
+  * ``RUN.CANCEL_REQUESTED`` — issue closed, bot unassigned, or the
+    impl PR closed without merge. Cancellation projects the run to
+    ``cancelled``.
 
-For each event we extract a normalised :class:`RetrospectorPayload`
-and asynchronously invoke the Retrospector AgentCore Runtime. The
-Lambda returns immediately; the agent runs as a daemon thread inside
-its container and emits no follow-up event (lessons land as PRs
-opened against ``MEMORY.md``, not as platform events).
+For each event we extract a normalised ``RetrospectorInput`` and
+asynchronously invoke the Retrospector AgentCore Runtime. The Lambda
+returns immediately; the agent runs as a daemon thread inside its
+container and emits no follow-up event (lessons land as PRs opened
+against ``MEMORY.md``, not as platform events).
 
 Events that don't carry the fields the agent needs (project_slug,
 target_repo, etc.) are logged and dropped — the dispatcher is
@@ -46,10 +47,8 @@ metrics = Metrics(namespace="ai-dlc", service="retrospector_dispatcher")
 
 TERMINAL_EVENT_TYPES = frozenset(
     {
-        "SPEC.APPROVED",
-        "SPEC.REJECTED",
-        "TASK.APPROVED",
-        "TASK.REJECTED",
+        "RUN.COMPLETED",
+        "RUN.FAILED",
         "RUN.CANCEL_REQUESTED",
     },
 )
@@ -112,6 +111,10 @@ def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None
 
     Returns ``None`` when the envelope is missing fields the agent
     needs (target_repo, project_slug, or both PR + issue identifiers).
+
+    On ``RUN.FAILED`` with ``revision_count > 0`` (cap-hit), enumerates
+    the validator artifact S3 keys across every revision round so the
+    retrospector can read each round's findings.
     """
     payload = envelope.payload or {}
     project_slug = payload.get("project_slug")
@@ -124,20 +127,36 @@ def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None
     target_repo = derive_target_repo(pr_url=pr_url, issue_url=issue_url)
     if not target_repo:
         return None
+    revision_count = int(payload.get("revision_count") or 0)
+    run_id = str(envelope.run_id)
     return {
         "event_type": envelope.type,
         "project_slug": project_slug,
         "target_repo": target_repo,
         "pr_url": pr_url,
         "issue_url": issue_url,
-        "spec_slug": payload.get("spec_slug") or "",
-        "task_id": payload.get("task_id") or "",
-        "reviewer": payload.get("reviewer") or payload.get("requestor") or "",
         "reason": payload.get("reason") or "",
-        "run_id": str(envelope.run_id),
+        "revision_count": revision_count,
+        "validation_artifact_keys": validation_artifact_keys(run_id, revision_count),
+        "run_id": run_id,
         "correlation_id": str(envelope.correlation_id),
         "actor_id": "retrospector_dispatcher",
     }
+
+
+VALIDATOR_KINDS = ("reviewer", "tester", "code_critic")
+
+
+def validation_artifact_keys(run_id: str, revision_count: int) -> list[str]:
+    """Enumerate S3 keys for every validator artifact across revisions.
+
+    The state-router runs the three validators ``revision_count + 1``
+    times (round 0 against the initial PR, then once after each
+    implementer revision). Each validator writes
+    ``runs/{run_id}/validation/{kind}-r{N}.md`` per round.
+    """
+    rounds = range(revision_count + 1)
+    return [f"runs/{run_id}/validation/{kind}-r{n}.md" for n in rounds for kind in VALIDATOR_KINDS]
 
 
 def derive_target_repo(*, pr_url: str, issue_url: str) -> str:

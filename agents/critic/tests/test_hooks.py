@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from critic.hooks import READ_SPEC_DOC_CAP, build_hooks
+from critic.hooks import GET_ARTIFACT_CAP, build_hooks
 
 
 @dataclass
@@ -20,27 +20,27 @@ def call(hook: Any, name: str) -> StubBeforeToolCall:
     return event
 
 
-def test_read_spec_doc_cap_is_three() -> None:
-    assert READ_SPEC_DOC_CAP == 3
+def test_get_artifact_cap_is_four() -> None:
+    assert GET_ARTIFACT_CAP == 4
 
 
-def test_third_read_spec_doc_is_allowed() -> None:
+def test_fourth_get_artifact_is_allowed() -> None:
     counter = build_hooks()[0]
-    for _ in range(3):
-        event = call(counter, "read_spec_doc")
+    for _ in range(4):
+        event = call(counter, "get_artifact")
         assert event.cancel_tool is None
 
 
-def test_fourth_read_spec_doc_is_denied() -> None:
+def test_fifth_get_artifact_is_denied() -> None:
     counter = build_hooks()[0]
-    for _ in range(3):
-        call(counter, "read_spec_doc")
-    fourth = call(counter, "read_spec_doc")
-    assert fourth.cancel_tool is not None
+    for _ in range(4):
+        call(counter, "get_artifact")
+    fifth = call(counter, "get_artifact")
+    assert fifth.cancel_tool is not None
 
 
-def test_read_memory_md_is_unbounded() -> None:
+def test_other_tools_are_unbounded() -> None:
     counter = build_hooks()[0]
     for _ in range(10):
-        event = call(counter, "read_memory_md")
+        event = call(counter, "browse_url")
         assert event.cancel_tool is None

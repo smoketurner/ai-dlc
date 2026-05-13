@@ -1,42 +1,45 @@
-"""Parsed view of one run + its task rows from DynamoDB.
+"""Parsed view of one run from DynamoDB.
 
-The router's dispatch handlers operate on these dataclasses rather than
+The router's dispatch handlers operate on this dataclass rather than
 raw DDB items so they stay pure functions: ``Run -> Action``. Parsing
 DDB items into typed objects also gives us a single place to handle
 attribute-name drift (the raw DDB items are just dicts).
+
+The platform consolidated to one issue → one impl PR: there are no
+TASK rows any more. All run-level state lives on the ``sk=STATE`` row.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any
 
 from boto3.dynamodb.types import TypeDeserializer
 
-from common.state import RunState, TaskState
+from common.state import RunState
 
 DESERIALIZER = TypeDeserializer()
 
 
 @dataclass(frozen=True, slots=True)
-class Task:
-    """One task on a run, parsed from ``pk=RUN#{id}, sk=TASK#{task_id}``."""
-
-    task_id: str
-    state: TaskState
-    pr_url: str | None = None
-    pr_number: int | None = None
-    iteration_count: int = 0
-    delivery_ids: frozenset[str] = field(default_factory=frozenset)
-    pending_feedback: tuple[dict[str, Any], ...] = ()
-    dispatch_failure_count: int = 0
-    depends_on: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class Run:
-    """Parsed run state, used as the input to every dispatch handler."""
+    """Parsed run state, used as the input to every dispatch handler.
+
+    The fields fall into a few groups:
+
+    * **identity / provenance** — ``run_id``, ``correlation_id``,
+      ``project_slug``, ``target_repo``, ``source_issue_*``.
+    * **artifact pointers** — ``plan_s3_key`` (set on DESIGN.READY),
+      ``critique_s3_key`` (set on CRITIQUE.READY), ``pr_url``
+      (set on IMPL_PR.OPENED).
+    * **validation outputs** — ``reviewer_verdict`` (REVIEW.READY),
+      ``check_state`` (CHECKS.PASSED / CHECKS.FAILED).
+    * **revision bookkeeping** — ``pending_revision_feedback`` (consumed
+      and cleared each time the implementer is dispatched in
+      ``mode=revision``), ``revision_count`` (incremented per automated
+      revision dispatch; not incremented for human-mention revisions).
+    """
 
     run_id: str
     correlation_id: str
@@ -45,30 +48,26 @@ class Run:
     requestor: str
     actor_id: str
     current_state: RunState | None
-    workflow_kind: str | None = None
     triage_action: str | None = None
     target_repo: str | None = None
     requestor_sub: str | None = None
     source_issue_url: str | None = None
+    source_issue_title: str | None = None
+    source_issue_body: str | None = None
     issue_number: int | None = None
     issue_title: str | None = None
     issue_body: str | None = None
     issue_labels: tuple[str, ...] = ()
     triggering_comment_body: str | None = None
     triggering_commenter: str | None = None
-    spec_slug: str | None = None
-    spec_s3_prefix: str | None = None
-    spec_pr_url: str | None = None
+    plan_s3_key: str | None = None
+    critique_s3_key: str | None = None
     pr_url: str | None = None
-    synthetic_spec_slug: str | None = None
-    task_ids: tuple[str, ...] = ()
-    tasks: tuple[Task, ...] = ()
-    pending_spec_feedback: tuple[str, ...] = ()
-    dispatch_failure_count: int = 0
-    task_depends_on: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    last_advisor_sha: str = ""
     reviewer_verdict: str = ""
+    check_state: str = ""
+    pending_revision_feedback: tuple[dict[str, Any], ...] = ()
     revision_count: int = 0
+    dispatch_failure_count: int = 0
 
 
 def deserialize_item(item: dict[str, Any]) -> dict[str, Any]:
@@ -86,17 +85,13 @@ def as_str_tuple(value: Any) -> tuple[str, ...]:
     return tuple(sorted(value)) if isinstance(value, set) else ()
 
 
-def as_str_frozenset(value: Any) -> frozenset[str]:
-    """Wrap a deserialized DDB ``SS`` value as a ``frozenset[str]``."""
-    return cast("frozenset[str]", frozenset(value)) if isinstance(value, set) else frozenset()
-
-
 def normalize_feedback(items: Any) -> tuple[dict[str, Any], ...]:
     """Convert nested ``Decimal`` values to ``int`` inside feedback rows.
 
-    ``pending_feedback`` is shipped to the Implementer as JSON; downstream
-    JSON encoders don't accept ``Decimal``, and the surrounding code has
-    always seen plain ``int`` for numeric fields.
+    ``pending_revision_feedback`` is shipped to the Implementer as JSON;
+    downstream JSON encoders don't accept ``Decimal``, and the implementer
+    expects plain ``int`` for numeric fields (``comment_id``, ``review_id``,
+    line numbers).
     """
     if not isinstance(items, list):
         return ()
@@ -105,18 +100,22 @@ def normalize_feedback(items: Any) -> tuple[dict[str, Any], ...]:
     )
 
 
-def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | None:
-    """Build a :class:`Run` from the run's STATE row and its task rows.
+def parse_run(item: dict[str, Any], _task_items: list[dict[str, Any]] | None = None) -> Run | None:
+    """Build a :class:`Run` from the run's STATE row.
 
     Returns ``None`` if the STATE row is missing — the caller (router)
     treats that as an orphan beacon and deletes it.
+
+    The second parameter is kept for handler-compatibility (the SQS
+    record reader still does a single Query that returns whatever rows
+    exist for the ``pk``); task rows no longer exist in the new world,
+    so we simply ignore them.
     """
     if not item:
         return None
     data = deserialize_item(item)
     state = data.get("current_state")
     pk = data.get("pk") or ""
-    task_depends_on = parse_task_depends_on(data.get("task_depends_on"))
     return Run(
         run_id=data.get("run_id") or pk.removeprefix("RUN#"),
         correlation_id=data.get("correlation_id") or "",
@@ -125,84 +124,24 @@ def parse_run(item: dict[str, Any], task_items: list[dict[str, Any]]) -> Run | N
         requestor=data.get("requestor") or "",
         actor_id=data.get("actor_id") or "system",
         current_state=RunState(state) if state else None,
-        workflow_kind=data.get("workflow_kind"),
         triage_action=data.get("triage_action"),
         target_repo=data.get("target_repo"),
         requestor_sub=data.get("requestor_sub"),
         source_issue_url=data.get("source_issue_url"),
+        source_issue_title=data.get("source_issue_title"),
+        source_issue_body=data.get("source_issue_body"),
         issue_number=as_int(data.get("issue_number")),
         issue_title=data.get("issue_title"),
         issue_body=data.get("issue_body"),
         issue_labels=as_str_tuple(data.get("issue_labels")),
         triggering_comment_body=data.get("triggering_comment_body"),
         triggering_commenter=data.get("triggering_commenter"),
-        spec_slug=data.get("spec_slug"),
-        spec_s3_prefix=data.get("spec_s3_prefix"),
-        spec_pr_url=data.get("spec_pr_url"),
+        plan_s3_key=data.get("plan_s3_key"),
+        critique_s3_key=data.get("critique_s3_key"),
         pr_url=data.get("pr_url"),
-        synthetic_spec_slug=data.get("synthetic_spec_slug"),
-        task_ids=as_str_tuple(data.get("task_ids")),
-        tasks=tuple(
-            parse_task(t, depends_on=task_depends_on.get(raw_task_id(t), ())) for t in task_items
-        ),
-        pending_spec_feedback=as_str_list_tuple(data.get("pending_spec_feedback")),
-        dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
-        task_depends_on=task_depends_on,
-        last_advisor_sha=str(data.get("last_advisor_sha") or ""),
         reviewer_verdict=str(data.get("reviewer_verdict") or ""),
+        check_state=str(data.get("check_state") or ""),
+        pending_revision_feedback=normalize_feedback(data.get("pending_revision_feedback")),
         revision_count=as_int(data.get("revision_count")) or 0,
-    )
-
-
-def raw_task_id(item: dict[str, Any]) -> str:
-    """Extract a TASK row's id from its raw (un-deserialised) DDB item."""
-    sk = item.get("sk", {})
-    if isinstance(sk, dict):
-        return sk.get("S", "").removeprefix("TASK#")
-    return ""
-
-
-def parse_task_depends_on(value: Any) -> dict[str, tuple[str, ...]]:
-    """Decode the ``task_depends_on`` DDB Map into a typed dict."""
-    if not isinstance(value, dict):
-        return {}
-    parsed: dict[str, tuple[str, ...]] = {}
-    for key, deps in value.items():
-        if not isinstance(key, str):
-            continue
-        if isinstance(deps, list):
-            parsed[key] = tuple(str(d) for d in deps if isinstance(d, str))
-    return parsed
-
-
-def as_str_list_tuple(value: Any) -> tuple[str, ...]:
-    """Coerce a deserialized DDB ``L`` of strings into an ordered tuple.
-
-    Used for ``pending_spec_feedback``: the projector appends each
-    ``SPEC.ITERATION_REQUESTED`` body in arrival order, so we preserve
-    that order rather than sorting (cf. ``as_str_tuple`` for set-typed
-    fields).
-    """
-    return tuple(str(v) for v in value) if isinstance(value, list) else ()
-
-
-def parse_task(item: dict[str, Any], *, depends_on: tuple[str, ...] = ()) -> Task:
-    """Build a :class:`Task` from one ``sk=TASK#{task_id}`` row.
-
-    ``depends_on`` is sourced from the run's STATE row (set on
-    SPEC.READY); the caller looks it up and threads it in so each
-    Task carries the predecessor list the dispatch handler needs.
-    """
-    data = deserialize_item(item)
-    sk = data.get("sk") or ""
-    return Task(
-        task_id=sk.removeprefix("TASK#"),
-        state=TaskState(data.get("status") or "pending"),
-        pr_url=data.get("pr_url"),
-        pr_number=as_int(data.get("pr_number")),
-        iteration_count=as_int(data.get("iteration_count")) or 0,
-        delivery_ids=as_str_frozenset(data.get("delivery_ids")),
-        pending_feedback=normalize_feedback(data.get("pending_feedback")),
         dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
-        depends_on=depends_on,
     )

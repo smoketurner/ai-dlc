@@ -58,7 +58,7 @@ def test_active_beacon_acked_after_dispatch() -> None:
     """Active runs dispatch and ack — no batch-item failure, beacon deleted."""
     event = {"Records": [beacon("r-1", message_id="msg-active")]}
     with (
-        patch("state_router.handler.read_run", return_value=make_run(RunState.tasks_in_progress)),
+        patch("state_router.handler.read_run", return_value=make_run(RunState.impl_pr_open)),
         patch("state_router.handler.execute") as mock_execute,
     ):
         out = handler(event, ctx())
@@ -110,7 +110,7 @@ def test_mixed_batch_all_acked() -> None:
 
     def read(run_id: str) -> Run | None:
         if run_id == "r-active":
-            return make_run(RunState.tasks_in_progress)
+            return make_run(RunState.impl_pr_open)
         if run_id == "r-done":
             return make_run(RunState.done)
         return None

@@ -1,15 +1,16 @@
 """AgentCore Runtime entrypoint for the Code-Critic.
 
 The state-router invokes this runtime when a run reaches
-``tasks_complete`` (in parallel with reviewer + tester) for a
-validation pass against the integrated impl PR.
+``impl_pr_open`` (in parallel with reviewer + tester) for a validation
+pass against the integrated impl PR.
 
   1. Validates the input as :class:`CodeCriticInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
      reports ``HealthyBusy`` while the work runs.
-  3. Spawns a daemon thread that critiques the diff, uploads the
-     critique to S3, posts a comment on the impl PR, emits
-     ``CODE_CRITIQUE.READY``, and acknowledges the async task.
+  3. Spawns a daemon thread that critiques the diff against the
+     **original GitHub issue**, uploads the critique to S3, posts a
+     comment on the impl PR, emits ``CODE_CRITIQUE.READY``, and
+     acknowledges the async task.
   4. Returns ``{"status": "dispatched", ...}`` to the caller in ~100ms.
 """
 
@@ -52,6 +53,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         run_id=payload.run_id,
         pr_url=payload.pr_url,
         revision_number=payload.revision_number,
+        source_issue_url=payload.source_issue_url,
     )
     async_task_id = app.add_async_task("code_critic_run", {"run_id": payload.run_id})
     threading.Thread(
@@ -69,10 +71,13 @@ def run_code_critic(payload: CodeCriticInput, async_task_id: int) -> None:
         critique = critique_pr(
             agent,
             project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
+            plan_s3_key=payload.plan_s3_key,
             run_id=payload.run_id,
             pr_url=payload.pr_url,
             revision_number=payload.revision_number,
+            source_issue_url=payload.source_issue_url,
+            source_issue_title=payload.source_issue_title,
+            source_issue_body=payload.source_issue_body,
         )
         upload_critique(critique, run_id=payload.run_id, revision_number=payload.revision_number)
         post_pr_comment(payload=payload, critique=critique)
@@ -119,7 +124,6 @@ def publish_code_critique_ready(
         actor_id="code_critic",
         payload=CodeCritiqueReady(
             project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
             pr_url=result.pr_url,
             critique_s3_key=result.critique_s3_key,
             issue_count=result.issue_count,

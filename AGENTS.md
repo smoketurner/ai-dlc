@@ -5,9 +5,9 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 ## Tech stack
 
 - **Python 3.14** with the Astral toolchain (`uv` workspace, `ruff`, `ty`).
-- **Agents**: Strands Agents (Architect, Critic, Code-Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime.
+- **Agents**: Strands Agents (Architect, Critic, Code-Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime. One issue → one impl PR. Architect's `plan.md` + Critic's `critique.md` are internal S3 artifacts (no spec PR).
 - **Models**: Architect / Critic / Code-Critic / Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
-- **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run/task state.
+- **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run state.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
 - **Dashboard**: FastAPI + Jinja2 + Alpine.js (CDN, no JS build) on API Gateway + Lambda with Cognito OIDC auth.
@@ -20,21 +20,20 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 | Path | Role |
 |------|------|
 | `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), boto3 helpers (`ddb.py`, `s3.py`, `runs.py`), `MEMORY.md` utility (`memory_md.py`), settings (`settings.py`). |
-| `agents/architect/` | Strands agent — writes the three-doc spec bundle (requirements + design + tasks). |
-| `agents/critic/` | Strands agent — adversarially reviews the spec (advisory). |
-| `agents/code_critic/` | Strands agent — adversarially reviews the integrated impl PR (advisory; runs in parallel with reviewer + tester). |
-| `agents/implementer/` | Claude Agent SDK agent — opens code PRs; also runs `mode=revision` to apply validator feedback directly onto the impl branch. |
-| `agents/reviewer/` | Strands agent — code-reviews the unified impl PR once tasks are complete. Its verdict gates the run. |
-| `agents/tester/` | Strands agent — flags test gaps in the unified impl PR (advisory). |
-| `agents/triage/` | Strands agent — classifies issue-driven runs (`proceed` / `ask` / `defer` / `decline`). |
+| `agents/architect/` | Strands agent — writes a single structured `plan.md` to S3 (Context → Assumptions → Approach → Files → Reuse → Implementation steps → Verification → Out of scope). No PR. |
+| `agents/critic/` | Strands agent — adversarially reviews the plan (advisory; reads `plan.md` from S3, writes `critique.md` to S3). |
+| `agents/code_critic/` | Strands agent — adversarially reviews the impl PR against the **original GitHub issue** (advisory; runs in parallel with reviewer + tester). |
+| `agents/implementer/` | Claude Agent SDK agent — opens the single impl PR for the run (`mode=implementation`); also runs `mode=revision` to apply validator feedback, human `@aidlc-bot` mentions, and failing CI feedback directly onto the impl branch. |
+| `agents/reviewer/` | Strands agent — code-reviews the impl PR. Its verdict gates the run (`approve`/`comment` → wait for green Checks; `request_changes` → revising). |
+| `agents/tester/` | Strands agent — flags test gaps in the impl PR (advisory). |
+| `agents/triage/` | Strands agent — classifies issue-driven runs (`proceed` / `ask` / `defer` / `decline` / `research`). |
 | `agents/proposer/` | Strands agent — research-driven (issue → triage classifies as `research`); opens PRs proposing prompt or MEMORY.md edits. |
 | `agents/retrospector/` | Strands agent — fires on every terminal event (PR merge, PR close, issue close); appends lessons to `MEMORY.md` via PR. |
 | `lambdas/entry_adapter/` | API Gateway → DDB run row + EventBridge `REQUEST.RECEIVED` + SQS beacon. |
 | `lambdas/state_router/` | SQS beacon consumer; reads DDB state and dispatches the next side-effect (agent invoke, repo op, event emit). Never writes state. |
 | `lambdas/event_projector/` | EventBridge events → DDB state advance (sole writer of `current_state`) + AgentCore Memory `CreateEvent`. |
 | `lambdas/artifact_tool/` | AgentCore Gateway target — S3 + `MEMORY.md` ops. |
-| `lambdas/repo_helper/` | AgentCore Gateway target — git/GitHub ops. |
-| `lambdas/telemetry/` | Categorises `SPEC.REJECTED` / `TASK.REJECTED` events for downstream learning. |
+| `lambdas/repo_helper/` | AgentCore Gateway target — git/GitHub ops, including the `get_check_state(pr_url)` aggregator that drives `CHECKS.PASSED` / `CHECKS.FAILED` events. |
 | `lambdas/retrospector_dispatcher/` | EventBridge → AgentCore Runtime invocation for the Retrospector on every terminal event. |
 | `services/dashboard/` | FastAPI submission/tracking UI. |
 | `terraform/modules/` | Reusable Terraform modules (one per concern). |
@@ -49,14 +48,14 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 ## Request lifecycle
 
-One request → many state transitions, all coordinated through DynamoDB + SQS + EventBridge. The two-Lambda split is load-bearing: `state_router` only reads DDB and triggers side-effects; `event_projector` is the sole writer of `current_state`. This keeps state machine logic in one place and makes every transition observable as an EventBridge event.
+One request → one impl PR. All coordinated through DynamoDB + SQS + EventBridge. The two-Lambda split is load-bearing: `state_router` only reads DDB and triggers side-effects; `event_projector` is the sole writer of `current_state`. This keeps state machine logic in one place and makes every transition observable as an EventBridge event.
 
-1. **Entry**: API Gateway or GitHub webhook → `entry_adapter` writes the run row to DDB, emits `REQUEST.RECEIVED` on EventBridge, sends an SQS beacon.
-2. **Dispatch**: `state_router` consumes the beacon, reads `current_state` from DDB, looks up the handler in `dispatch.py` / `dispatch_run.py` / `dispatch_task.py`, and executes the side-effect (invoke AgentCore Runtime, call a repo op, emit an event). Never writes state.
-3. **Agent work**: the invoked agent emits one or more domain events (e.g. `SPEC.PROPOSED`, `TASK.IMPLEMENTED`) back to EventBridge.
+1. **Entry**: GitHub issue webhook (or dashboard form) → `entry_adapter` writes the run row to DDB (with `source_issue_url` / `_title` / `_body` if issue-driven), emits `REQUEST.RECEIVED` on EventBridge, sends an SQS beacon.
+2. **Dispatch**: `state_router` consumes the beacon, reads `current_state` from DDB, looks up the handler in `dispatch.py` / `dispatch_run.py`, executes the side-effect (invoke AgentCore Runtime, call a repo op, emit an event). Never writes state.
+3. **Agent work**: the invoked agent emits a domain event (e.g. `DESIGN.READY`, `IMPL_PR.OPENED`, `REVIEW.READY`) back to EventBridge.
 4. **Projection**: `event_projector` consumes the event, advances `current_state` per `state_transitions.py`, calls AgentCore Memory `CreateEvent`, and enqueues the next SQS beacon if the new state needs dispatch.
-5. **HITL**: GitHub PR review/comment → webhook → EventBridge event → same `event_projector` path. Humans gate state advance the same way agents do.
-6. **Terminal events** (PR merged/closed, issue closed) fan out via `retrospector_dispatcher` to the Retrospector agent for the lesson-extraction pass.
+5. **HITL**: GitHub PR review/comment with `@aidlc-bot` mention → webhook → `IMPL.ITERATION_REQUESTED` → projector advances to `revising` → state-router invokes implementer in `mode=revision`. CI workflow runs → webhook aggregates check state → `CHECKS.PASSED` / `CHECKS.FAILED` → projector advances. Humans gate the run by merging the impl PR (`pull_request.closed merged=true` → `RUN.COMPLETED`).
+6. **Terminal events** (`RUN.COMPLETED` / `RUN.FAILED` / `RUN.CANCEL_REQUESTED`) fan out via `retrospector_dispatcher` to the Retrospector agent for the lesson-extraction pass.
 
 The run-level state cursor (`RunState` in `packages/common/src/common/state.py`) walks one path of this diagram. Exact event→state transitions are encoded in `RUN_TRANSITIONS` (`state_transitions.py`):
 
@@ -66,50 +65,53 @@ stateDiagram-v2
     received --> triaging
     triaging --> triage_decided: ISSUE.TRIAGED
 
-    triage_decided --> spec_pending: action=proceed
+    triage_decided --> architect_running: action=proceed
     triage_decided --> proposer_running: action=research
-    triage_decided --> done: action=defer / decline
+    triage_decided --> cancelled: action=ask / defer / decline
 
-    spec_pending --> architect_running
-    architect_running --> spec_drafted: SPEC.READY
-    spec_drafted --> critic_running
-    critic_running --> spec_critiqued: CRITIQUE.READY
-    spec_critiqued --> spec_pr_open
-    spec_pr_open --> spec_approved: SPEC.APPROVED
-    spec_pr_open --> spec_pending: SPEC.ITERATION_REQUESTED
-    spec_pr_open --> failed: SPEC.REJECTED
-
-    spec_approved --> tasks_in_progress
-    tasks_in_progress --> tasks_complete
-    tasks_complete --> validation_running: dispatch reviewer + tester + code-critic
+    architect_running --> designed: DESIGN.READY
+    designed --> critic_running
+    critic_running --> critiqued: CRITIQUE.READY
+    critiqued --> implementer_running
+    implementer_running --> impl_pr_open: IMPL_PR.OPENED
+    impl_pr_open --> validation_running: dispatch reviewer + tester + code-critic
     validation_running --> validation_complete: REVIEW.READY
-    validation_complete --> awaiting_human_merge: verdict=approve / comment
-    validation_complete --> revising: verdict=request_changes (under cap)
+    validation_complete --> awaiting_checks: verdict=approve / comment, checks=pending
+    validation_complete --> awaiting_human_merge: verdict=approve / comment, checks=passed
+    validation_complete --> revising: verdict=request_changes (under cap) or checks=failed
     validation_complete --> failed: verdict=request_changes (cap hit)
-    revising --> validation_running: REVISION.READY
+    awaiting_checks --> awaiting_human_merge: CHECKS.PASSED
+    awaiting_checks --> revising: CHECKS.FAILED
+    awaiting_human_merge --> revising: CHECKS.FAILED or @aidlc-bot mention
     awaiting_human_merge --> done: RUN.COMPLETED (impl PR merged)
+    revising --> validation_running: REVISION.READY
 
     proposer_running --> done: RUN.COMPLETED
 ```
 
-`RUN.FAILED` and `RUN.CANCEL_REQUESTED` are wildcard transitions: they advance any non-terminal state to `failed` or `cancelled` respectively. `TaskState` is the per-task cursor (`pending → implementer_running → pr_open → iterating → merged / closed / failed / blocked`) that the run-level `tasks_in_progress` state iterates over. Per-task advisors are gone — reviewer/tester/code-critic now run **once per validation pass** against the integrated impl PR.
+`RUN.FAILED` and `RUN.CANCEL_REQUESTED` are wildcard transitions: they advance any non-terminal state to `failed` or `cancelled` respectively. No more per-task cursor — the implementer handles the issue end-to-end on a single branch (`aidlc/impl/{run_id}`) and opens one PR.
 
 ### Validation lifecycle
 
-Once every task has reached `pr_open` (its commit is on the impl branch), the run advances to `tasks_complete` and the state-router dispatches three validators in parallel against the unified impl PR:
+Once the implementer opens the impl PR (`IMPL_PR.OPENED`), the state-router dispatches three validators **in parallel** against the PR:
 
-- **Reviewer** (Sonnet 4.6) — code review with a binary verdict. Drives the next state transition.
+- **Reviewer** (Sonnet 4.6) — code review with a verdict (`approve` / `comment` / `request_changes`). Drives the next state transition.
 - **Tester** (Haiku 4.5) — test-gap analysis. Advisory; informs the reviewer + implementer.
-- **Code-Critic** (Opus 4.6) — adversarial review for integration-level gaps, drift from spec intent. Advisory.
+- **Code-Critic** (Opus 4.6) — adversarial review of how well the PR addresses the **original GitHub issue** (its input includes the issue title + body). Advisory.
 
 All three write Markdown artifacts to `s3://{artifacts_bucket}/runs/{run_id}/validation/{kind}-r{N}.md` where `N` is the revision number (0 for the first pass, 1+ after each implementer revision).
 
 Reviewer's `REVIEW.READY` carries a `verdict`:
 
-- `approve` / `comment` → `awaiting_human_merge`. The human merges PR → `RUN.COMPLETED` → `done`.
-- `request_changes` → `revising`. The state-router invokes the implementer in `mode=revision`: clone the repo, check out the impl branch directly (no task branch), read all three validator artifacts from S3, commit fixes onto the impl branch, push. Emits `REVISION.READY` → back to `validation_running`.
+- `approve` / `comment` → state-router checks the PR's aggregate GitHub Check state via `repo_helper.get_check_state(pr_url)`. If passed → `awaiting_human_merge`; if pending → `awaiting_checks`; if failed → `revising` (CI-driven revision, counts toward cap).
+- `request_changes` → `revising`. The state-router invokes the implementer in `mode=revision`: clone the repo, check out the impl branch, read the three validator artifacts from S3, apply fixes, push. Emits `REVISION.READY` → back to `validation_running`.
 
-The revision loop is capped at `MAX_REVISIONS = 3` (in `dispatch_run.py`); exceeding the cap emits `RUN.FAILED` rather than spending tokens indefinitely. Human intervention (mention `@aidlc-bot` or merge anyway) takes over from there.
+While in `awaiting_checks` or `awaiting_human_merge`, two additional signals trigger revisions:
+
+- `CHECKS.FAILED` (a required check went red) → `revising` (counts toward cap).
+- `IMPL.ITERATION_REQUESTED` (human `@aidlc-bot` mention on the PR) → `revising` (**uncapped** — the human is actively steering).
+
+The automated revision loop (validator-driven + CI-driven) is capped at `MAX_REVISIONS = 3` (in `dispatch_run.py`); exceeding the cap emits `RUN.FAILED`. Human-mention revisions are uncapped. The human merges the PR via the normal GitHub UI when it's ready.
 
 ## Adding a new agent
 
@@ -119,30 +121,14 @@ The revision loop is capped at `MAX_REVISIONS = 3` (in `dispatch_run.py`); excee
 4. Register the agent in `terraform/modules/agents/variables.tf` (`var.agents`); apply (creates IAM, gateway, workload identity — no ECR repo, no runtime yet).
 5. Push the image via the `images-build` workflow. The ECR repo `${project}/<name>` is auto-created on first push by `aws_ecr_repository_creation_template.agents` with the standard config (immutable except `latest`, lifecycle policy, AgentCore-pull policy).
 6. Add `<name> = "latest"` to `agent_image_tags` in `terraform/envs/<env>/main.tf` and apply again to create the AgentCore Runtime.
-7. Add the corresponding state(s) to `packages/common/src/common/state.py`, transitions to `packages/common/src/common/state_transitions.py`, and a dispatch handler in `lambdas/state_router/src/state_router/dispatch.py` — only if the agent participates in the run state machine (out-of-band agents like the retrospector skip this step).
+7. Add the corresponding state(s) to `packages/common/src/common/state.py`, transitions to `packages/common/src/common/state_transitions.py`, and a dispatch handler in `lambdas/state_router/src/state_router/dispatch_run.py` — only if the agent participates in the run state machine (out-of-band agents like the retrospector skip this step).
 
 ## Target-repo prerequisites
 
-The platform writes branches under `aidlc/spec/*`, `aidlc/impl/*`, and
-`aidlc/task/*` and opens PRs from them. Every target repo must be
-configured as follows:
+The platform writes one branch per run under `aidlc/impl/{run_id}` and opens one PR from it. Every target repo must be configured as follows:
 
-- **Settings → General → "Automatically delete head branches"**: enable.
-  Spec branches (`aidlc/spec/{slug}`) and impl branches
-  (`aidlc/impl/{slug}/{short_run_id}`) are removed on PR merge so old
-  runs don't accumulate.
-- **Branch protection on `aidlc/*`**: do not configure. The state
-  router uses GitHub's server-side merge API (`POST /merges`) to push
-  task commits into the run's impl branch; branch protection would
-  block it.
-
-Task branches live under `aidlc/task/...` rather than nested inside
-`aidlc/impl/...` because git can't have one ref name be a path prefix
-of another ref name. Task branches are deleted inline by
-`repo_helper.merge_branch` (which passes `delete_head_on_merge=True`)
-the moment their merge into the impl branch succeeds. Blocked tasks
-keep their branch so reviewers can read `BLOCKED.md`; cancelled-run
-branches are rare and operator-cleaned.
+- **Settings → General → "Automatically delete head branches"**: enable. Impl branches (`aidlc/impl/{run_id}`) are removed on PR merge so old runs don't accumulate.
+- **Branch protection on `aidlc/impl/*`**: optional. The platform does not server-side-merge into impl branches anymore (no task branches to merge); a human merges the impl PR via the GitHub UI when validators + Checks are green. Branch protection requiring CI to pass before merge is compatible with the platform and recommended.
 
 ## Running tests
 

@@ -1,9 +1,4 @@
-"""The Architect emits SPEC.READY before returning its result.
-
-The full ``handler()`` is integration-shaped — it clones a repo and
-runs an LLM. This test isolates :func:`architect.app.publish_spec_ready`
-since it's pure data shaping with one observable side effect.
-"""
+"""The Architect emits DESIGN.READY before returning its result."""
 
 from __future__ import annotations
 
@@ -12,7 +7,7 @@ from typing import Any
 import pytest
 
 from architect import app
-from common.events import EventEnvelope, SpecReady
+from common.events import DesignReady, EventEnvelope
 from common.runtime import ArchitectInput, ArchitectResult
 
 
@@ -24,7 +19,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]:
     return out
 
 
-def test_publish_spec_ready_builds_envelope(captured: list[EventEnvelope[Any]]) -> None:
+def test_publish_design_ready_builds_envelope(captured: list[EventEnvelope[Any]]) -> None:
     payload = ArchitectInput(
         project_slug="demo",
         intent="Add /healthz",
@@ -32,13 +27,9 @@ def test_publish_spec_ready_builds_envelope(captured: list[EventEnvelope[Any]]) 
         correlation_id="c-1",
     )
     result = ArchitectResult(
-        spec_slug="add-healthz",
-        spec_s3_prefix="specs/add-healthz/",
-        requirements_summary="r",
-        design_summary="d",
-        task_count=2,
-        task_ids=["T-001", "T-002"],
-        proposed_adrs=["ADR-001"],
+        plan_s3_key="runs/r-1/plan.md",
+        summary="Add a /healthz endpoint to the dashboard service.",
+        proposed_adrs=["docs/ADRs/0007-healthz.md"],
         session_id="r-1",
         token_in=10,
         token_out=20,
@@ -46,14 +37,13 @@ def test_publish_spec_ready_builds_envelope(captured: list[EventEnvelope[Any]]) 
         duration_ms=500,
     )
 
-    app.publish_spec_ready(payload, result)
+    app.publish_design_ready(payload, result)
 
     assert len(captured) == 1
     env = captured[0]
-    assert env.type == "SPEC.READY"
+    assert env.type == "DESIGN.READY"
     assert env.actor_id == "architect"
-    assert isinstance(env.payload, SpecReady)
-    assert env.payload.task_ids == ["T-001", "T-002"]
-    assert env.payload.task_count == 2
-    assert env.payload.spec_slug == "add-healthz"
+    assert isinstance(env.payload, DesignReady)
+    assert env.payload.plan_s3_key == "runs/r-1/plan.md"
+    assert env.payload.summary.startswith("Add a /healthz endpoint")
     assert env.payload.token_in == 10

@@ -315,7 +315,7 @@ def test_commit_succeeds_on_clean_transaction(ddb: DynamoDBClient) -> None:
     """Update + Put on an unconditionally-empty table commits and persists."""
     put = PutBuilder(
         table=TABLE,
-        item={"pk": "RUN#1", "sk": "EVENT#a", "type": "SPEC.READY"},
+        item={"pk": "RUN#1", "sk": "EVENT#a", "type": "DESIGN.READY"},
     ).condition_not_exists("sk")
     update = UpdateBuilder(
         table=TABLE,
@@ -359,7 +359,7 @@ def test_commit_persists_serialised_types(ddb: DynamoDBClient) -> None:
     """End-to-end: Python types round-trip through commit + get_item."""
     update = (
         UpdateBuilder(table=TABLE, key={"pk": "RUN#1", "sk": "STATE"})
-        .set("status", "SPEC.READY")
+        .set("status", "DESIGN.READY")
         .set("cost", 0.25)
         .set("flag", True)
         .add("count", 5)
@@ -370,7 +370,7 @@ def test_commit_persists_serialised_types(ddb: DynamoDBClient) -> None:
         Key={"pk": {"S": "RUN#1"}, "sk": {"S": "STATE"}},
     )["Item"]
     decoded = deserialize_item(item)
-    assert decoded["status"] == "SPEC.READY"
+    assert decoded["status"] == "DESIGN.READY"
     assert decoded["cost"] == Decimal("0.25")
     assert decoded["flag"] is True
     assert decoded["count"] == Decimal("5")

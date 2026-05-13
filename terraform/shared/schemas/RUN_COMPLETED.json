@@ -26,11 +26,10 @@
     "payload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["project_slug", "spec_slug", "tasks_completed"],
+      "required": ["project_slug"],
       "properties": {
         "project_slug": { "type": "string", "minLength": 1, "maxLength": 64 },
-        "spec_slug": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "tasks_completed": { "type": "integer", "minimum": 0 }
+        "pr_url": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 }
       }
     }
   }

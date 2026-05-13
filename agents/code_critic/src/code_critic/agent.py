@@ -1,10 +1,12 @@
 """Strands Agent factory for the Code-Critic.
 
 The Code-Critic uses Claude Opus 4.6 on Bedrock to adversarially
-review the integrated impl PR — logical gaps, missing edge cases,
-drift from the spec's intent, integration-level concerns the
-reviewer's task-level scan might miss. Emits a :class:`Critique` via
-Strands' ``structured_output_model`` parameter.
+review the integrated impl PR against the **original GitHub issue**.
+Its primary lens is "does this PR solve the user's stated problem".
+It also flags drift from the architect's plan and missing edge cases.
+
+Emits a :class:`Critique` via Strands' ``structured_output_model``
+parameter.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from code_critic.hooks import build_hooks
 from code_critic.tools import (
     browse_url_tool,
     read_memory_md_tool,
-    read_spec_doc_tool,
+    read_plan_doc_tool,
     read_stack_profile_md_tool,
 )
 from common.memory import agent_memory_preamble
@@ -53,7 +55,7 @@ def build_agent(run_id: str) -> Agent:
         tools=[
             read_memory_md_tool,
             read_stack_profile_md_tool,
-            read_spec_doc_tool,
+            read_plan_doc_tool,
             get_pr_diff_tool,
             browse_url_tool,
         ],
@@ -62,22 +64,28 @@ def build_agent(run_id: str) -> Agent:
     )
 
 
-def critique_pr(
+def critique_pr(  # noqa: PLR0913 -- structured input + 3 issue context fields
     agent: Agent,
     *,
     project_slug: str,
-    spec_slug: str,
+    plan_s3_key: str,
     run_id: str,
     pr_url: str,
     revision_number: int,
+    source_issue_url: str | None,
+    source_issue_title: str | None,
+    source_issue_body: str | None,
 ) -> Critique:
     """Run the agent and return the validated Critique."""
     user_message = compose_message(
         project_slug=project_slug,
-        spec_slug=spec_slug,
+        plan_s3_key=plan_s3_key,
         run_id=run_id,
         pr_url=pr_url,
         revision_number=revision_number,
+        source_issue_url=source_issue_url,
+        source_issue_title=source_issue_title,
+        source_issue_body=source_issue_body,
     )
     return run_for_structured_output(agent, output_model=Critique, prompt=user_message)
 
@@ -85,12 +93,20 @@ def critique_pr(
 def compose_message(
     *,
     project_slug: str,
-    spec_slug: str,
+    plan_s3_key: str,
     run_id: str,
     pr_url: str,
     revision_number: int,
+    source_issue_url: str | None,
+    source_issue_title: str | None,
+    source_issue_body: str | None,
 ) -> str:
-    """Compose the user-message prompt for the code-critic."""
+    """Compose the user-message prompt for the code-critic.
+
+    The prompt leads with the **source issue** because the code-critic's
+    primary job is to grade the diff against the user's original ask
+    (not just the architect's plan).
+    """
     revision_context = (
         "This is the first validation pass."
         if revision_number == 0
@@ -101,19 +117,27 @@ def compose_message(
         )
     )
     parts = [
-        agent_memory_preamble(project_slug=project_slug, query=spec_slug),
+        agent_memory_preamble(project_slug=project_slug, query=pr_url),
         f"Project: {project_slug}",
-        f"Spec slug: {spec_slug}",
         f"Run id: {run_id}",
         f"Impl PR: {pr_url}",
         f"Revision number: {revision_number}",
+        f"Plan S3 key: {plan_s3_key}",
+    ]
+    if source_issue_url:
+        parts.append(f"Source issue: {source_issue_url}")
+    if source_issue_title:
+        parts.append(f"Issue title: {source_issue_title}")
+    parts += ["", revision_context]
+    if source_issue_body:
+        parts += ["", "## Original issue body", "", source_issue_body.strip()]
+    parts += [
         "",
-        revision_context,
-        "",
-        f"Read the three spec documents in order — requirements, design, tasks "
-        f"(spec_slug={spec_slug}) — and the project's MEMORY.md "
-        f"(project_slug={project_slug}). Fetch the impl PR diff with "
-        "``get_pr_diff``. Then return a Critique JSON object focused on "
-        "logical gaps, missing edge cases, and drift from the spec's intent.",
+        f"Read the architect's plan via ``read_plan_doc(plan_s3_key='{plan_s3_key}')`` "
+        f"and the project's MEMORY.md (project_slug={project_slug}). Fetch the "
+        "impl PR diff with ``get_pr_diff``. Then return a Critique JSON object — "
+        "grade the diff against the issue body above (lens [issue→diff], "
+        "[user-problem]) and against the plan (lens [plan-drift]), and flag "
+        "logical gaps / missing edge cases (lens [edge-case]).",
     ]
     return "\n".join(parts)

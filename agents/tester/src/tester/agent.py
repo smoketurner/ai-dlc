@@ -2,7 +2,7 @@
 
 The Tester uses Claude Haiku 4.5 on Bedrock — gap analysis is a focused,
 bounded task, so the smaller/cheaper model is appropriate. The agent
-loop runs with spec/memory readers plus a sandbox runner and finishes
+loop runs with plan/memory readers plus a sandbox runner and finishes
 by emitting a :class:`Report` via Strands' ``structured_output_model``
 parameter.
 """
@@ -23,7 +23,7 @@ from tester.tools import (
     browse_url_tool,
     get_pr_diff_tool,
     read_memory_md_tool,
-    read_spec_doc_tool,
+    read_plan_doc_tool,
     read_stack_profile_md_tool,
     run_pr_in_sandbox_tool,
 )
@@ -55,7 +55,7 @@ def build_agent(run_id: str) -> Agent:
         tools=[
             read_memory_md_tool,
             read_stack_profile_md_tool,
-            read_spec_doc_tool,
+            read_plan_doc_tool,
             get_pr_diff_tool,
             run_pr_in_sandbox_tool,
             browse_url_tool,
@@ -69,7 +69,7 @@ def analyze_gaps(
     agent: Agent,
     *,
     project_slug: str,
-    spec_slug: str,
+    plan_s3_key: str,
     run_id: str,
     pr_url: str,
     revision_number: int,
@@ -82,7 +82,7 @@ def analyze_gaps(
     """
     user_message = compose_message(
         project_slug=project_slug,
-        spec_slug=spec_slug,
+        plan_s3_key=plan_s3_key,
         run_id=run_id,
         pr_url=pr_url,
         revision_number=revision_number,
@@ -93,7 +93,7 @@ def analyze_gaps(
 def compose_message(
     *,
     project_slug: str,
-    spec_slug: str,
+    plan_s3_key: str,
     run_id: str,
     pr_url: str,
     revision_number: int,
@@ -109,9 +109,9 @@ def compose_message(
         )
     )
     parts = [
-        agent_memory_preamble(project_slug=project_slug, query=spec_slug),
+        agent_memory_preamble(project_slug=project_slug, query=pr_url),
         f"Project: {project_slug}",
-        f"Spec slug: {spec_slug}",
+        f"Plan S3 key: {plan_s3_key}",
         f"Run id: {run_id}",
         f"Impl PR: {pr_url}",
         f"Revision number: {revision_number}",
@@ -119,10 +119,10 @@ def compose_message(
         revision_context,
         "",
         f"Read the project's MEMORY.md (project_slug={project_slug}) for "
-        f"testing conventions. Read the three spec documents "
-        f"(spec_slug={spec_slug}). Fetch the impl PR diff with "
-        "``get_pr_diff``. Map each acceptance criterion across all tasks to "
-        "a test that exercises it; where no such test exists, list a gap and "
-        "suggest a concrete test. Return a Report JSON object.",
+        f"testing conventions. Read the architect's plan via "
+        f"``read_plan_doc(plan_s3_key='{plan_s3_key}')``. Fetch the impl "
+        "PR diff with ``get_pr_diff``. Map each plan step / claimed outcome "
+        "to a test that exercises it; where no such test exists, list a gap "
+        "and suggest a concrete test. Return a Report JSON object.",
     ]
     return "\n".join(parts)

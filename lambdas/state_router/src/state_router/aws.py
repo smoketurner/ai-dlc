@@ -57,7 +57,7 @@ def lambda_client() -> LambdaClient:
 
 @cache
 def s3() -> S3Client:
-    """Process-cached S3 client (for synthetic-spec uploads)."""
+    """Process-cached S3 client (currently unused but kept for parity)."""
     return boto3.client("s3")
 
 
@@ -128,15 +128,16 @@ def transactional_advance(
     exactly one beacon for the next dispatch (or a Noop ack when
     advancing into a wait state).
 
-    Run rows use the ``current_state`` attribute; task rows use
-    ``status``. Picked by ``target_sk``.
+    All row state lives on the run STATE row's ``current_state``
+    attribute. (Task rows were removed when the platform consolidated
+    to one issue → one impl PR.)
 
     ``extra_attrs`` adds ``SET`` clauses (string values).
     ``extra_increments`` adds ``ADD`` clauses (integer deltas) — used
     by the rollback path to bump ``dispatch_failure_count`` atomically
     with the state reversal.
     """
-    state_attr = "status" if target_sk.startswith("TASK#") else "current_state"
+    state_attr = "current_state"
     update = (
         UpdateBuilder(
             table=runs_table(),

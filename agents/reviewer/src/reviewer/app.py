@@ -1,6 +1,7 @@
 """AgentCore Runtime entrypoint for the Reviewer.
 
-The state-router invokes the runtime once per task PR. The entrypoint:
+The state-router invokes the runtime once per impl-PR validation pass.
+The entrypoint:
 
   1. Validates the input as :class:`ReviewerInput`.
   2. Registers an async task with the AgentCore SDK so ``/ping``
@@ -8,8 +9,10 @@ The state-router invokes the runtime once per task PR. The entrypoint:
   3. Spawns a daemon thread that runs the Strands agent, uploads the
      review to S3, posts a summary comment on the PR, and emits
      ``REVIEW.READY``. On exception the thread logs and acknowledges
-     the async task — reviewer is advisory, so a crash doesn't
-     advance any state machine.
+     the async task — reviewer is the gating reviewer, so a crash
+     would otherwise leave the run in ``validation_running`` waiting
+     forever; we re-raise as a ``comment`` verdict so the run can
+     still advance to ``awaiting_human_merge``.
   4. Returns ``{"status": "dispatched", ...}`` to the caller in
      ~100ms.
 """
@@ -71,19 +74,13 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_reviewer(payload: ReviewerInput, async_task_id: int) -> None:
-    """Body of the reviewer run — produces review, posts comment, emits event.
-
-    Reviewer gates the run — its verdict drives the next state
-    transition. On exception we still emit a ``comment`` verdict so the
-    state machine doesn't deadlock; the human reviewer can still merge
-    the impl PR directly.
-    """
+    """Body of the reviewer run — produces review, posts comment, emits event."""
     try:
         agent = build_agent(payload.run_id)
         review = review_pr(
             agent,
             project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
+            plan_s3_key=payload.plan_s3_key,
             run_id=payload.run_id,
             pr_url=payload.pr_url,
             revision_number=payload.revision_number,
@@ -149,7 +146,6 @@ def publish_review_ready(payload: ReviewerInput, result: ReviewerResult) -> None
         actor_id="reviewer",
         payload=ReviewReady(
             project_slug=payload.project_slug,
-            spec_slug=payload.spec_slug,
             pr_url=result.pr_url,
             verdict=result.verdict,
             comment_count=result.comment_count,

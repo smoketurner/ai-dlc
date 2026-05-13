@@ -3,9 +3,10 @@
 The Triage agent uses Claude Haiku 4.5 on Bedrock with a strict-JSON
 output contract: the agent emits a
 :class:`common.triage.TriageDecision` via Strands'
-``structured_output_model`` parameter on agent invocation. The Step
-Functions ``Choice`` state branches on the resulting ``action`` and
-``workflow_kind``.
+``structured_output_model`` parameter on agent invocation. The state
+router branches on the resulting ``action`` to either kick off the
+Architect → Critic → Implementer pipeline, hand off to the Proposer
+for research, or terminate the run with a comment on the issue.
 """
 
 from __future__ import annotations
