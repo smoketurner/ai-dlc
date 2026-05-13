@@ -1,12 +1,9 @@
-"""Reviewer-local tool wiring.
+"""Reviewer-local Strands tools.
 
-S3 access for the reviewer (read MEMORY.md / stack profile / plan,
-write the review artifact) now flows through the per-agent AgentCore
-Gateway via MCP — ``common.gateway_tools`` builds the catalogue at
-``build_agent`` time. The local tools that remain here are the ones
-the gateway can't host: ``get_pr_diff`` (talks to GitHub directly),
+``get_pr_diff`` (invokes ``repo_helper`` Lambda directly for the diff),
 ``run_pr_in_sandbox`` (AgentCore Code Interpreter), and ``browse_url``
-(AgentCore Browser).
+(AgentCore Browser). Gateway-routed tools are spliced in by
+:func:`reviewer.agent.build_agent`.
 """
 
 from __future__ import annotations

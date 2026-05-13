@@ -1,35 +1,20 @@
 """AgentCore Runtime entrypoint for the Retrospector.
 
-The dispatcher Lambda invokes this runtime once per terminal event
-(``RUN.COMPLETED`` / ``RUN.FAILED`` / ``RUN.CANCEL_REQUESTED``). The
-entrypoint:
+Invoked by the dispatcher Lambda on every terminal event
+(``RUN.COMPLETED`` / ``RUN.FAILED`` / ``RUN.CANCEL_REQUESTED``).
+Validates :class:`RetrospectorInput`, dispatches the agent loop on a
+daemon thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}``. The daemon asks the agent for a
+:class:`RetrospectiveDecision`; if a lesson is found it opens a PR
+via ``repo_helper`` that appends to either ``MEMORY.md`` (six-section
+schema; root preferred, ``docs/`` fallback) or ``AGENTS.md``
+(free-form append).
 
-  1. Validates the input as :class:`RetrospectorInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the synthesis runs.
-  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
-     that asks the Strands agent for a :class:`RetrospectiveDecision`.
-     If the decision proposes a lesson, opens a PR via the
-     gateway-routed ``repo_helper`` that appends the addition to either
-     ``MEMORY.md`` (structured six-section schema; root preferred,
-     ``docs/`` fallback for legacy projects) or ``AGENTS.md``
-     (free-form append, root only).
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms.
-
-Memory reads go through ``repo_helper.get_file`` against ``main`` so
-the repo is the source of truth — no S3 mirror lag, no duplicate
-bullets after rapid retrospective fires.
-
-``contextvars.copy_context()`` carries the runtime's
-``WorkloadAccessToken`` ContextVar into the daemon thread so
-:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
-Cognito M2M JWT via AgentCore Identity.
-
-Retrospectives never advance the run state machine — they're a
-side-channel learner. Failures are logged and swallowed; the system
-continues to function without retrospectives if the agent or
-``repo_helper`` is unavailable.
+Memory reads use ``repo_helper.get_file`` against ``main`` so the
+repo is the source of truth — no S3 mirror lag, no duplicate bullets
+after rapid retrospective fires. The retrospector is side-channel:
+failures are logged and swallowed; runs never wedge on its absence.
 """
 
 from __future__ import annotations

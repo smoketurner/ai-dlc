@@ -44,6 +44,7 @@ from common.runtime import (
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
 )
+from common.templating import make_template_env
 from implementer.finish import FinishReport, FinishSink
 from implementer.options import build_options
 from implementer.repo_ops import (
@@ -406,26 +407,13 @@ def render_pr_body(
     source_issue_url: str | None,
 ) -> str:
     """Render the PR body from the finish report + run metadata."""
-    lines: list[str] = []
-    if report and report.summary:
-        lines += ["## Summary", "", report.summary.strip(), ""]
-    if source_issue_url:
-        lines += [f"Closes {source_issue_url}", ""]
-    lines += [f"> Run: `{run_id}`", ""]
-    if report and report.files_changed:
-        lines += ["## Files changed", ""]
-        lines += [f"- `{path}`" for path in report.files_changed]
-        lines.append("")
-    if report and report.tests_run:
-        lines += ["## Tests run", ""]
-        for tr in report.tests_run:
-            lines.append(f"- `{tr.name}` — {tr.status}")
-        lines.append("")
-    if report and report.risks:
-        lines += ["## Residual risks", ""]
-        lines += [f"- {risk}" for risk in report.risks]
-        lines.append("")
-    return "\n".join(lines).rstrip() + "\n"
+    template = make_template_env(__package__).get_template("pr_body.md.j2")
+    body = template.render(
+        report=report,
+        run_id=run_id,
+        source_issue_url=source_issue_url,
+    )
+    return body.rstrip() + "\n"
 
 
 def format_feedback_item(item: FeedbackItem) -> str:

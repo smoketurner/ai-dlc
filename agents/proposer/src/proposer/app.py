@@ -1,27 +1,15 @@
 """AgentCore Runtime entrypoint for the Proposer.
 
-The Proposer is invoked when triage classifies an issue as
-``research`` — the agent reads the URLs in the issue body, synthesises
-findings into a comment on the issue, optionally opens a PR with
-MEMORY.md / prompt edits, and may spawn follow-up issues when the
-triggering comment asks for it. The entrypoint:
-
-  1. Validates the input as :class:`ProposerInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the synthesis runs.
-  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
-     that opens the per-agent gateway MCP session, runs the research
-     flow, posts the synthesis comment via ``repo_helper``, opens a
-     PR if there are edits, and emits ``RUN.COMPLETED`` so the
-     projector advances the run state.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms.
-
-``contextvars.copy_context()`` carries the runtime's
-``WorkloadAccessToken`` ContextVar into the daemon thread so
-:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
-Cognito M2M JWT via AgentCore Identity. The Proposer authenticates as
-``ai-dlc[bot]`` (installation token) downstream of the gateway.
+Invoked when triage classifies an issue as ``research``. Validates
+:class:`ProposerInput`, dispatches the agent loop on a daemon thread
+(under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon synthesises findings from the issue's URLs, posts
+the synthesis as an issue comment via the gateway, optionally opens a
+PR with MEMORY.md / prompt edits, may spawn follow-up issues, and
+emits ``RUN.COMPLETED``. The Proposer authenticates as ``ai-dlc[bot]``
+(installation token) downstream of the gateway.
 """
 
 from __future__ import annotations

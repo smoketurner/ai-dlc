@@ -1,21 +1,11 @@
-"""Tester-local tool wiring.
+"""Tester-local Strands tools.
 
-S3 access for the tester (read MEMORY.md / stack profile / plan, write
-the test-report artifact) now flows through the per-agent AgentCore
-Gateway via MCP — ``common.gateway_tools`` builds the catalogue at
-``build_agent`` time. The local tools that remain here are the ones
-the gateway can't host: ``get_pr_diff`` (talks to GitHub directly),
+``get_pr_diff`` (invokes ``repo_helper`` Lambda directly for the diff),
 ``run_pr_in_sandbox`` (AgentCore Code Interpreter), and ``browse_url``
-(AgentCore Browser).
-
-Note: the gateway-routed ``artifact_tool.get_artifact`` and
-``artifact_tool.read_memory_md`` ops raise when the underlying S3 key
-is missing, whereas the previous local ``read_memory_md`` /
-``read_plan_doc`` here returned an empty string. In practice both keys
-are present by the time the tester runs (architect writes ``plan.md``
-earlier in the state machine; MEMORY.md is bootstrapped at clone-sync),
-so the tester sees the harder contract only on edge-cases and surfaces
-the error as a tool-result the agent can react to.
+(AgentCore Browser). Gateway-routed tools are spliced in by
+:func:`tester.agent.build_agent`. Note: ``artifact_tool.get_artifact``
+raises on missing keys (it does not fall back to empty); the agent
+sees this as a tool error and continues with whatever context it has.
 """
 
 from __future__ import annotations

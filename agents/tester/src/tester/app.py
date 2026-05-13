@@ -1,24 +1,13 @@
 """AgentCore Runtime entrypoint for the Tester.
 
-The state-router invokes the runtime once per impl-PR validation pass.
-The entrypoint:
-
-  1. Validates the input as :class:`TesterInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the analysis runs.
-  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
-     that runs the Strands agent, uploads the report via the per-agent
-     gateway, posts a summary comment on the PR via the same gateway,
-     and emits ``TEST_REPORT.READY``. On exception the thread logs and
-     acknowledges the async task — Tester is advisory, so a crash
-     doesn't advance any state machine.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms.
-
-``contextvars.copy_context()`` carries the runtime's
-``WorkloadAccessToken`` ContextVar into the daemon thread so
-:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
-Cognito M2M JWT via AgentCore Identity.
+Validates :class:`TesterInput`, dispatches the agent loop on a daemon
+thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon runs the agent, uploads the report via the
+gateway, posts a summary comment on the PR, and emits
+``TEST_REPORT.READY``. Tester is advisory; exceptions are logged and
+swallowed.
 """
 
 from __future__ import annotations

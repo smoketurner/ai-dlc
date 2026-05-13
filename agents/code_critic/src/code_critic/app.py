@@ -1,23 +1,13 @@
 """AgentCore Runtime entrypoint for the Code-Critic.
 
-The state-router invokes this runtime when a run reaches
-``impl_pr_open`` (in parallel with reviewer + tester) for a validation
-pass against the integrated impl PR.
-
-  1. Validates the input as :class:`CodeCriticInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the work runs.
-  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
-     that critiques the diff against the **original GitHub issue**,
-     uploads the critique via the per-agent gateway, posts a comment
-     on the impl PR via the same gateway, emits
-     ``CODE_CRITIQUE.READY``, and acknowledges the async task.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in ~100ms.
-
-``contextvars.copy_context()`` carries the runtime's
-``WorkloadAccessToken`` ContextVar into the daemon thread so
-:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
-Cognito M2M JWT via AgentCore Identity.
+Validates :class:`CodeCriticInput`, dispatches the agent loop on a
+daemon thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon critiques the integrated impl PR against the
+**original GitHub issue**, uploads the critique via the gateway,
+posts a summary comment on the PR, and emits ``CODE_CRITIQUE.READY``
+on success or ``RUN.FAILED`` on exception.
 """
 
 from __future__ import annotations

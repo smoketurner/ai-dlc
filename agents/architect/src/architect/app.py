@@ -1,27 +1,12 @@
 """AgentCore Runtime entrypoint for the Architect.
 
-Serves ``POST /invocations`` and ``GET /ping`` on :8080. The state-router
-Lambda invokes this runtime when a run reaches ``architect_running``. The
-entrypoint:
-
-  1. Validates the input as :class:`ArchitectInput`.
-  2. Registers an async task with the AgentCore SDK so the runtime's
-     ``/ping`` reports ``HealthyBusy`` until the work finishes.
-  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
-     that does the actual work — clone the target repo, open the
-     per-agent gateway MCP session, generate the plan, read it back via
-     the gateway, emit ``DESIGN.READY`` — then acknowledges the async
-     task so the microVM goes idle.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms so the state-router doesn't hold a Lambda for the agent's
-     full runtime and AgentCore's frontend never sees a dropped
-     connection (which it would otherwise retry as a duplicate
-     invoke).
-
-``contextvars.copy_context()`` carries the runtime's
-``WorkloadAccessToken`` ContextVar into the daemon thread so
-:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
-Cognito M2M JWT via AgentCore Identity.
+Validates :class:`ArchitectInput`, dispatches the agent loop on a
+daemon thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon clones the target repo, generates the plan via
+the gateway, and emits ``DESIGN.READY`` on success or ``RUN.FAILED``
+on exception.
 """
 
 from __future__ import annotations

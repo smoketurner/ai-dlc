@@ -1,10 +1,8 @@
-"""Proposer-local tool wiring.
+"""Proposer-local Strands tools.
 
-S3 access (read MEMORY.md / stack profile) and the Lambda invocation
-for ``list_issue_comments`` now flow through the per-agent AgentCore
-Gateway via MCP — ``common.gateway_tools`` builds the catalogue at
-``build_agent`` time. The only local tool that remains here is
-``browse_url`` (AgentCore Browser, not a gateway target).
+``browse_url`` (AgentCore Browser). Gateway-routed tools
+(``artifact_tool`` + ``repo_helper``) are spliced in by
+:func:`proposer.agent.build_agent`.
 """
 
 from __future__ import annotations

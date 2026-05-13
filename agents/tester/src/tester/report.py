@@ -13,12 +13,11 @@ gaps.
 
 from __future__ import annotations
 
-from functools import cache
 from typing import Annotated, Literal
 
-from jinja2 import Environment, PackageLoader, StrictUndefined, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.templating import make_template_env
 from common.validators import NoneSafeList
 
 TestKind = Literal["unit", "integration", "property", "e2e"]
@@ -114,19 +113,9 @@ def suggestion_count(report: Report) -> int:
     return len(report.suggestions)
 
 
-@cache
-def template_env() -> Environment:
-    """Cached Jinja environment loading templates from ``tester/templates/``."""
-    return Environment(
-        loader=PackageLoader("tester", "templates"),
-        autoescape=select_autoescape(disabled_extensions=("md", "j2"), default=False),
-        undefined=StrictUndefined,
-    )
-
-
 def render_report(report: Report) -> str:
     """Render the report as Markdown — used for both the S3 artifact and PR comment."""
-    template = template_env().get_template("test_report.md.j2")
+    template = make_template_env(__package__).get_template("test_report.md.j2")
     body = template.render(
         report=report,
         gap_count=gap_count(report),

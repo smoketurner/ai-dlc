@@ -23,6 +23,7 @@ from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
+from common.templating import make_template_env
 from retrospector.decision import RetrospectiveDecision
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -111,43 +112,19 @@ def compose_message(
     validation_artifact_keys: tuple[str, ...] = (),
 ) -> str:
     """Compose the user-message prompt for one retrospective."""
-    parts = [
-        agent_memory_preamble(
+    template = make_template_env(__package__).get_template("retrospective_message.md.j2")
+    body = template.render(
+        memory_preamble=agent_memory_preamble(
             project_slug=project_slug,
             query=f"retrospective on {event_type}",
         ),
-        f"Project: {project_slug}",
-        f"Target repo: {target_repo}",
-        f"Event: {event_type}",
-    ]
-    if pr_url:
-        parts.append(f"Impl PR: {pr_url}")
-    if issue_url:
-        parts.append(f"Source issue: {issue_url}")
-    if reason:
-        parts += ["", "Reason / context (from the platform):", reason.strip()]
-    if validation_artifact_keys:
-        parts += [
-            "",
-            f"Revision-cap hit (revision_count={revision_count}). The platform "
-            "ran the implementer up to its cap and still couldn't converge. "
-            "Read each validator artifact below with "
-            "``get_artifact(key=...)`` and look for the finding that recurs "
-            "across rounds — that's the real lesson:",
-            *(f"  - {key}" for key in validation_artifact_keys),
-        ]
-    parts += [
-        "",
-        "Steps:",
-        "  1. ``read_memory_md`` to see what's already recorded — DO NOT propose duplicates.",
-        "  2. If an impl PR is involved, ``repo_helper(op='get_pr', ...)`` + "
-        "``repo_helper(op='list_pr_comments', ...)`` + "
-        "``repo_helper(op='list_pr_review_comments', ...)``.",
-        "  3. If a source issue is involved, ``repo_helper(op='get_issue', ...)`` + "
-        "``repo_helper(op='list_issue_comments', ...)``.",
-        "  4. If validation_artifact_keys are listed above, read each one with "
-        "``get_artifact(key=...)`` and identify the recurring failure pattern.",
-        "  5. Decide whether the trace contains a reusable lesson worth appending "
-        "to MEMORY.md. Return a RetrospectiveDecision JSON.",
-    ]
-    return "\n".join(parts)
+        event_type=event_type,
+        project_slug=project_slug,
+        target_repo=target_repo,
+        pr_url=pr_url,
+        issue_url=issue_url,
+        reason=reason,
+        revision_count=revision_count,
+        validation_artifact_keys=validation_artifact_keys,
+    )
+    return body.rstrip("\n")

@@ -244,5 +244,3 @@ def stack_profile_unchanged(client: S3Client, bucket: str, key: str, body: str) 
     except BotoCoreError, ClientError:
         return False
     return existing == body
-
-

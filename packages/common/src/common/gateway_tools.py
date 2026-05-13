@@ -43,11 +43,17 @@ def gateway_url() -> str:
 def fetch_gateway_token() -> str:
     """Fetch a Cognito M2M JWT for the agent's gateway via AgentCore Identity.
 
-    The decorator-wrapped inner function reads the workload access token
-    from :class:`BedrockAgentCoreContext`, exchanges it via
-    ``GetResourceOauth2Token`` for a Cognito JWT (M2M /
-    client_credentials), and returns the JWT string. The decorator
-    handles caching internally.
+    Reads the workload access token from :class:`BedrockAgentCoreContext`,
+    exchanges it via ``GetResourceOauth2Token`` for a Cognito JWT (M2M /
+    client_credentials), and returns the JWT. The decorator caches.
+
+    .. note::
+       The ``WorkloadAccessToken`` lives in a :mod:`contextvars`
+       ``ContextVar`` that does not auto-inherit into threads spawned via
+       :class:`threading.Thread`. Callers that dispatch the agent loop
+       onto a daemon thread MUST wrap the thread's target with
+       :func:`contextvars.copy_context().run` so this function can resolve
+       the token off the entrypoint's context.
     """
     provider_name = os.environ.get("AIDLC_GATEWAY_OAUTH_PROVIDER_NAME")
     if not provider_name:

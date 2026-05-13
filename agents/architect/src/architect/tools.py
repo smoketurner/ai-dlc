@@ -1,10 +1,9 @@
-"""Architect-local tool wiring.
+"""Architect-local Strands tools.
 
-All S3 access for the architect now flows through the per-agent AgentCore
-Gateway via MCP — ``common.gateway_tools`` builds the catalogue at
-``build_agent`` time. The only direct tools that remain here are the
-local-filesystem repo readers and ``browse_url`` (which hits AgentCore
-Browser, not a gateway target).
+Local-filesystem readers for the cloned target repo plus ``browse_url``
+(AgentCore Browser). Gateway-routed tools (``artifact_tool`` reads /
+writes) are spliced in by :func:`architect.agent.build_agent` via
+``common.gateway_tools.gateway_tools()``.
 """
 
 from __future__ import annotations

@@ -1,25 +1,15 @@
 """AgentCore Runtime entrypoint for the Reviewer.
 
-The state-router invokes the runtime once per impl-PR validation pass.
-The entrypoint:
-
-  1. Validates the input as :class:`ReviewerInput`.
-  2. Registers an async task with the AgentCore SDK so ``/ping``
-     reports ``HealthyBusy`` while the review runs.
-  3. Spawns a daemon thread under a copied :class:`contextvars.Context`
-     that runs the Strands agent, uploads the review via the per-agent
-     gateway, posts a summary comment on the PR via the same gateway,
-     and emits ``REVIEW.READY``. On exception the thread logs and
-     acknowledges the async task — reviewer is the gating reviewer, so
-     a crash would otherwise leave the run in ``validation_running``
-     waiting forever.
-  4. Returns ``{"status": "dispatched", ...}`` to the caller in
-     ~100ms.
-
-``contextvars.copy_context()`` carries the runtime's
-``WorkloadAccessToken`` ContextVar into the daemon thread so
-:func:`common.gateway_tools.fetch_gateway_token` can exchange it for a
-Cognito M2M JWT via AgentCore Identity.
+Validates :class:`ReviewerInput`, dispatches the agent loop on a
+daemon thread (under a copied :mod:`contextvars` context — see
+:func:`common.gateway_tools.fetch_gateway_token`), and returns
+``{"status": "dispatched", ...}`` so the state-router gets a fast
+response. The daemon runs the agent, uploads the review via the
+gateway, posts a summary comment on the PR, and emits
+``REVIEW.READY``. The reviewer's verdict gates the run; on uncaught
+exception the daemon logs and acknowledges the async task — the run
+stays in ``validation_running`` waiting on the other validators rather
+than wedging on a missing reviewer pass.
 """
 
 from __future__ import annotations

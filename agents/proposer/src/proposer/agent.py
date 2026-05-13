@@ -21,6 +21,7 @@ from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
+from common.templating import make_template_env
 from proposer.proposal import Proposal
 from proposer.tools import browse_url_tool
 
@@ -124,56 +125,14 @@ def compose_research_message(
     triggering_commenter: str = "",
 ) -> str:
     """Compose the user-message prompt for an issue-driven research run."""
-    parts = [
-        agent_memory_preamble(project_slug=project_slug, query=intent),
-        f"Project: {project_slug}",
-        f"Source: GitHub issue #{issue_number}",
-    ]
-    if target_repo:
-        parts.append(f"Target repo: {target_repo}")
-    parts.extend(["Trigger: research", "", "Issue body:", intent.strip()])
-    if triggering_comment_body:
-        attribution = f" by @{triggering_commenter}" if triggering_commenter else ""
-        parts.extend(
-            [
-                "",
-                f"Follow-up comment{attribution}:",
-                triggering_comment_body.strip(),
-                "",
-                "This run was triggered by the follow-up comment above. "
-                "Read the prior thread on this issue with "
-                "``repo_helper(op='list_issue_comments', repo=..., issue_number=...)`` "
-                "before deciding what to do — your earlier synthesis comment "
-                "is the source the user is referring to.",
-                "",
-                "If the user explicitly asks you to create / spawn / file "
-                "GitHub issues for follow-up work, populate `proposed_issues` "
-                "with one entry per issue (title in short imperative form, "
-                "body with scope + acceptance criteria, labels including "
-                "`aidlc-spawned`). If the user asks for prioritization or "
-                "summary without asking for issues, leave `proposed_issues` "
-                "empty and use `summary_comment` to reply.",
-            ]
-        )
-    parts.extend(
-        [
-            "",
-            "Steps:",
-            "  1. read_memory_md to see current project conventions.",
-            "  2. Identify URLs in the issue body and call browse_url on each. "
-            "Skip this when the follow-up comment is asking about prior "
-            "synthesis (call repo_helper(op='list_issue_comments', ...) instead).",
-            "  3. Synthesise findings into `summary_comment` (this is posted "
-            "as a comment on the issue). Aim for 8-15 short bullets an "
-            "engineer can scan in 30 seconds; lead with what we should adopt, "
-            "what we should avoid, and decisions worth deferring; cite the "
-            "source URL on each bullet.",
-            "  4. Optionally propose concrete `edits` to MEMORY.md or a "
-            "prompts file when a finding warrants a change. Empty edits is "
-            "fine — the comment is the primary deliverable.",
-            "  5. Populate `proposed_issues` only when the human explicitly "
-            "asked for issue creation in their follow-up comment. Empty "
-            "`proposed_issues` is the default.",
-        ],
+    template = make_template_env(__package__).get_template("research_message.md.j2")
+    body = template.render(
+        memory_preamble=agent_memory_preamble(project_slug=project_slug, query=intent),
+        project_slug=project_slug,
+        issue_number=issue_number,
+        target_repo=target_repo,
+        intent=intent,
+        triggering_comment_body=triggering_comment_body,
+        triggering_commenter=triggering_commenter,
     )
-    return "\n".join(parts)
+    return body.rstrip("\n")

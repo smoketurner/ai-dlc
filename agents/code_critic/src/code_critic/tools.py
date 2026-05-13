@@ -1,14 +1,10 @@
-"""Code-Critic-local tool wiring.
+"""Code-Critic-local Strands tools.
 
-S3 access for the code-critic (read the architect's plan and the
-project's MEMORY.md / stack profile, write the critique artifact)
-now flows through the per-agent AgentCore Gateway via MCP —
-``common.gateway_tools`` builds the catalogue at ``build_agent`` time.
-The only local tool that remains here is ``browse_url`` (AgentCore
-Browser, not a gateway target). ``get_pr_diff`` is added locally in
-:mod:`code_critic.agent` — it talks to GitHub via the repo_helper
-Lambda directly through :mod:`common.sandbox` and is shared with
-reviewer / tester.
+``browse_url`` (AgentCore Browser) plus the S3-key helper for the
+critique artifact. Gateway-routed tools (``artifact_tool`` reads /
+writes) are spliced in by :func:`code_critic.agent.build_agent`;
+``get_pr_diff`` is added there too from :mod:`common.sandbox` (shared
+with reviewer / tester, invokes ``repo_helper`` directly).
 """
 
 from __future__ import annotations
