@@ -44,3 +44,37 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "bedrock_quota_models" {
+  description = <<-EOT
+    Catalog keys of Bedrock models to alarm on. Valid keys are
+    defined in ``local.bedrock_quota_catalog`` (currently:
+    ``opus_4_6``, ``sonnet_4_6``, ``haiku_4_5``). The catalog
+    pins the CloudWatch ``ModelId`` dimension and the Service
+    Quotas codes per model — both are AWS-global constants, not
+    user configuration. Empty (default) skips the alarms entirely.
+  EOT
+  type        = set(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for k in var.bedrock_quota_models : contains(["opus_4_6", "sonnet_4_6", "haiku_4_5"], k)
+    ])
+    error_message = "bedrock_quota_models entries must be one of: opus_4_6, sonnet_4_6, haiku_4_5."
+  }
+}
+
+variable "bedrock_quota_threshold_pct" {
+  description = "Alarm thresholds expressed as a percentage of the resolved quota."
+  type = object({
+    warn     = number
+    high     = number
+    critical = number
+  })
+  default = {
+    warn     = 50
+    high     = 80
+    critical = 95
+  }
+}

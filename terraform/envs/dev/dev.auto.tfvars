@@ -24,3 +24,9 @@ github_bot_login       = "aidlc-bot"
 # from the ``AIDLC_ALERT_EMAILS`` repo variable) so personal email
 # addresses stay out of git. Locally, add your own entry to the
 # gitignored ``terraform.tfvars``.
+
+# Bedrock per-model quota alarms (warn/high/critical at 50/80/95%
+# of the live Service Quotas value). Model catalog (CloudWatch
+# ModelId + quota codes) is baked into the observability module;
+# this list just selects which catalog entries to alarm on.
+bedrock_quota_models = ["opus_4_6", "sonnet_4_6", "haiku_4_5"]

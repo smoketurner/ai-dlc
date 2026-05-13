@@ -15,3 +15,11 @@ github_bot_login       = "mybot-bot"
 # (JSON array string, e.g. ``["alice@example.com"]``) so personal
 # emails stay out of git. For local-only entries, add to
 # ``terraform.tfvars`` (gitignored).
+
+# Bedrock per-model quota alarms (warn/high/critical at 50/80/95%
+# of the live Service Quotas value). Valid catalog keys are
+# defined in ``terraform/modules/observability/locals.tf``:
+# ``opus_4_6``, ``sonnet_4_6``, ``haiku_4_5``. Empty (default)
+# skips all alarms.
+#
+# bedrock_quota_models = ["opus_4_6", "sonnet_4_6", "haiku_4_5"]

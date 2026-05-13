@@ -44,6 +44,31 @@ variable "daily_token_spend_alarm_usd" {
   default     = 20
 }
 
+variable "bedrock_quota_models" {
+  description = <<-EOT
+    Catalog keys of Bedrock models to alarm on. Valid keys are
+    defined by the observability module
+    (``opus_4_6``, ``sonnet_4_6``, ``haiku_4_5``). Empty (default)
+    skips all alarms.
+  EOT
+  type        = set(string)
+  default     = []
+}
+
+variable "bedrock_quota_threshold_pct" {
+  description = "Bedrock quota alarm thresholds as a percentage of the resolved quota."
+  type = object({
+    warn     = number
+    high     = number
+    critical = number
+  })
+  default = {
+    warn     = 50
+    high     = 80
+    critical = 95
+  }
+}
+
 variable "dashboard_callback_urls" {
   description = "OIDC callback URLs for the Cognito app client. Defaults to the dashboard's terraform-managed FQDN; override only if you need additional callbacks (e.g., a second hostname)."
   type        = list(string)
