@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}runs · ai-dlc{% endblock %}
 {% block content %}
-<div x-data="runsList()" class="space-y-4">
+<div x-data="runsList()" x-init="connect()" class="space-y-4">
   <div class="flex items-baseline justify-between">
     <h1 class="text-xl font-semibold">Recent runs</h1>
     <input x-model="filter" type="search" placeholder="filter by project or status"
@@ -13,6 +13,7 @@
         <th class="px-3 py-2">run_id</th>
         <th class="px-3 py-2">project</th>
         <th class="px-3 py-2">state</th>
+        <th class="px-3 py-2">live</th>
         <th class="px-3 py-2">PR</th>
         <th class="px-3 py-2 text-right">tokens (in/out)</th>
         <th class="px-3 py-2 text-right">cost</th>
@@ -26,6 +27,19 @@
         <td class="px-3 py-2"><a href="/runs/{{ run.run_id }}" class="text-sky-700 hover:underline">{{ run.run_id }}</a></td>
         <td class="px-3 py-2">{{ run.project_slug }}</td>
         <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs bg-slate-200">{{ run.current_state or run.status }}</span></td>
+        <td class="px-3 py-2">
+          {% set p = runs_progress.get(run.run_id) %}
+          {% if p %}
+          <span class="inline-flex items-center gap-2 text-xs"
+                :class="(liveChips['{{ run.run_id }}'] && liveChips['{{ run.run_id }}'].stuck) ? 'text-amber-800' : 'text-slate-600'">
+            <span class="font-mono">{{ p.agent }}</span>
+            <span class="font-mono"
+                  x-text="(liveChips['{{ run.run_id }}'] && liveChips['{{ run.run_id }}'].elapsed) || ''"></span>
+            <span x-show="liveChips['{{ run.run_id }}'] && liveChips['{{ run.run_id }}'].stuck"
+                  class="px-1.5 py-0.5 rounded bg-amber-200 text-amber-900">stuck</span>
+          </span>
+          {% else %}—{% endif %}
+        </td>
         <td class="px-3 py-2">
           {% if run.pr_url %}
           <a href="{{ run.pr_url }}" target="_blank" rel="noopener" class="text-sky-700 hover:underline font-mono text-xs">{{ run.pr_url.split('/')[-2] }}/{{ run.pr_url.split('/')[-1] }}</a>
@@ -51,22 +65,5 @@
   <p class="text-slate-500 text-sm">No runs yet. <a class="text-sky-700 hover:underline" href="/submit">Submit one</a>.</p>
   {% endif %}
 </div>
-<script>
-function runsList() {
-  return {
-    filter: '',
-    deleted: [],
-    async deleteRun(runId) {
-      if (!window.confirm(`Delete run ${runId}? This permanently removes its events.`)) return;
-      const resp = await fetch(`/v1/runs/${encodeURIComponent(runId)}`, { method: 'DELETE' });
-      if (resp.status === 204) {
-        this.deleted.push(runId);
-        return;
-      }
-      const text = await resp.text().catch(() => '');
-      window.alert(`Could not delete ${runId}: ${resp.status} ${text}`);
-    },
-  };
-}
-</script>
+<script id="initial-runs-progress" type="application/json">{{ runs_progress | tojson }}</script>
 {% endblock %}

@@ -84,6 +84,7 @@ def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
         project_slug=item.get("project_slug", {}).get("S", ""),
         status=item.get("status", {}).get("S", "UNKNOWN"),
         current_state=item.get("current_state", {}).get("S") or None,
+        updated_at=item.get("updated_at", {}).get("S") or None,
         total_token_in=int(item.get("total_token_in", {}).get("N", "0")),
         total_token_out=int(item.get("total_token_out", {}).get("N", "0")),
         total_cost_usd=float(item.get("total_cost_usd", {}).get("N", "0")),
@@ -149,25 +150,36 @@ def get_run_state(run_id: str) -> RunState | None:
     Callers use it to decide SSE close, delete authorization, terminal
     badges in the UI.
     """
+    state, _ = get_run_progress(run_id)
+    return state
+
+
+def get_run_progress(run_id: str) -> tuple[RunState | None, str | None]:
+    """Return ``(current_state, updated_at)`` for ``run_id``.
+
+    Single STATE-row read that powers both the terminal-poll check and
+    the live "in-state since" timestamp on the run-detail page.
+    """
     cfg = settings()
     item = (
         ddb()
         .get_item(
             TableName=cfg.runs_table,
             Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            ProjectionExpression="current_state",
+            ProjectionExpression="current_state, updated_at",
         )
         .get("Item")
     )
     if not item:
-        return None
+        return None, None
+    updated_at = item.get("updated_at", {}).get("S") or None
     raw = item.get("current_state", {}).get("S")
     if not raw:
-        return None
+        return None, updated_at
     try:
-        return RunState(raw)
+        return RunState(raw), updated_at
     except ValueError:
-        return None
+        return None, updated_at
 
 
 def is_run_terminal(run_id: str) -> bool:

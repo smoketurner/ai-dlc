@@ -112,3 +112,33 @@ def test_signals_terminal_for_done_runs() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["terminal"] is True
+    assert body["progress"] is None
+    assert body["current_state"] == "done"
+
+
+def test_returns_progress_for_active_state() -> None:
+    """The poll response carries an in-flight progress payload for live runs."""
+    ddb().put_item(
+        TableName=RUNS,
+        Item={
+            "pk": {"S": "RUN#r4"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "architect_running"},
+            "status": {"S": "RUNNING"},
+            "project_slug": {"S": "acme"},
+            "updated_at": {"S": "2026-05-13T12:00:00Z"},
+        },
+    )
+    seed_event("r4", event_id="0001", event_type="REQUEST.RECEIVED", timestamp="t1")
+
+    with TestClient(app) as client:
+        resp = client.get("/v1/runs/r4/events")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["terminal"] is False
+    assert body["current_state"] == "architect_running"
+    assert body["updated_at"] == "2026-05-13T12:00:00Z"
+    assert body["progress"]["agent"] == "Architect"
+    assert body["progress"]["since"] == "2026-05-13T12:00:00Z"
+    assert {"event": "DESIGN.READY", "state": "designed"} in body["progress"]["expected_next"]
