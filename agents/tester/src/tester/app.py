@@ -130,9 +130,8 @@ def upload_report(
     """Render and upload the report Markdown via the artifact_tool gateway target."""
     call_gateway_tool(
         mcp_client,
-        name="artifact_tool",
+        name="put_artifact",
         arguments={
-            "op": "put_artifact",
             "key": report_s3_key(run_id=run_id, revision_number=revision_number),
             "content": render_report(report),
         },
@@ -185,9 +184,8 @@ def post_pr_comment(
     try:
         call_gateway_tool(
             mcp_client,
-            name="repo_helper",
+            name="comment_pr",
             arguments={
-                "op": "comment_pr",
                 "repo": parsed.group("repo"),
                 "pr_number": int(parsed.group("num")),
                 "body": body,

@@ -113,8 +113,8 @@ def test_run_critic_uploads_via_mcp_and_publishes(
 
     call_tool.assert_called_once()
     tool_kwargs = call_tool.call_args.kwargs
-    assert tool_kwargs["name"] == "artifact_tool"
-    assert tool_kwargs["arguments"]["op"] == "put_artifact"
+    assert tool_kwargs["name"] == "put_artifact"
+    assert "op" not in tool_kwargs["arguments"]
     assert tool_kwargs["arguments"]["key"] == critique_s3_key("r-1")
     assert tool_kwargs["arguments"]["content"]  # rendered markdown body
 

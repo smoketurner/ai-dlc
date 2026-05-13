@@ -82,14 +82,14 @@ def test_run_reviewer_uses_gateway_and_publishes(
     # Two gateway calls: put_artifact (upload review) + comment_pr (post comment).
     assert call_tool.call_count == 2
     upload_kwargs = call_tool.call_args_list[0].kwargs
-    assert upload_kwargs["name"] == "artifact_tool"
-    assert upload_kwargs["arguments"]["op"] == "put_artifact"
+    assert upload_kwargs["name"] == "put_artifact"
+    assert "op" not in upload_kwargs["arguments"]
     assert upload_kwargs["arguments"]["key"] == review_s3_key(run_id="r-1", revision_number=0)
     assert upload_kwargs["arguments"]["content"]
 
     comment_kwargs = call_tool.call_args_list[1].kwargs
-    assert comment_kwargs["name"] == "repo_helper"
-    assert comment_kwargs["arguments"]["op"] == "comment_pr"
+    assert comment_kwargs["name"] == "comment_pr"
+    assert "op" not in comment_kwargs["arguments"]
     assert comment_kwargs["arguments"]["repo"] == "owner/repo"
     assert comment_kwargs["arguments"]["pr_number"] == 42
     assert comment_kwargs["arguments"]["body"]

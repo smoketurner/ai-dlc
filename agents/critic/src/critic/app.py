@@ -150,9 +150,8 @@ def upload_critique(mcp_client: MCPClient, critique: Critique, *, run_id: str) -
     """Render the critique and upload via the artifact_tool gateway target."""
     call_gateway_tool(
         mcp_client,
-        name="artifact_tool",
+        name="put_artifact",
         arguments={
-            "op": "put_artifact",
             "key": critique_s3_key(run_id),
             "content": render_critique(critique),
         },

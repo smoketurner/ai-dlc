@@ -333,8 +333,8 @@ def invoke_repo_helper(
     """
     response = call_gateway_tool(
         mcp_client,
-        name="repo_helper",
-        arguments={"op": op, "requestor_sub": requestor_sub, **fields},
+        name=op,
+        arguments={"requestor_sub": requestor_sub, **fields},
     )
     envelope = extract_envelope(response)
     if not envelope.get("ok"):
@@ -359,8 +359,8 @@ def call_artifact_tool(
     """
     response = call_gateway_tool(
         mcp_client,
-        name="artifact_tool",
-        arguments={"op": op, **fields},
+        name=op,
+        arguments=fields,
     )
     envelope = extract_envelope(response)
     if not envelope.get("ok"):

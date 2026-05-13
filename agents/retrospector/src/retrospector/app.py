@@ -285,8 +285,8 @@ def invoke_repo_helper(
     """
     response = call_gateway_tool(
         mcp_client,
-        name="repo_helper",
-        arguments={"op": op, **fields},
+        name=op,
+        arguments=fields,
     )
     envelope = extract_envelope(response)
     if not envelope.get("ok"):

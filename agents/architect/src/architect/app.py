@@ -125,8 +125,8 @@ def fetch_plan_body(mcp_client: MCPClient, run_id: str) -> str:
     """
     result = call_gateway_tool(
         mcp_client,
-        name="artifact_tool",
-        arguments={"op": "get_artifact", "key": plan_s3_key(run_id)},
+        name="get_artifact",
+        arguments={"key": plan_s3_key(run_id)},
     )
     envelope = extract_envelope(result)
     if not envelope.get("ok"):
