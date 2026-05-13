@@ -173,7 +173,7 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
               property {
                 name        = "op"
                 type        = "string"
-                description = "Operation: open_pr | comment_pr | create_branch | commit_files | get_pr | comment_issue | create_issue | list_issue_comments | list_check_runs | reply_pr_review_comment."
+                description = "Operation: open_pr | comment_pr | create_branch | commit_files | get_pr | get_file | get_issue | comment_issue | create_issue | list_issue_comments | list_pr_comments | list_pr_review_comments | list_check_runs | reply_pr_review_comment."
                 required    = true
               }
               property {
@@ -263,6 +263,11 @@ resource "aws_bedrockagentcore_gateway_target" "repo_helper" {
                 name        = "comment_id"
                 type        = "integer"
                 description = "GitHub review-comment id to reply to (used by reply_pr_review_comment)."
+              }
+              property {
+                name        = "path"
+                type        = "string"
+                description = "Repo-relative file path (used by get_file)."
               }
               property {
                 name        = "files"

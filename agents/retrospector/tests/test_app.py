@@ -160,8 +160,10 @@ def test_fetch_file_returns_content_when_repo_helper_says_exists(
         },
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
-    out = fetch_file(repo="o/r", path="AGENTS.md")
+    mcp_client = MagicMock()
+    out = fetch_file(mcp_client, repo="o/r", path="AGENTS.md")
     assert out == "# foo\n"
+    assert fake.call_args.args[0] is mcp_client
     assert fake.call_args.kwargs == {
         "op": "get_file",
         "repo": "o/r",
@@ -180,7 +182,7 @@ def test_fetch_file_returns_empty_when_file_missing(
         },
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
-    assert fetch_file(repo="o/r", path="MISSING.md") == ""
+    assert fetch_file(MagicMock(), repo="o/r", path="MISSING.md") == ""
 
 
 def test_open_memory_pr_invokes_repo_helper_chain_for_memory_md(
@@ -205,7 +207,7 @@ def test_open_memory_pr_invokes_repo_helper_chain_for_memory_md(
         ],
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    pr_url = open_memory_pr(payload=payload, decision=decision)
+    pr_url = open_memory_pr(MagicMock(), payload=payload, decision=decision)
     assert pr_url == "https://x/pr/9"
     ops = [call.kwargs["op"] for call in repo_helper_mock.call_args_list]
     assert ops == ["get_file", "create_branch", "commit_files", "open_pr"]
@@ -239,7 +241,7 @@ def test_open_memory_pr_falls_back_to_docs_memory_md(
         ],
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    open_memory_pr(payload=payload, decision=decision)
+    open_memory_pr(MagicMock(), payload=payload, decision=decision)
     commit_call = repo_helper_mock.call_args_list[3]
     files = commit_call.kwargs["files"]
     assert files[0]["path"] == "docs/MEMORY.md"
@@ -261,7 +263,7 @@ def test_open_memory_pr_defaults_to_root_when_no_file_exists(
         ],
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    open_memory_pr(payload=payload, decision=decision)
+    open_memory_pr(MagicMock(), payload=payload, decision=decision)
     commit_call = repo_helper_mock.call_args_list[3]
     files = commit_call.kwargs["files"]
     assert files[0]["path"] == "MEMORY.md"
@@ -284,7 +286,7 @@ def test_open_memory_pr_writes_to_agents_md_when_chosen(
         ],
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    pr_url = open_memory_pr(payload=payload, decision=decision)
+    pr_url = open_memory_pr(MagicMock(), payload=payload, decision=decision)
     assert pr_url == "https://x/pr/9"
     get_file_call = repo_helper_mock.call_args_list[0]
     assert get_file_call.kwargs == {
@@ -310,4 +312,4 @@ def test_open_memory_pr_raises_when_target_file_missing() -> None:
         confidence=0.5,
     )
     with pytest.raises(ValueError, match="target_file must be set"):
-        open_memory_pr(payload=payload, decision=decision)
+        open_memory_pr(MagicMock(), payload=payload, decision=decision)

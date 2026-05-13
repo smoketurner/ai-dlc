@@ -3,9 +3,11 @@
 The Retrospector uses Claude Haiku 4.5 — synthesis is small (read a
 PR + comments + MEMORY.md, decide one of two outcomes) and runs on
 every terminal event, so the cheaper model is the right pick. The
-agent loop runs with the read tools and finishes by emitting a
-:class:`RetrospectiveDecision` via Strands' ``structured_output_model``
-parameter.
+agent loop runs entirely on gateway-routed tools — ``artifact_tool``
+for ``read_memory_md`` / ``read_stack_profile_md`` / ``get_artifact``
+and ``repo_helper`` for the PR / issue / file reads — and finishes by
+emitting a :class:`RetrospectiveDecision` via Strands'
+``structured_output_model`` parameter.
 """
 
 from __future__ import annotations
@@ -15,21 +17,13 @@ from typing import Literal
 
 from strands import Agent
 from strands.models import BedrockModel
+from strands.tools.mcp import MCPClient
 
+from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from retrospector.decision import RetrospectiveDecision
-from retrospector.tools import (
-    get_issue_tool,
-    get_pr_tool,
-    list_issue_comments_tool,
-    list_pr_comments_tool,
-    list_pr_review_comments_tool,
-    read_memory_md_tool,
-    read_stack_profile_md_tool,
-    read_validation_artifact_tool,
-)
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -39,8 +33,14 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str) -> Agent:
+def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
     """Build a fresh Strands Agent for one retrospective.
+
+    The caller is responsible for starting ``mcp_client`` (typically via
+    ``with gateway_mcp_client() as mcp_client:``) and keeping it open
+    for the lifetime of the agent call. Tool definitions from the
+    gateway catalogue are spliced in — the retrospector has no
+    local-only tools.
 
     Prompt variant routed via :func:`common.routing.pick_variant` so
     A/B'ing the retrospector prompt follows the same convention as
@@ -57,16 +57,7 @@ def build_agent(run_id: str) -> Agent:
             streaming=True,
         ),
         system_prompt=load_system_prompt("retrospector", variant),
-        tools=[
-            read_memory_md_tool,
-            read_stack_profile_md_tool,
-            get_pr_tool,
-            list_pr_comments_tool,
-            list_pr_review_comments_tool,
-            get_issue_tool,
-            list_issue_comments_tool,
-            read_validation_artifact_tool,
-        ],
+        tools=list(gateway_tools(mcp_client)),
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 
@@ -78,12 +69,12 @@ type EventKind = Literal[
 ]
 
 
-def retrospect(  # noqa: PLR0913 -- 6 event fields + 2 cap-hit fields
+def retrospect(  # noqa: PLR0913 -- 6 event fields + 2 cap-hit fields + mcp_client
+    agent: Agent,
     *,
     event_type: EventKind,
     project_slug: str,
     target_repo: str,
-    run_id: str,
     pr_url: str | None,
     issue_url: str | None,
     reason: str | None,
@@ -101,7 +92,6 @@ def retrospect(  # noqa: PLR0913 -- 6 event fields + 2 cap-hit fields
         revision_count=revision_count,
         validation_artifact_keys=validation_artifact_keys,
     )
-    agent = build_agent(run_id)
     return run_for_structured_output(
         agent,
         output_model=RetrospectiveDecision,
@@ -141,19 +131,22 @@ def compose_message(
             "",
             f"Revision-cap hit (revision_count={revision_count}). The platform "
             "ran the implementer up to its cap and still couldn't converge. "
-            "Read each validator artifact below with read_validation_artifact "
-            "and look for the finding that recurs across rounds — that's the "
-            "real lesson:",
+            "Read each validator artifact below with "
+            "``get_artifact(key=...)`` and look for the finding that recurs "
+            "across rounds — that's the real lesson:",
             *(f"  - {key}" for key in validation_artifact_keys),
         ]
     parts += [
         "",
         "Steps:",
-        "  1. read_memory_md to see what's already recorded — DO NOT propose duplicates.",
-        "  2. If an impl PR is involved, get_pr + list_pr_comments + list_pr_review_comments.",
-        "  3. If a source issue is involved, get_issue + list_issue_comments.",
+        "  1. ``read_memory_md`` to see what's already recorded — DO NOT propose duplicates.",
+        "  2. If an impl PR is involved, ``repo_helper(op='get_pr', ...)`` + "
+        "``repo_helper(op='list_pr_comments', ...)`` + "
+        "``repo_helper(op='list_pr_review_comments', ...)``.",
+        "  3. If a source issue is involved, ``repo_helper(op='get_issue', ...)`` + "
+        "``repo_helper(op='list_issue_comments', ...)``.",
         "  4. If validation_artifact_keys are listed above, read each one with "
-        "read_validation_artifact and identify the recurring failure pattern.",
+        "``get_artifact(key=...)`` and identify the recurring failure pattern.",
         "  5. Decide whether the trace contains a reusable lesson worth appending "
         "to MEMORY.md. Return a RetrospectiveDecision JSON.",
     ]
