@@ -252,7 +252,9 @@ async def test_three_failures_no_mcp_still_raises(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_drive_agent_exception_during_remediation_continues(tmp_path: Path) -> None:
-    """drive_agent raising during remediation doesn't short-circuit — loops continue."""
+    """drive_agent raising during remediation is swallowed by _remediate; gate loops continue."""
+    from implementer.client import drive_agent as real_drive_agent  # noqa: F401
+
     gate_results = [
         (False, "lint", "lint error"),
         (False, "lint", "lint error"),
@@ -261,7 +263,7 @@ async def test_drive_agent_exception_during_remediation_continues(tmp_path: Path
 
     mcp = MagicMock()
 
-    async def exploding_remediate(*args: object, **kwargs: object) -> None:
+    async def exploding_drive_agent(_prompt: str, *, run_id: str) -> tuple[None, dict]:  # type: ignore[return]
         raise RuntimeError("SDK exploded")
 
     with (
@@ -269,9 +271,9 @@ async def test_drive_agent_exception_during_remediation_continues(tmp_path: Path
         patch.object(gates, "run_all_gates", side_effect=gate_results),
         patch.object(gates, "has_uncommitted_changes", return_value=False),
         patch.object(gates, "call_artifact_tool"),
-        patch.object(gates, "_remediate", side_effect=exploding_remediate),
-        # _remediate itself swallows errors, so run_verification_gate should
-        # exhaust attempts and raise the gate-blocked error (not the SDK error).
+        # Patch drive_agent as seen through the lazy import inside _remediate.
+        patch("implementer.client.drive_agent", exploding_drive_agent),
+        # gate-blocked error surfaces; "SDK exploded" should not propagate.
         pytest.raises(RuntimeError, match="make lint"),
     ):
         await run_verification_gate("run-5", mcp_client=mcp)
