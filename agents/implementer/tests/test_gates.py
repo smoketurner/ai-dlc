@@ -214,7 +214,7 @@ async def test_one_remediation_pass_then_pass(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_three_failures_writes_blocked_and_raises(tmp_path: Path) -> None:
-    """After MAX_REMEDIATION_PASSES failures, writes BLOCKED.md and raises."""
+    """After MAX_GATE_ATTEMPTS failures, writes BLOCKED.md and raises."""
     mcp = MagicMock()
 
     with (
@@ -275,6 +275,115 @@ async def test_drive_agent_exception_during_remediation_continues(tmp_path: Path
         pytest.raises(RuntimeError, match="make lint"),
     ):
         await run_verification_gate("run-5", mcp_client=mcp)
+
+
+def test_all_targets_undefined_returns_success(tmp_path: Path) -> None:
+    """When all make targets are undefined, run_all_gates passes (no-op)."""
+    with patch.object(gates, "_target_exists", return_value=False):
+        passed, failed, output = run_all_gates(tmp_path)
+    assert passed is True
+    assert failed == ""
+    assert output == ""
+
+
+def test_target_exists_handles_oserror(tmp_path: Path) -> None:
+    """When subprocess.run raises OSError, _target_exists returns False."""
+    with patch("implementer.gates.subprocess.run", side_effect=OSError("Permission denied")):
+        result = gates._target_exists("test", tmp_path)
+    assert result is False
+
+
+def test_large_output_truncated_to_tail(tmp_path: Path) -> None:
+    """Large command output is truncated to the last _OUTPUT_TAIL chars."""
+    large_output = "x" * 10000
+
+    def fake_run(
+        target: str,
+        _cwd: Path,
+        *,
+        timeout: int = 120,
+    ) -> subprocess.CompletedProcess[str]:
+        if target == "lint":
+            return subprocess.CompletedProcess(["make", "lint"], 1, stdout=large_output, stderr="")
+        return _ok_proc(target)
+
+    with (
+        patch.object(gates, "_target_exists", return_value=True),
+        patch.object(gates, "run_make_command", side_effect=fake_run),
+    ):
+        passed, _failed, output = run_all_gates(tmp_path)
+
+    assert not passed
+    assert len(output) <= gates._OUTPUT_TAIL
+    assert output == large_output[-gates._OUTPUT_TAIL :]
+
+
+def test_per_command_timeout_values(tmp_path: Path) -> None:
+    """Each make command is called with the correct per-target timeout."""
+    timeouts_used: list[tuple[str, int]] = []
+
+    def fake_run(
+        target: str,
+        _cwd: Path,
+        *,
+        timeout: int = 120,
+    ) -> subprocess.CompletedProcess[str]:
+        timeouts_used.append((target, timeout))
+        return _ok_proc(target)
+
+    with (
+        patch.object(gates, "_target_exists", return_value=True),
+        patch.object(gates, "run_make_command", side_effect=fake_run),
+    ):
+        run_all_gates(tmp_path)
+
+    assert ("test", 300) in timeouts_used
+    assert ("lint", 60) in timeouts_used
+    assert ("type", 60) in timeouts_used
+    assert ("format", 60) in timeouts_used
+
+
+@pytest.mark.asyncio
+async def test_remediation_pass_commit_messages(tmp_path: Path) -> None:
+    """Each remediation pass commits with the correct message."""
+    gate_results = [
+        (False, "lint", "error 1"),
+        (False, "lint", "error 2"),
+        (True, "", ""),
+    ]
+    commit_messages: list[str] = []
+
+    def fake_commit(msg: str) -> str:
+        commit_messages.append(msg)
+        return "abc"
+
+    with (
+        patch.object(gates, "repo_path", return_value=tmp_path),
+        patch.object(gates, "run_all_gates", side_effect=gate_results),
+        patch.object(gates, "has_uncommitted_changes", return_value=True),
+        patch.object(gates, "commit_changes", side_effect=fake_commit),
+        patch.object(gates, "_remediate", new_callable=AsyncMock),
+    ):
+        await run_verification_gate("run-rem")
+
+    assert "fix: gate remediation pass 1" in commit_messages
+    assert "fix: gate remediation pass 2" in commit_messages
+
+
+@pytest.mark.asyncio
+async def test_blocked_md_write_failure_still_raises(tmp_path: Path) -> None:
+    """When artifact write fails, RuntimeError is still raised for the gate failure."""
+    mcp = MagicMock()
+
+    with (
+        patch.object(gates, "repo_path", return_value=tmp_path),
+        patch.object(gates, "run_all_gates", return_value=(False, "lint", "error")),
+        patch.object(gates, "has_uncommitted_changes", return_value=False),
+        patch.object(gates, "call_artifact_tool", side_effect=RuntimeError("S3 error")),
+        patch.object(gates, "_remediate", new_callable=AsyncMock),
+        pytest.raises(RuntimeError, match="make lint"),
+    ):
+        await run_verification_gate("run-blocked-fail", mcp_client=mcp)
 
 
 @pytest.mark.asyncio

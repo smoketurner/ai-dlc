@@ -301,6 +301,84 @@ def test_compose_implementation_prompt_mentions_plan_and_critique(
     assert "high-severity finding" in prompt.lower()
 
 
+@pytest.mark.asyncio
+async def test_execute_implementation_gate_failure_blocks_push(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """When run_verification_gate raises, push_branch is not called."""
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=FinishReport(summary="Done.", status="done"),
+        made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+
+    async def gate_raises(_run_id: str, **_kw: Any) -> None:
+        raise RuntimeError("gate failed: make lint")
+
+    monkeypatch.setattr(client, "run_verification_gate", gate_raises)
+
+    with pytest.raises(RuntimeError, match="gate failed"):
+        await client.execute_implementation(payload)
+
+    assert calls["push_branch"] == [], "push_branch must not be called when gate raises"
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_gate_failure_blocks_push(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_session: RepoSession,
+) -> None:
+    """When run_verification_gate raises during revision, push_branch is not called."""
+    revision_payload = ImplementerInput(
+        project_slug="ai-dlc",
+        run_id="01999999-9999-7999-9999-999999999999",
+        correlation_id="01999999-9999-7999-9999-999999999998",
+        target_repo="owner/name",
+        mode="revision",
+        revision_number=1,
+        pr_url="https://github.com/owner/name/pull/77",
+    )
+
+    push_calls: list[Any] = []
+    fake_client = MagicMock()
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
+
+    async def gate_raises(_run_id: str, **_kw: Any) -> None:
+        raise RuntimeError("gate failed: make type")
+
+    monkeypatch.setattr(client, "gateway_mcp_client", lambda: fake_client)
+    monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
+    monkeypatch.setattr(client, "clone_repo", lambda _s: None)
+    monkeypatch.setattr(client, "checkout_impl_branch", lambda _b: None)
+    monkeypatch.setattr(client, "fetch_plan_and_critique", lambda *a, **kw: None)
+    monkeypatch.setattr(client, "fetch_revision_inputs", lambda *a, **kw: {})
+    monkeypatch.setattr(client, "compose_revision_prompt", lambda *a, **kw: "prompt")
+
+    async def fake_drive_agent_noop(
+        _prompt: str,
+        *,
+        run_id: str,
+    ) -> tuple[None, dict[str, Any]]:
+        del run_id
+        return None, {"token_in": 0, "token_out": 0, "cost_usd": 0.0, "duration_ms": 0}
+
+    monkeypatch.setattr(client, "drive_agent", fake_drive_agent_noop)
+    monkeypatch.setattr(client, "has_uncommitted_changes", lambda: False)
+    monkeypatch.setattr(client, "run_verification_gate", gate_raises)
+    monkeypatch.setattr(client, "push_branch", push_calls.append)
+    monkeypatch.setattr(client, "short_diff_summary", lambda: "")
+
+    with pytest.raises(RuntimeError, match="gate failed"):
+        await client.execute_revision(revision_payload)
+
+    assert push_calls == [], "push_branch must not be called when gate raises"
+
+
 def test_fetch_revision_inputs_pulls_via_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     """fetch_revision_inputs uses gateway artifact_tool.get_artifact for each source."""
     fetched: list[dict[str, Any]] = []

@@ -3,7 +3,7 @@
 After the Claude Agent SDK session commits its work, ``run_verification_gate``
 runs four ``make`` commands in the repo checkout directory.  On any failure
 the gate feeds the output back to a new ``drive_agent`` session for a
-remediation pass (up to ``MAX_REMEDIATION_PASSES`` total gate attempts).
+remediation pass (up to ``MAX_GATE_ATTEMPTS`` total gate attempts).
 If all attempts fail, it writes a ``BLOCKED.md`` artifact to S3 and raises
 ``RuntimeError``.
 
@@ -43,7 +43,8 @@ GATE_COMMANDS: list[tuple[str, int]] = [
     ("type", 60),
     ("format", 60),
 ]
-MAX_REMEDIATION_PASSES = 3
+# Number of gate *attempts* total (remediation passes = MAX_GATE_ATTEMPTS - 1).
+MAX_GATE_ATTEMPTS = 3
 # Maximum chars of command output sent to the remediation prompt.
 _OUTPUT_TAIL = 4000
 
@@ -138,7 +139,7 @@ def compose_remediation_prompt(
         pass_number:   1-based attempt counter shown to the agent.
     """
     return (
-        f"The following make target failed (attempt {pass_number}/{MAX_REMEDIATION_PASSES}). "
+        f"The following make target failed (attempt {pass_number}/{MAX_GATE_ATTEMPTS}). "
         f"Fix the issues and commit so the command exits 0:\n\n"
         f"$ make {failed_target}\n"
         f"{output}\n\n"
@@ -174,7 +175,7 @@ async def run_verification_gate(
 
     Each pass runs all four ``make`` commands.  On failure, a new
     ``drive_agent`` session is opened with the error output as context.
-    After ``MAX_REMEDIATION_PASSES`` failed attempts, writes ``BLOCKED.md``
+    After ``MAX_GATE_ATTEMPTS`` failed attempts, writes ``BLOCKED.md``
     to S3 via the gateway (best-effort) and raises ``RuntimeError``.
 
     Args:
@@ -186,7 +187,7 @@ async def run_verification_gate(
     failed_target = ""
     output = ""
 
-    for attempt in range(1, MAX_REMEDIATION_PASSES + 1):
+    for attempt in range(1, MAX_GATE_ATTEMPTS + 1):
         passed, failed_target, output = run_all_gates(cwd)
         if passed:
             if has_uncommitted_changes():
@@ -196,16 +197,16 @@ async def run_verification_gate(
         logger.warning(
             "gate: attempt failed",
             attempt=attempt,
-            max=MAX_REMEDIATION_PASSES,
+            max=MAX_GATE_ATTEMPTS,
             failed_target=failed_target,
         )
-        if attempt < MAX_REMEDIATION_PASSES:
+        if attempt < MAX_GATE_ATTEMPTS:
             await _remediate(run_id, failed_target, output, attempt)
             if has_uncommitted_changes():
                 commit_changes(f"fix: gate remediation pass {attempt}")
 
     _write_blocked_md(run_id, mcp_client, failed_target, output)
-    msg = f"verification gate failed after {MAX_REMEDIATION_PASSES} passes: make {failed_target}"
+    msg = f"verification gate failed after {MAX_GATE_ATTEMPTS} passes: make {failed_target}"
     raise RuntimeError(msg)
 
 
@@ -221,7 +222,7 @@ def _write_blocked_md(
     content = (
         f"# Gate blocked\n\n"
         f"Run: {run_id}\n\n"
-        f"After {MAX_REMEDIATION_PASSES} remediation attempts, "
+        f"After {MAX_GATE_ATTEMPTS} remediation attempts, "
         f"`make {failed_target}` still exits non-zero.\n\n"
         f"## Last output\n\n```\n{output}\n```\n"
     )
