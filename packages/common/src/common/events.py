@@ -206,6 +206,12 @@ class ImplIterationRequested(Payload):
     Carries the mention text or feedback as a free-form string the implementer
     uses as input to its next revision. The event_projector appends
     ``delivery_id`` to the run row's ``delivery_ids`` set for idempotency.
+
+    ``comment_id`` is populated for ``issue_comment_mention`` and
+    ``review_comment_mention``; ``review_id`` is populated for
+    ``review_changes_requested``. Both are nullable on the envelope so
+    the schema is permissive, but the projector drops the feedback item
+    when the id required by the discriminator is missing.
     """
 
     project_slug: str
@@ -221,6 +227,8 @@ class ImplIterationRequested(Payload):
     ]
     commenter: Annotated[str, Field(min_length=1, max_length=128)]
     feedback_body: Annotated[str, Field(min_length=1, max_length=8192)]
+    comment_id: Annotated[int, Field(ge=1)] | None = None
+    review_id: Annotated[int, Field(ge=1)] | None = None
 
 
 class ChecksPassed(Payload):

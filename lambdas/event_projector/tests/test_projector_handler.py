@@ -592,6 +592,7 @@ def test_impl_iteration_requested_issue_comment_appends_mention_feedback() -> No
             "source": "issue_comment_mention",
             "commenter": "alice",
             "feedback_body": "please also rename Foo",
+            "comment_id": 314159,
         },
     )
     handler(eb_event(mention), ctx())
@@ -605,6 +606,7 @@ def test_impl_iteration_requested_issue_comment_appends_mention_feedback() -> No
     assert entry["kind"]["S"] == "issue_comment_mention"
     assert entry["body"]["S"] == "please also rename Foo"
     assert entry["commenter"]["S"] == "alice"
+    assert entry["comment_id"]["N"] == "314159"
 
 
 def test_impl_iteration_requested_review_comment_uses_review_variant() -> None:
@@ -626,11 +628,13 @@ def test_impl_iteration_requested_review_comment_uses_review_variant() -> None:
             "source": "review_comment_mention",
             "commenter": "alice",
             "feedback_body": "this loop is N+1",
+            "comment_id": 271828,
         },
     )
     handler(eb_event(mention), ctx())
     items = state_of("run-1")["pending_revision_feedback"]["L"]
     assert items[0]["M"]["kind"]["S"] == "review_comment_mention"
+    assert items[0]["M"]["comment_id"]["N"] == "271828"
 
 
 def test_impl_iteration_requested_review_changes_uses_changes_variant() -> None:
@@ -652,6 +656,7 @@ def test_impl_iteration_requested_review_changes_uses_changes_variant() -> None:
             "source": "review_changes_requested",
             "commenter": "alice",
             "feedback_body": "needs more tests",
+            "review_id": 161803,
         },
     )
     handler(eb_event(mention), ctx())
@@ -659,6 +664,41 @@ def test_impl_iteration_requested_review_changes_uses_changes_variant() -> None:
     assert entry["kind"]["S"] == "review_changes_requested"
     assert entry["reviewer"]["S"] == "alice"
     assert entry["body"]["S"] == "needs more tests"
+    assert entry["review_id"]["N"] == "161803"
+
+
+def test_impl_iteration_requested_without_comment_id_drops_feedback() -> None:
+    """A legacy envelope missing ``comment_id`` advances state but appends no feedback.
+
+    Older envelopes emitted before the id was threaded through the
+    webhook would otherwise queue a feedback item with ``comment_id=0``,
+    which the implementer's ``ImplementerInput`` rejects on the next
+    dispatch. The projector drops the feedback item instead so the state
+    machine can still move forward (or be patched manually).
+    """
+    ddb().put_item(
+        TableName=TABLE,
+        Item={
+            "pk": {"S": "RUN#run-1"},
+            "sk": {"S": "STATE"},
+            "current_state": {"S": "impl_pr_open"},
+        },
+    )
+    mention = envelope(
+        type="IMPL.ITERATION_REQUESTED",
+        payload={
+            "project_slug": "demo",
+            "pr_url": "https://github.com/o/r/pull/42",
+            "delivery_id": "webhook-legacy",
+            "source": "issue_comment_mention",
+            "commenter": "alice",
+            "feedback_body": "rename Foo",
+        },
+    )
+    handler(eb_event(mention), ctx())
+    state = state_of("run-1")
+    assert state["current_state"]["S"] == "revising"
+    assert "pending_revision_feedback" not in state
 
 
 def test_second_impl_iteration_in_revising_appends_without_double_advance() -> None:
@@ -680,7 +720,7 @@ def test_second_impl_iteration_in_revising_appends_without_double_advance() -> N
                     {
                         "M": {
                             "kind": {"S": "issue_comment_mention"},
-                            "comment_id": {"N": "0"},
+                            "comment_id": {"N": "101"},
                             "body": {"S": "first one"},
                             "commenter": {"S": "alice"},
                         },
@@ -699,6 +739,7 @@ def test_second_impl_iteration_in_revising_appends_without_double_advance() -> N
             "source": "issue_comment_mention",
             "commenter": "alice",
             "feedback_body": "also rename Foo",
+            "comment_id": 202,
         },
     )
     handler(eb_event(second), ctx())

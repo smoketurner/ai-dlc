@@ -692,59 +692,90 @@ def build_mention_feedback(*, payload: dict[str, Any]) -> dict[str, Any] | None:
 
     The ``source`` discriminator picks the right :data:`FeedbackItem`
     variant — ``issue_comment_mention`` / ``review_comment_mention``
-    / ``review_changes_requested``.
+    / ``review_changes_requested``. Returns ``None`` (and the projector
+    drops the feedback while still advancing state) when the id the
+    discriminator requires is missing from the envelope.
     """
-    source = payload.get("source")
     body = payload.get("feedback_body")
     commenter = payload.get("commenter")
     if not isinstance(body, str) or not body.strip():
         return None
     if not isinstance(commenter, str) or not commenter:
         return None
-    if source == "issue_comment_mention":
-        return _issue_comment_feedback(body=body, commenter=commenter)
-    if source == "review_comment_mention":
-        return _review_comment_feedback(body=body, commenter=commenter)
-    if source == "review_changes_requested":
-        return _review_changes_feedback(body=body, commenter=commenter)
-    return None
+    source = payload.get("source")
+    builder = _MENTION_BUILDERS.get(source) if isinstance(source, str) else None
+    return builder(payload=payload, body=body, commenter=commenter) if builder else None
 
 
-def _issue_comment_feedback(*, body: str, commenter: str) -> dict[str, Any]:
+def _issue_comment_feedback(
+    *,
+    payload: dict[str, Any],
+    body: str,
+    commenter: str,
+) -> dict[str, Any] | None:
     """Build an ``issue_comment_mention`` feedback dict."""
+    comment_id = payload.get("comment_id")
+    if not isinstance(comment_id, int) or comment_id < 1:
+        return None
     return {
         "kind": "issue_comment_mention",
-        "comment_id": 0,
+        "comment_id": comment_id,
         "body": body,
         "commenter": commenter,
     }
 
 
-def _review_comment_feedback(*, body: str, commenter: str) -> dict[str, Any]:
+def _review_comment_feedback(
+    *,
+    payload: dict[str, Any],
+    body: str,
+    commenter: str,
+) -> dict[str, Any] | None:
     """Build a ``review_comment_mention`` feedback dict.
 
     ``path`` / ``commit_id`` are placeholders — the webhook layer
     carries the full review-comment context elsewhere if needed; the
     implementer's prompt only needs the body + commenter to act.
     """
+    comment_id = payload.get("comment_id")
+    if not isinstance(comment_id, int) or comment_id < 1:
+        return None
     return {
         "kind": "review_comment_mention",
         "path": "(unknown)",
         "commit_id": "0" * 7,
-        "comment_id": 0,
+        "comment_id": comment_id,
         "body": body,
         "commenter": commenter,
     }
 
 
-def _review_changes_feedback(*, body: str, commenter: str) -> dict[str, Any]:
+def _review_changes_feedback(
+    *,
+    payload: dict[str, Any],
+    body: str,
+    commenter: str,
+) -> dict[str, Any] | None:
     """Build a ``review_changes_requested`` feedback dict."""
+    review_id = payload.get("review_id")
+    if not isinstance(review_id, int) or review_id < 1:
+        return None
     return {
         "kind": "review_changes_requested",
         "reviewer": commenter,
         "body": body,
-        "review_id": 1,
+        "review_id": review_id,
     }
+
+
+_MENTION_BUILDERS: dict[
+    str,
+    Callable[..., dict[str, Any] | None],
+] = {
+    "issue_comment_mention": _issue_comment_feedback,
+    "review_comment_mention": _review_comment_feedback,
+    "review_changes_requested": _review_changes_feedback,
+}
 
 
 def apply_run_state_condition(update: UpdateBuilder, *, mode: RunMode) -> None:

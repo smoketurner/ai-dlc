@@ -308,6 +308,8 @@ def handle_pull_request_review(payload: dict[str, Any], delivery_id: str) -> dic
         "review_changes_requested",
     ] = "review_changes_requested" if state == "changes_requested" else "issue_comment_mention"
     commenter = (review.get("user") or {}).get("login", "unknown")
+    review_id_raw = review.get("id")
+    review_id = review_id_raw if isinstance(review_id_raw, int) and review_id_raw >= 1 else None
     return emit_impl_iteration(
         row,
         pr_url=pr_url,
@@ -315,6 +317,8 @@ def handle_pull_request_review(payload: dict[str, Any], delivery_id: str) -> dic
         source=review_source,
         commenter=commenter,
         feedback_body=body,
+        review_id=review_id if review_source == "review_changes_requested" else None,
+        comment_id=review_id if review_source == "issue_comment_mention" else None,
     )
 
 
@@ -340,6 +344,8 @@ def handle_pull_request_review_comment(
         return {"ok": True, "ignored": "not an impl PR"}
     react_to_pr_review_comment(payload.get("repository") or {}, comment)
     commenter = (comment.get("user") or {}).get("login", "unknown")
+    comment_id_raw = comment.get("id")
+    comment_id = comment_id_raw if isinstance(comment_id_raw, int) and comment_id_raw >= 1 else None
     return emit_impl_iteration(
         row,
         pr_url=pr_url,
@@ -347,6 +353,7 @@ def handle_pull_request_review_comment(
         source="review_comment_mention",
         commenter=commenter,
         feedback_body=body,
+        comment_id=comment_id,
     )
 
 
@@ -386,6 +393,8 @@ def handle_pr_comment(
         return {"ok": True, "ignored": "no match"}
     comment = payload.get("comment") or {}
     commenter = (comment.get("user") or {}).get("login", "unknown")
+    comment_id_raw = comment.get("id")
+    comment_id = comment_id_raw if isinstance(comment_id_raw, int) and comment_id_raw >= 1 else None
     react_to_issue_comment(payload.get("repository") or {}, comment)
     return emit_impl_iteration(
         row,
@@ -394,6 +403,7 @@ def handle_pr_comment(
         source="issue_comment_mention",
         commenter=commenter,
         feedback_body=body,
+        comment_id=comment_id,
     )
 
 
@@ -673,6 +683,8 @@ def emit_impl_iteration(
     ],
     commenter: str,
     feedback_body: str,
+    comment_id: int | None = None,
+    review_id: int | None = None,
 ) -> dict[str, Any]:
     """Publish one IMPL.ITERATION_REQUESTED for a run STATE row + feedback."""
     if not delivery_id:
@@ -688,6 +700,8 @@ def emit_impl_iteration(
         source=source,
         commenter=commenter,
         feedback_body=feedback_body,
+        comment_id=comment_id,
+        review_id=review_id,
     )
     emit(
         envelope_for(

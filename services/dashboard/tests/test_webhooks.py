@@ -321,6 +321,8 @@ async def test_review_changes_requested_with_mention_emits_iteration(
     assert envelope.payload.source == "review_changes_requested"
     assert envelope.payload.commenter == "alice"
     assert envelope.payload.pr_url == "https://github.com/o/r/pull/1"
+    assert envelope.payload.review_id == 42
+    assert envelope.payload.comment_id is None
 
 
 @pytest.mark.asyncio
@@ -336,12 +338,15 @@ async def test_review_commented_with_mention_emits_iteration(
             "state": "commented",
             "user": {"login": "alice"},
             "body": f"@{BOT_LOGIN} please look at this",
+            "id": 99,
         },
         "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
     }
     await post_webhook(event_type="pull_request_review", payload=payload)
     assert captured_events[0].type == "IMPL.ITERATION_REQUESTED"
     assert captured_events[0].payload.source == "issue_comment_mention"
+    assert captured_events[0].payload.comment_id == 99
+    assert captured_events[0].payload.review_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +376,7 @@ async def test_review_comment_with_mention_emits_iteration(
     await post_webhook(event_type="pull_request_review_comment", payload=payload)
     assert [e.type for e in captured_events] == ["IMPL.ITERATION_REQUESTED"]
     assert captured_events[0].payload.source == "review_comment_mention"
+    assert captured_events[0].payload.comment_id == 1
 
 
 @pytest.mark.asyncio
@@ -429,6 +435,7 @@ async def test_pr_comment_with_mention_emits_iteration(
     payload_out = captured_events[0].payload
     assert payload_out.source == "issue_comment_mention"
     assert payload_out.commenter == "alice"
+    assert payload_out.comment_id == 7
 
 
 # ---------------------------------------------------------------------------
