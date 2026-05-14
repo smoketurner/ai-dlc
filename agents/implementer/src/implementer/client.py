@@ -46,6 +46,7 @@ from common.runtime import (
 )
 from common.templating import make_template_env
 from implementer.finish import FinishReport, FinishSink
+from implementer.gates import run_verification_gate
 from implementer.options import build_options
 from implementer.repo_ops import (
     call_artifact_tool,
@@ -114,6 +115,7 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
         commit_message = build_commit_message(payload.run_id, report=report)
         if has_uncommitted_changes():
             commit_changes(commit_message)
+        await run_verification_gate(payload.run_id, mcp_client=mcp_client)
         push_branch(impl_branch)
 
         pr_url = open_impl_pr(
@@ -184,6 +186,7 @@ async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResu
             commit_changes(
                 f"revision r{revision_number}: address aggregated feedback",
             )
+        await run_verification_gate(payload.run_id, mcp_client=mcp_client)
         push_branch(impl_branch)
 
         if report is not None and report.inline_replies and payload.pr_url is not None:
