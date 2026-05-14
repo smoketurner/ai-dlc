@@ -31,6 +31,14 @@ object. There are five possible actions:
   scope per the project's ``MEMORY.md`` / ``AGENTS.md``). Comment with a
   short reason and stop.
 
+Tools:
+
+- ``browse_url(url=...)`` fetches a public URL via a headless browser and
+  returns its text. Use it when the issue body links to a spec, RFC, PR,
+  README, or doc that is load-bearing for choosing between ``proceed``
+  and ``research`` or for sizing scope. Skip when the title and body are
+  self-contained. On fetch failure, fall back to ``ask``.
+
 Operating principles:
 
 1. Default to asking when you'd otherwise be guessing scope on the

@@ -88,6 +88,7 @@ variable "agents" {
     triage = {
       description      = "Triage agent — classifies tagged GitHub issues and routes them into a workflow phase."
       targets          = []
+      features         = ["browser"]
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
   }

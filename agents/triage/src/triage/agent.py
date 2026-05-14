@@ -19,6 +19,7 @@ from strands.models import BedrockModel
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import TriageInput, default_retry_strategy, run_for_structured_output
 from common.triage import TriageDecision
+from triage.tools import browse_url_tool
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-haiku-4-5-v1"
 
@@ -45,6 +46,7 @@ def build_agent(run_id: str) -> Agent:
             streaming=True,
         ),
         system_prompt=load_system_prompt("triage", variant),
+        tools=[browse_url_tool],
         retry_strategy=default_retry_strategy(bedrock_model_id),
     )
 
