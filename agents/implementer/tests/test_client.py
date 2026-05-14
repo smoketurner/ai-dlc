@@ -74,8 +74,6 @@ def install_implementation_mocks(
     fake_client.__enter__.return_value = fake_client
     fake_client.__exit__.return_value = False
 
-    import implementer.gates as gates_mod
-
     async def fake_verification_gate(_run_id: str, **_kw: Any) -> None:
         pass
 
@@ -90,7 +88,7 @@ def install_implementation_mocks(
     monkeypatch.setattr(client, "short_diff_summary", lambda: "diff stat")
     monkeypatch.setattr(client, "repo_made_real_changes", lambda: made_real_changes)
     monkeypatch.setattr(client, "has_uncommitted_changes", lambda: has_uncommitted_changes)
-    monkeypatch.setattr(gates_mod, "run_verification_gate", fake_verification_gate)
+    monkeypatch.setattr(client, "run_verification_gate", fake_verification_gate)
 
     usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
 

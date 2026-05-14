@@ -253,8 +253,6 @@ async def test_three_failures_no_mcp_still_raises(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_drive_agent_exception_during_remediation_continues(tmp_path: Path) -> None:
     """drive_agent raising during remediation is swallowed by _remediate; gate loops continue."""
-    from implementer.client import drive_agent as real_drive_agent  # noqa: F401
-
     gate_results = [
         (False, "lint", "lint error"),
         (False, "lint", "lint error"),
