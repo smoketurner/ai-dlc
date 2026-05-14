@@ -519,6 +519,10 @@ def handle_validation_approve(run: Run) -> Action:
     nothing has projected yet, we proactively advance into
     ``awaiting_checks`` so the next webhook can land the run on the
     correct cursor without racing this beacon.
+
+    When checks are red we advance into ``revising`` (the projector
+    already stamped the CI-failure feedback item) and let the follow-up
+    beacon land on :func:`handle_revising` for the single dispatch.
     """
     if run.check_state == "passed":
         return AdvanceState(
@@ -528,7 +532,7 @@ def handle_validation_approve(run: Run) -> Action:
             advance_to=RunState.awaiting_human_merge.value,
         )
     if run.check_state == "failed":
-        return dispatch_revision(run, advance_from=RunState.validation_complete, automated=True)
+        return advance_to_revising(run, trigger=REVISION_TRIGGER_CI_FAILURE)
     return AdvanceState(
         target_pk=f"RUN#{run.run_id}",
         target_sk="STATE",
@@ -538,16 +542,13 @@ def handle_validation_approve(run: Run) -> Action:
 
 
 def handle_validation_request_changes(run: Run) -> Action:
-    """Reviewer requested changes — dispatch revision or fail at cap."""
-    if run.revision_count >= MAX_REVISIONS:
-        return emit_run_failed(
-            run,
-            reason=(
-                f"revision cap ({MAX_REVISIONS}) hit while reviewer.verdict "
-                "is still request_changes"
-            ),
-        )
-    return dispatch_revision(run, advance_from=RunState.validation_complete, automated=True)
+    """Reviewer requested changes — advance into ``revising``.
+
+    The cap check happens later in :func:`handle_revising` (the single
+    revision-dispatch site). Advancing here writes the trigger label so
+    that handler can tell automated from human-mention revisions.
+    """
+    return advance_to_revising(run, trigger=REVISION_TRIGGER_REVIEWER)
 
 
 # ---------------------------------------------------------------------------
@@ -555,78 +556,74 @@ def handle_validation_request_changes(run: Run) -> Action:
 # ---------------------------------------------------------------------------
 
 
-def handle_revising(run: Run) -> Action:
-    """Dispatch the implementer to apply pending revision feedback.
+REVISION_TRIGGER_REVIEWER = "reviewer_request_changes"
+REVISION_TRIGGER_CI_FAILURE = "ci_failure"
+REVISION_TRIGGER_HUMAN_MENTION = "human_mention"
 
-    The projector writes ``pending_revision_feedback`` to the run row
-    when the triggering event lands (CHECKS.FAILED, IMPL.ITERATION_REQUESTED,
-    or a changes-requested REVIEW.READY). The implementer consumes it on
-    revision dispatch.
+AUTOMATED_REVISION_TRIGGERS: frozenset[str] = frozenset(
+    {REVISION_TRIGGER_REVIEWER, REVISION_TRIGGER_CI_FAILURE},
+)
+"""Triggers that count toward :data:`MAX_REVISIONS`.
 
-    Note: ``handle_revising`` is reached only when the run is already
-    in ``revising`` (the projector advanced it via transition). It does
-    not increment ``revision_count`` itself — that's the dispatcher's
-    job in :func:`dispatch_revision` (called from
-    :func:`handle_validation_complete`). When ``revising`` is reached
-    directly via CHECKS.FAILED / IMPL.ITERATION_REQUESTED projection,
-    we still need to dispatch the implementer here.
+A revision started by a human ``@aidlc-bot`` mention is uncapped — the
+human is steering, so we don't second-guess the count.
+"""
+
+
+def advance_to_revising(run: Run, *, trigger: str) -> AdvanceState:
+    """Build an ``AdvanceState`` from ``validation_complete`` into ``revising``.
+
+    Stamps ``last_revision_trigger`` atomically with the cursor move so
+    :func:`handle_revising` can read it on the follow-up beacon.
     """
-    return dispatch_revision(
-        run,
-        advance_from=None,
-        automated=False,
-        already_in_revising=True,
+    return AdvanceState(
+        target_pk=f"RUN#{run.run_id}",
+        target_sk="STATE",
+        advance_from=RunState.validation_complete.value,
+        advance_to=RunState.revising.value,
+        extra_attrs=(("last_revision_trigger", trigger),),
     )
 
 
-def dispatch_revision(
-    run: Run,
-    *,
-    advance_from: RunState | None,
-    automated: bool,
-    already_in_revising: bool = False,
-) -> Action:
-    """Build the implementer revision invoke + optional state advance.
+def handle_revising(run: Run) -> Action:
+    """Sole revision-dispatch site — cap check + implementer invoke.
 
-    Args:
-        run: parsed run state.
-        advance_from: the state the run is currently in (the implementer
-            invoke includes the conditional advance). ``None`` when the
-            caller is already in ``revising`` and just needs to fire the
-            implementer.
-        automated: ``True`` when this revision is automated (validator-
-            or CI-driven); ``False`` for human-mention revisions. Used
-            to decide whether the new revision number counts toward the
-            cap (automated ones do; human ones don't — but
-            :func:`handle_validation_complete` checks the cap before
-            calling here, and human-mention revisions never reach this
-            via validation_complete).
-        already_in_revising: ``True`` when the run is already in
-            ``revising`` (called from :func:`handle_revising`) — skip
-            the state advance.
+    The run is at ``revising`` because the projector advanced it
+    (CHECKS.FAILED, IMPL.ITERATION_REQUESTED) or because
+    :func:`handle_validation_complete` advanced it (request_changes or
+    approve + CI failed). All three paths stamp
+    ``last_revision_trigger`` on the transition, so this handler can
+    tell which kind of revision it is.
+
+    Automated triggers (reviewer-changes-requested, CI failure) count
+    toward :data:`MAX_REVISIONS`; human ``@aidlc-bot`` mentions are
+    uncapped.
     """
+    if (
+        run.last_revision_trigger in AUTOMATED_REVISION_TRIGGERS
+        and run.revision_count >= MAX_REVISIONS
+    ):
+        return emit_run_failed(
+            run,
+            reason=(
+                f"revision cap ({MAX_REVISIONS}) hit; last trigger={run.last_revision_trigger}"
+            ),
+        )
     arn = runtime_arn("implementer")
     if not arn:
         return Noop("implementer runtime ARN not yet provisioned")
-    next_revision = run.revision_count + (1 if automated else 0)
-    invoke = build_revision_invoke(run, arn, next_revision=next_revision)
-    if already_in_revising or advance_from is None:
-        return invoke
-    return CompoundAction(
-        actions=(
-            invoke,
-            AdvanceState(
-                target_pk=f"RUN#{run.run_id}",
-                target_sk="STATE",
-                advance_from=advance_from.value,
-                advance_to=RunState.revising.value,
-            ),
-        ),
-    )
+    return build_revision_invoke(run, arn)
 
 
-def build_revision_invoke(run: Run, arn: str, *, next_revision: int) -> InvokeAgent:
-    """Construct the InvokeAgent for the implementer in ``mode=revision``."""
+def build_revision_invoke(run: Run, arn: str) -> InvokeAgent:
+    """Construct the InvokeAgent for the implementer in ``mode=revision``.
+
+    ``revision_number`` is the count of revisions already completed
+    plus one (the upcoming pass the implementer is about to run). The
+    projector bumps ``revision_count`` on ``REVISION.READY``, so the
+    next call here naturally walks the counter forward.
+    """
+    next_revision = run.revision_count + 1
     return InvokeAgent(
         runtime_arn=arn,
         runtime_session_id=f"{run.run_id}-revision-{next_revision}",

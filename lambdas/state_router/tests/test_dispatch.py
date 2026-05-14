@@ -48,6 +48,7 @@ def make_run(  # noqa: PLR0913
     check_state: str = "",
     pending_revision_feedback: tuple[dict, ...] = (),
     revision_count: int = 0,
+    last_revision_trigger: str = "",
 ) -> Run:
     """Build a Run with sane defaults for tests."""
     return Run(
@@ -75,6 +76,7 @@ def make_run(  # noqa: PLR0913
         check_state=check_state,
         pending_revision_feedback=pending_revision_feedback,
         revision_count=revision_count,
+        last_revision_trigger=last_revision_trigger,
     )
 
 
@@ -412,7 +414,13 @@ class TestRunValidationComplete:
         assert action.advance_to == RunState.awaiting_human_merge.value
 
     @pytest.mark.parametrize("verdict", ["approve", "comment"])
-    def test_approve_with_checks_failed_dispatches_revision(self, verdict: str) -> None:
+    def test_approve_with_checks_failed_advances_into_revising(self, verdict: str) -> None:
+        """The state-router only advances; the follow-up beacon fires the implementer.
+
+        Prevents the historical double-dispatch where both this handler
+        and ``handle_revising`` invoked the implementer on the same
+        revision.
+        """
         run = make_run(
             state=RunState.validation_complete,
             plan_s3_key=PLAN_KEY,
@@ -422,14 +430,10 @@ class TestRunValidationComplete:
             pending_revision_feedback=({"kind": "ci_failure"},),
         )
         action = decide(run)
-        assert isinstance(action, CompoundAction)
-        invokes = [a for a in action.actions if isinstance(a, InvokeAgent)]
-        assert len(invokes) == 1
-        assert "implementer" in invokes[0].runtime_arn
-        assert invokes[0].payload["mode"] == "revision"
-        assert invokes[0].payload["revision_number"] == 1
-        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
-        assert advances[0].advance_to == RunState.revising.value
+        assert isinstance(action, AdvanceState)
+        assert action.advance_from == RunState.validation_complete.value
+        assert action.advance_to == RunState.revising.value
+        assert ("last_revision_trigger", "ci_failure") in action.extra_attrs
 
     @pytest.mark.parametrize("verdict", ["approve", "comment"])
     def test_approve_with_checks_pending_advances_to_awaiting_checks(
@@ -461,7 +465,8 @@ class TestRunValidationComplete:
         assert isinstance(action, AdvanceState)
         assert action.advance_to == RunState.awaiting_checks.value
 
-    def test_request_changes_dispatches_revision_under_cap(self) -> None:
+    def test_request_changes_advances_into_revising(self) -> None:
+        """``request_changes`` advances to revising; ``handle_revising`` fires the implementer."""
         run = make_run(
             state=RunState.validation_complete,
             plan_s3_key=PLAN_KEY,
@@ -470,18 +475,17 @@ class TestRunValidationComplete:
             revision_count=0,
         )
         action = decide(run)
-        assert isinstance(action, CompoundAction)
-        invokes = [a for a in action.actions if isinstance(a, InvokeAgent)]
-        assert len(invokes) == 1
-        assert "implementer" in invokes[0].runtime_arn
-        assert invokes[0].payload["mode"] == "revision"
-        assert invokes[0].payload["revision_number"] == 1
-        advances = [a for a in action.actions if isinstance(a, AdvanceState)]
-        assert len(advances) == 1
-        assert advances[0].advance_to == RunState.revising.value
+        assert isinstance(action, AdvanceState)
+        assert action.advance_from == RunState.validation_complete.value
+        assert action.advance_to == RunState.revising.value
+        assert ("last_revision_trigger", "reviewer_request_changes") in action.extra_attrs
 
-    def test_request_changes_fails_run_at_cap(self) -> None:
-        """Hitting MAX_REVISIONS emits RUN.FAILED instead of looping further."""
+    def test_request_changes_advances_even_at_cap(self) -> None:
+        """Cap is checked in ``handle_revising``, not here.
+
+        After advancing to ``revising`` the follow-up beacon hits the
+        cap and emits ``RUN.FAILED`` — see :class:`TestRunRevising`.
+        """
         run = make_run(
             state=RunState.validation_complete,
             plan_s3_key=PLAN_KEY,
@@ -490,8 +494,8 @@ class TestRunValidationComplete:
             revision_count=3,
         )
         action = decide(run)
-        assert isinstance(action, EmitEvent)
-        assert action.envelope.type == "RUN.FAILED"
+        assert isinstance(action, AdvanceState)
+        assert action.advance_to == RunState.revising.value
 
     def test_unknown_verdict_is_noop(self) -> None:
         run = make_run(
@@ -509,7 +513,7 @@ class TestRunValidationComplete:
 
 class TestRunRevising:
     def test_revising_dispatches_implementer_with_feedback(self) -> None:
-        """``revising`` was reached via CHECKS.FAILED / IMPL.ITERATION_REQUESTED projection."""
+        """``revising`` was reached via IMPL.ITERATION_REQUESTED — human-mention path."""
         run = make_run(
             state=RunState.revising,
             plan_s3_key=PLAN_KEY,
@@ -526,6 +530,7 @@ class TestRunRevising:
                 },
             ),
             revision_count=1,
+            last_revision_trigger="human_mention",
         )
         action = decide(run)
         assert isinstance(action, InvokeAgent)
@@ -537,8 +542,8 @@ class TestRunRevising:
         assert action.payload["source_issue_url"] == ISSUE_URL
         assert action.payload["source_issue_title"] == "add X"
         assert "intent" in action.payload
-        # IMPL.ITERATION_REQUESTED is uncapped — revision_count stays put.
-        assert action.payload["revision_number"] == 1
+        # next pass = revision_count + 1
+        assert action.payload["revision_number"] == 2
         assert action.payload["revision_feedback"] == [
             {
                 "kind": "issue_comment_mention",
@@ -547,6 +552,35 @@ class TestRunRevising:
                 "commenter": "alice",
             },
         ]
+
+    @pytest.mark.parametrize(
+        "trigger",
+        ["reviewer_request_changes", "ci_failure"],
+    )
+    def test_revising_fails_run_when_cap_hit_on_automated_trigger(self, trigger: str) -> None:
+        run = make_run(
+            state=RunState.revising,
+            plan_s3_key=PLAN_KEY,
+            pr_url=PR_URL,
+            revision_count=3,
+            last_revision_trigger=trigger,
+        )
+        action = decide(run)
+        assert isinstance(action, EmitEvent)
+        assert action.envelope.type == "RUN.FAILED"
+
+    def test_revising_dispatches_at_cap_for_human_mention(self) -> None:
+        """Human-mention revisions are uncapped — even at MAX_REVISIONS we dispatch."""
+        run = make_run(
+            state=RunState.revising,
+            plan_s3_key=PLAN_KEY,
+            pr_url=PR_URL,
+            revision_count=3,
+            last_revision_trigger="human_mention",
+        )
+        action = decide(run)
+        assert isinstance(action, InvokeAgent)
+        assert action.payload["revision_number"] == 4
 
     def test_revising_is_noop_when_implementer_arn_missing(
         self,

@@ -38,7 +38,11 @@ class Run:
     * **revision bookkeeping** — ``pending_revision_feedback`` (consumed
       and cleared each time the implementer is dispatched in
       ``mode=revision``), ``revision_count`` (incremented per automated
-      revision dispatch; not incremented for human-mention revisions).
+      revision dispatch; not incremented for human-mention revisions),
+      ``last_revision_trigger`` (event that drove the run into
+      ``revising`` — ``reviewer_request_changes`` / ``ci_failure`` /
+      ``human_mention``; consulted by ``handle_revising`` to decide
+      whether the cap applies).
     """
 
     run_id: str
@@ -67,6 +71,7 @@ class Run:
     check_state: str = ""
     pending_revision_feedback: tuple[dict[str, Any], ...] = ()
     revision_count: int = 0
+    last_revision_trigger: str = ""
     dispatch_failure_count: int = 0
 
 
@@ -143,5 +148,6 @@ def parse_run(item: dict[str, Any], _task_items: list[dict[str, Any]] | None = N
         check_state=str(data.get("check_state") or ""),
         pending_revision_feedback=normalize_feedback(data.get("pending_revision_feedback")),
         revision_count=as_int(data.get("revision_count")) or 0,
+        last_revision_trigger=str(data.get("last_revision_trigger") or ""),
         dispatch_failure_count=as_int(data.get("dispatch_failure_count")) or 0,
     )

@@ -99,6 +99,16 @@ the dispatches that produce them are gated by an outer ``GuardedAdvance``
 and don't increment the counter in the first place.
 """
 
+REVISION_TRIGGER_BY_EVENT: dict[str, str] = {
+    "CHECKS.FAILED": "ci_failure",
+    "IMPL.ITERATION_REQUESTED": "human_mention",
+}
+"""Maps the events that advance a run into ``revising`` to the trigger
+label ``state_router.handle_revising`` reads to decide whether the
+revision cap applies. The reviewer-changes-requested path advances from
+``validation_complete`` inside the state-router itself and stamps its
+own label there."""
+
 REVISION_FEEDBACK_ACCUMULATOR_STATES = frozenset(
     {
         RunState.impl_pr_open,
@@ -584,6 +594,11 @@ def apply_run_state_advance(
     SET ``current_state``, ADD ``state_transitions``, and reset
     ``dispatch_failure_count`` to 0 for dispatch-completion events
     (the prior dispatch reached the agent and ran).
+
+    When the transition lands the run in ``revising``, stamp
+    ``last_revision_trigger`` so the state-router's ``handle_revising``
+    knows whether the run came in via CI failure (automated, capped) or
+    a human ``@aidlc-bot`` mention (uncapped).
     """
     if mode.next_state is None:
         return
@@ -591,6 +606,10 @@ def apply_run_state_advance(
     update.add("state_transitions", 1)
     if event_type in DISPATCH_RESET_EVENTS:
         update.set("dispatch_failure_count", 0)
+    if mode.next_state is RunState.revising:
+        trigger = REVISION_TRIGGER_BY_EVENT.get(event_type)
+        if trigger is not None:
+            update.set("last_revision_trigger", trigger)
 
 
 def apply_revision_feedback_accumulator(

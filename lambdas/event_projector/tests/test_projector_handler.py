@@ -555,6 +555,7 @@ def test_checks_failed_advances_to_revising_and_queues_feedback() -> None:
     assert state["current_state"]["S"] == "revising"
     assert state["check_state"]["S"] == "failed"
     assert state["check_head_sha"]["S"] == "abcdef0"
+    assert state["last_revision_trigger"]["S"] == "ci_failure"
     assert len(state["pending_revision_feedback"]["L"]) == 1
     item = state["pending_revision_feedback"]["L"][0]["M"]
     assert item["kind"]["S"] == "ci_failure"
@@ -596,6 +597,7 @@ def test_impl_iteration_requested_issue_comment_appends_mention_feedback() -> No
     handler(eb_event(mention), ctx())
     state = state_of("run-1")
     assert state["current_state"]["S"] == "revising"
+    assert state["last_revision_trigger"]["S"] == "human_mention"
     assert state["delivery_ids"]["SS"] == ["webhook-1"]
     items = state["pending_revision_feedback"]["L"]
     assert len(items) == 1

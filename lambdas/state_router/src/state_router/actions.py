@@ -112,12 +112,19 @@ class AdvanceState:
     Used for purely-bookkeeping transitions (e.g., advance to
     ``validation_running`` after dispatching the three validators in
     parallel).
+
+    ``extra_attrs`` carries additional string attributes written
+    atomically with the state transition — used to stamp
+    ``last_revision_trigger`` when advancing into ``revising`` from the
+    reviewer-changes-requested path so ``handle_revising`` can decide
+    whether the revision cap applies.
     """
 
     target_pk: str
     target_sk: str
     advance_from: str
     advance_to: str
+    extra_attrs: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -338,7 +338,13 @@ def build_extra_attrs(action: InvokeRepoHelper, body: dict[str, Any]) -> dict[st
 
 
 def execute_advance_state(run: Run, action: AdvanceState) -> None:
-    """Pure conditional state advance (no other side effect)."""
+    """Pure conditional state advance (no other side effect).
+
+    ``action.extra_attrs`` is forwarded so attributes such as
+    ``last_revision_trigger`` land atomically with the state transition
+    (the same DDB transaction also writes the OUTBOX row that fires the
+    follow-up beacon).
+    """
     transactional_advance(
         run_id=run.run_id,
         project_slug=run.project_slug,
@@ -346,6 +352,7 @@ def execute_advance_state(run: Run, action: AdvanceState) -> None:
         target_sk=action.target_sk,
         advance_from=action.advance_from,
         advance_to=action.advance_to,
+        extra_attrs=dict(action.extra_attrs) if action.extra_attrs else None,
     )
 
 
