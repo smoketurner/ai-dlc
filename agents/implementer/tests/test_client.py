@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -10,6 +11,7 @@ import pytest
 from common.runtime import ImplementerInput
 from implementer import client
 from implementer.finish import FinishReport
+from implementer.gates import CommandResult, GateResult
 from implementer.repo_ops import RepoSession
 
 
@@ -38,6 +40,59 @@ def fake_session() -> RepoSession:
     )
 
 
+_PASSING_GATE = GateResult(passed=True, failures=[], all_results=[])
+_FAILING_GATE = GateResult(
+    passed=False,
+    failures=[CommandResult(command="make lint", exit_code=1, stdout="", stderr="E501")],
+    all_results=[CommandResult(command="make lint", exit_code=1, stdout="", stderr="E501")],
+)
+
+
+def _install_gate_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+    calls: dict[str, list[Any]],
+    *,
+    drive_agent_report: FinishReport | None,
+    gate_results: list[GateResult] | None,
+    drive_agent_reports: list[FinishReport | None] | None,
+) -> None:
+    """Patch gate-related callables onto ``client``."""
+    usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
+    _gate_seq = list(gate_results) if gate_results is not None else [_PASSING_GATE]
+    _gate_iter = iter(_gate_seq)
+
+    def fake_run_lint_gates(_cwd: Any) -> GateResult:
+        try:
+            return next(_gate_iter)
+        except StopIteration:
+            return _PASSING_GATE
+
+    _remediation_reports = list(drive_agent_reports) if drive_agent_reports else []
+    _remediation_iter = iter(_remediation_reports)
+    _first_call = [True]
+
+    async def fake_drive_agent(
+        _prompt: str,
+        *,
+        run_id: str,
+    ) -> tuple[FinishReport | None, dict[str, Any]]:
+        del run_id
+        if _first_call[0]:
+            _first_call[0] = False
+            return drive_agent_report, usage
+        try:
+            return next(_remediation_iter), usage
+        except StopIteration:
+            return drive_agent_report, usage
+
+    def fake_write_blocked_md(gr: GateResult) -> None:
+        calls["write_blocked_md"].append(gr)
+
+    monkeypatch.setattr(client, "run_lint_gates", fake_run_lint_gates)
+    monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+    monkeypatch.setattr(client, "_write_blocked_md", fake_write_blocked_md)
+
+
 def install_implementation_mocks(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -46,8 +101,16 @@ def install_implementation_mocks(
     made_real_changes: bool,
     has_uncommitted_changes: bool,
     pr_url: str = "https://github.com/owner/name/pull/77",
+    gate_results: list[GateResult] | None = None,
+    drive_agent_reports: list[FinishReport | None] | None = None,
 ) -> dict[str, list[Any]]:
-    """Wire the side-effecting helpers in ``execute_implementation`` to fakes."""
+    """Wire the side-effecting helpers in ``execute_implementation`` to fakes.
+
+    ``gate_results`` controls what ``run_lint_gates`` returns on successive calls
+    (defaults to a single passing result).  ``drive_agent_reports`` controls what
+    ``drive_agent`` returns on successive calls after the first (the first call
+    always returns ``drive_agent_report``).
+    """
     calls: dict[str, list[Any]] = {
         "clone_repo": [],
         "create_branch": [],
@@ -55,6 +118,7 @@ def install_implementation_mocks(
         "commit_changes": [],
         "push_branch": [],
         "invoke_repo_helper": [],
+        "write_blocked_md": [],
     }
 
     def fake_commit_changes(msg: str) -> str:
@@ -85,18 +149,14 @@ def install_implementation_mocks(
     monkeypatch.setattr(client, "short_diff_summary", lambda: "diff stat")
     monkeypatch.setattr(client, "repo_made_real_changes", lambda: made_real_changes)
     monkeypatch.setattr(client, "has_uncommitted_changes", lambda: has_uncommitted_changes)
-
-    usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
-
-    async def fake_drive_agent(
-        _prompt: str,
-        *,
-        run_id: str,
-    ) -> tuple[FinishReport | None, dict[str, Any]]:
-        del run_id
-        return drive_agent_report, usage
-
-    monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+    monkeypatch.setattr(client, "repo_path", lambda: Path("/fake/repo"))
+    _install_gate_mocks(
+        monkeypatch,
+        calls,
+        drive_agent_report=drive_agent_report,
+        gate_results=gate_results,
+        drive_agent_reports=drive_agent_reports,
+    )
     return calls
 
 
@@ -324,3 +384,120 @@ def test_fetch_revision_inputs_pulls_via_gateway(monkeypatch: pytest.MonkeyPatch
     assert "runs/r-1/validation/critique-r0.md" in keys
     assert inputs["review"].startswith("<body for ")
     assert inputs["mention"] == ""  # raised → swallowed → empty
+
+
+# ---------------------------------------------------------------------------
+# Gate loop integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_execute_implementation_gate_passes_first_try(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """Gate passes on first check → push proceeds normally."""
+    report = FinishReport(summary="Added /healthz endpoint.", status="done")
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=report,
+        made_real_changes=True,
+        has_uncommitted_changes=True,
+        gate_results=[_PASSING_GATE],
+    )
+
+    result = await client.execute_implementation(payload)
+
+    assert result.pr_url == "https://github.com/owner/name/pull/77"
+    assert calls["push_branch"] == ["aidlc/impl/01999999-9999-7999-9999-999999999999"]
+    assert calls["write_blocked_md"] == []
+
+
+@pytest.mark.asyncio
+async def test_execute_implementation_gate_one_remediation_pass(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """Gate fails first, passes second → one remediation, push proceeds."""
+    report = FinishReport(summary="Fixed lint.", status="done")
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=report,
+        made_real_changes=True,
+        has_uncommitted_changes=False,
+        gate_results=[_FAILING_GATE, _PASSING_GATE],
+        drive_agent_reports=[report],
+    )
+
+    result = await client.execute_implementation(payload)
+
+    assert result.pr_url == "https://github.com/owner/name/pull/77"
+    assert calls["push_branch"] == ["aidlc/impl/01999999-9999-7999-9999-999999999999"]
+    assert calls["write_blocked_md"] == []
+
+
+@pytest.mark.asyncio
+async def test_execute_implementation_gate_exhausted_writes_blocked_md(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """Gate fails all 3 passes → BLOCKED.md written, RuntimeError raised, push not called."""
+    report = FinishReport(summary="Tried.", status="done")
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=report,
+        made_real_changes=True,
+        has_uncommitted_changes=False,
+        # 4 gate checks: initial + 3 remediation passes, all failing
+        gate_results=[_FAILING_GATE, _FAILING_GATE, _FAILING_GATE, _FAILING_GATE],
+        drive_agent_reports=[report, report, report],
+    )
+
+    with pytest.raises(RuntimeError, match="gate exhausted"):
+        await client.execute_implementation(payload)
+
+    assert calls["push_branch"] == [], "push_branch must not be called when gate is exhausted"
+    assert len(calls["write_blocked_md"]) == 1
+    assert calls["write_blocked_md"][0].passed is False
+
+
+@pytest.mark.asyncio
+async def test_execute_implementation_gate_per_command_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """Verify gate failures from each of the four commands are surfaced correctly."""
+    for failing_command in ("make test", "make lint", "make type", "make format"):
+        failing_gate = GateResult(
+            passed=False,
+            failures=[CommandResult(command=failing_command, exit_code=1, stdout="", stderr="err")],
+            all_results=[
+                CommandResult(command=failing_command, exit_code=1, stdout="", stderr="err")
+            ],
+        )
+        report = FinishReport(summary="Done.", status="done")
+        calls = install_implementation_mocks(
+            monkeypatch,
+            fake_session=fake_session,
+            drive_agent_report=report,
+            made_real_changes=True,
+            has_uncommitted_changes=False,
+            # Fail 4 times so gate exhausts
+            gate_results=[failing_gate] * 4,
+            drive_agent_reports=[report, report, report],
+        )
+
+        with pytest.raises(RuntimeError, match="gate exhausted"):
+            await client.execute_implementation(payload)
+
+        assert calls["push_branch"] == []
+        assert len(calls["write_blocked_md"]) == 1
+        blocked_gate: GateResult = calls["write_blocked_md"][0]
+        assert blocked_gate.failures[0].command == failing_command

@@ -46,6 +46,7 @@ from common.runtime import (
 )
 from common.templating import make_template_env
 from implementer.finish import FinishReport, FinishSink
+from implementer.gates import GateResult, build_remediation_prompt, run_lint_gates
 from implementer.options import build_options
 from implementer.repo_ops import (
     call_artifact_tool,
@@ -62,6 +63,7 @@ from implementer.repo_ops import (
     post_inline_replies,
     push_branch,
     repo_made_real_changes,
+    repo_path,
     run_git,
     short_diff_summary,
 )
@@ -114,6 +116,26 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
         commit_message = build_commit_message(payload.run_id, report=report)
         if has_uncommitted_changes():
             commit_changes(commit_message)
+
+        # Post-agent lint/type/test gate — up to 3 remediation passes.
+        # Each pass opens a new drive_agent session (Option B: new session
+        # per remediation rather than multi-turn, which the SDK does not
+        # guarantee works after a ResultMessage closes the stream).
+        gate_result, report, usage = await _run_gate_loop(
+            run_id=payload.run_id,
+            report=report,
+            usage=usage,
+        )
+        if not gate_result.passed:
+            _write_blocked_md(gate_result)
+            msg = (
+                f"lint/type/test gate exhausted after {_GATE_MAX_PASSES} passes; "
+                f"first remaining failure: "
+                f"{gate_result.failures[0].command!r} exit "
+                f"{gate_result.failures[0].exit_code}"
+            )
+            raise RuntimeError(msg)
+
         push_branch(impl_branch)
 
         pr_url = open_impl_pr(
@@ -303,6 +325,95 @@ async def drive_agent(
                     duration_ms=usage["duration_ms"],
                 )
     return sink.report, usage
+
+
+_GATE_MAX_PASSES = 3
+
+
+async def _run_gate_loop(
+    *,
+    run_id: str,
+    report: FinishReport | None,
+    usage: dict[str, Any],
+) -> tuple[GateResult, FinishReport | None, dict[str, Any]]:
+    """Run the lint/type/test gate; feed failures back to the agent.
+
+    Up to :data:`_GATE_MAX_PASSES` remediation passes are attempted.
+    Each pass opens a new ``drive_agent`` session so we avoid relying
+    on multi-turn semantics after a ``ResultMessage`` has been received.
+
+    Returns the final :class:`GateResult`, the latest ``FinishReport``
+    (may be updated during remediation), and the latest usage dict.
+    """
+    gate_result = run_lint_gates(repo_path())
+    if gate_result.passed:
+        return gate_result, report, usage
+
+    for pass_num in range(1, _GATE_MAX_PASSES + 1):
+        logger.info(
+            "gate failed — starting remediation pass",
+            pass_num=pass_num,
+            failures=[f.command for f in gate_result.failures],
+        )
+
+        # Auto-commit any changes the formatter already wrote to disk.
+        format_committed = False
+        if has_uncommitted_changes():
+            commit_changes("style: apply formatter changes from gate pass")
+            format_committed = True
+
+        # If agent signalled blocked during remediation, stop immediately.
+        if report is not None and report.status == "blocked":
+            logger.warning("agent reported blocked during remediation; stopping gate loop")
+            return gate_result, report, usage
+
+        remediation_prompt = build_remediation_prompt(
+            gate_result,
+            format_committed=format_committed,
+        )
+        report, usage = await drive_agent(remediation_prompt, run_id=run_id)
+
+        if report is not None and report.status == "blocked":
+            logger.warning("agent reported blocked during remediation; stopping gate loop")
+            return gate_result, report, usage
+
+        if has_uncommitted_changes():
+            commit_changes(f"fix: gate remediation pass {pass_num}")
+
+        gate_result = run_lint_gates(repo_path())
+        if gate_result.passed:
+            logger.info("gate passed after remediation", pass_num=pass_num)
+            return gate_result, report, usage
+
+    logger.warning("gate exhausted all remediation passes", max_passes=_GATE_MAX_PASSES)
+    return gate_result, report, usage
+
+
+def _write_blocked_md(gate_result: GateResult) -> None:
+    """Write BLOCKED.md to the repo root and commit it.
+
+    Best-effort: if the commit fails (e.g., the working tree is broken)
+    we log a warning and continue so the ``RuntimeError`` in the caller
+    still propagates cleanly.
+    """
+    blocked_path = repo_path() / "BLOCKED.md"
+    lines = [
+        "# Gate exhausted\n\n",
+        f"The lint/type/test gate failed after {_GATE_MAX_PASSES} remediation passes.\n\n",
+        "## Remaining failures\n\n",
+    ]
+    for failure in gate_result.failures:
+        lines.append(f"### `{failure.command}` (exit {failure.exit_code})\n\n")
+        if failure.stdout:
+            lines.append(f"**stdout:**\n```\n{failure.stdout}\n```\n\n")
+        if failure.stderr:
+            lines.append(f"**stderr:**\n```\n{failure.stderr}\n```\n\n")
+    blocked_path.write_text("".join(lines), encoding="utf-8")
+    try:
+        run_git("add", "BLOCKED.md")
+        run_git("commit", "-m", "chore: add BLOCKED.md — lint/type/test gate exhausted")
+    except RuntimeError:
+        logger.warning("could not commit BLOCKED.md; gate exhaustion error still raised")
 
 
 def extract_usage(msg: ResultMessage) -> dict[str, Any]:
@@ -567,4 +678,5 @@ __all__ = [
     "resolve_target_repo",
     "run_cancelled",
     "run_git",
+    "run_lint_gates",
 ]
