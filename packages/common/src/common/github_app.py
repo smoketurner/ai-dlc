@@ -109,9 +109,8 @@ def app_credentials() -> AppCredentials:
     """Read + parse the App credentials secret.
 
     Cached for ``SECRET_TTL_SECONDS`` so a rotated secret flows in without
-    a Lambda / ECS redeploy. Lives in this module instead of relying on
-    ``aws_lambda_powertools`` so the dashboard (ECS) and the Lambdas
-    share the same code path.
+    a redeploy. Lives in this module so Lambdas, agents, and the dashboard
+    share the same code path regardless of which logger each caller uses.
     """
     secret_id = os.environ["AIDLC_GITHUB_APP_SECRET_ARN"]
     now = time.time()

@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-from aws_lambda_powertools import Logger
+import structlog
 from claude_agent_sdk.types import HookContext, HookInput, SyncHookJSONOutput
 from pydantic import ValidationError
 
@@ -44,7 +44,7 @@ from common.hooks import validate_no_spec_dump
 from common.steering import Accept, JudgeResult, Retry
 from implementer.finish import FinishReport, FinishSink
 
-logger = Logger(service="implementer")
+logger = structlog.get_logger(__name__)
 
 DANGEROUS_BASH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\brm\s+-[a-z]*rf?[a-z]*\s+/", re.IGNORECASE),
