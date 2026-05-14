@@ -46,13 +46,12 @@ class GateResult:
 def run_lint_gates(cwd: Path, *, timeout: int = GATE_TIMEOUT_SECONDS) -> GateResult:
     """Run make test/lint/type/format in ``cwd``; skip missing targets.
 
-    All four commands are attempted regardless of earlier failures so
-    the agent receives the complete picture in one remediation pass.
-    Returns a :class:`GateResult` with ``passed=True`` only when every
-    present target exits 0.
+    Stops at the first non-zero exit so the agent receives a focused
+    failure rather than a flood of cascading errors from subsequent
+    commands.  Returns a :class:`GateResult` with ``passed=True`` only
+    when every present target exits 0.
     """
     all_results: list[CommandResult] = []
-    failures: list[CommandResult] = []
 
     for cmd in _GATE_COMMANDS:
         target = cmd.split()[1]
@@ -61,9 +60,9 @@ def run_lint_gates(cwd: Path, *, timeout: int = GATE_TIMEOUT_SECONDS) -> GateRes
         result = _run_command(cmd, cwd=cwd, timeout=timeout)
         all_results.append(result)
         if result.exit_code != 0:
-            failures.append(result)
+            return GateResult(passed=False, failures=[result], all_results=all_results)
 
-    return GateResult(passed=not failures, failures=failures, all_results=all_results)
+    return GateResult(passed=True, failures=[], all_results=all_results)
 
 
 def build_remediation_prompt(
@@ -129,6 +128,10 @@ def _target_exists(target: str, *, cwd: Path, timeout: int) -> bool:
     Uses ``make -n <target>`` (dry-run); exit code 2 means "no rule for
     target" and any other code means the target exists (even if it would
     produce no output for up-to-date artefacts).
+
+    Assumes GNU make: BSD make may return exit code 1 for a missing
+    Makefile instead of 2, which would incorrectly treat the target as
+    present.  Target repos are expected to use GNU make.
     """
     try:
         result = subprocess.run(  # noqa: S603
@@ -139,7 +142,7 @@ def _target_exists(target: str, *, cwd: Path, timeout: int) -> bool:
             check=False,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired, FileNotFoundError:
+    except (subprocess.TimeoutExpired, FileNotFoundError) as _:
         return False
     else:
         return result.returncode != _MAKE_NO_RULE_EXIT_CODE

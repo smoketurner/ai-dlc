@@ -118,9 +118,8 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
             commit_changes(commit_message)
 
         # Post-agent lint/type/test gate — up to 3 remediation passes.
-        # Each pass opens a new drive_agent session (Option B: new session
-        # per remediation rather than multi-turn, which the SDK does not
-        # guarantee works after a ResultMessage closes the stream).
+        # Each pass opens a new drive_agent session; the SDK does not guarantee
+        # multi-turn semantics after a ResultMessage closes the stream.
         gate_result, report, usage = await _run_gate_loop(
             run_id=payload.run_id,
             report=report,
@@ -356,9 +355,10 @@ async def _run_gate_loop(
             failures=[f.command for f in gate_result.failures],
         )
 
-        # Auto-commit any changes the formatter already wrote to disk.
+        # Auto-commit formatter changes only when make format was the failing command.
         format_committed = False
-        if has_uncommitted_changes():
+        format_failed = any(f.command == "make format" for f in gate_result.failures)
+        if format_failed and has_uncommitted_changes():
             commit_changes("style: apply formatter changes from gate pass")
             format_committed = True
 

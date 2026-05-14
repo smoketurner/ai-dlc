@@ -119,25 +119,27 @@ def test_run_lint_gates_all_pass(tmp_path: Path) -> None:
     assert len(result.all_results) == 4  # test, lint, type, format
 
 
-def test_run_lint_gates_stops_collects_all_failures(tmp_path: Path) -> None:
-    """All targets fail — all four failures are collected (not first-only)."""
-    # _target_exists uses make -n (returncode 0), actual run fails.
-    run_call_count = 0
+def test_run_lint_gates_stops_at_first_failure(tmp_path: Path) -> None:
+    """First target fails — only that failure is returned; remaining commands are not run."""
+    call_count = 0
 
-    def side_effect(*_args: object, **_kw: object) -> MagicMock:
-        nonlocal run_call_count
-        run_call_count += 1
-        # First 4 calls: _target_exists (make -n) → exist
-        # Next 4 calls: actual commands → fail
-        if run_call_count <= 4:
-            return _make_completed_proc(0)  # target exists
+    def side_effect(*args: object, **_kw: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        # Existence check (make -n ...) → target exists
+        if isinstance(args[0], list) and len(args[0]) == 3 and args[0][1] == "-n":
+            return _make_completed_proc(0)
+        # First actual command (make test) fails
         return _make_completed_proc(1, stderr="error")
 
     with patch("implementer.gates.subprocess.run", side_effect=side_effect):
         result = run_lint_gates(tmp_path)
 
     assert result.passed is False
-    assert len(result.failures) == 4
+    assert len(result.failures) == 1
+    assert result.failures[0].command == "make test"
+    # Only ran 1 actual command (stopped after the first failure)
+    assert len(result.all_results) == 1
 
 
 def test_run_lint_gates_skips_missing_make_target(tmp_path: Path) -> None:
