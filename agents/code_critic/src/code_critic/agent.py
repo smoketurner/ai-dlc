@@ -40,7 +40,22 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
+def fallback_model_id() -> str | None:
+    """Optional fallback model id read from ``AIDLC_BEDROCK_FALLBACK_MODEL_ID``.
+
+    Returns ``None`` when unset or empty so :func:`common.runtime.invoke_with_fallback`
+    skips the retry path. Used to cope with daily-token-quota throttles on
+    Opus by transparently re-running the agent on a smaller model.
+    """
+    return os.environ.get("AIDLC_BEDROCK_FALLBACK_MODEL_ID") or None
+
+
+def build_agent(
+    run_id: str,
+    *,
+    mcp_client: MCPClient,
+    model_id_override: str | None = None,
+) -> Agent:
     """Build a fresh Strands Agent for one code-critic invocation.
 
     The caller is responsible for starting ``mcp_client`` (typically via
@@ -48,9 +63,12 @@ def build_agent(run_id: str, *, mcp_client: MCPClient) -> Agent:
     for the lifetime of the agent call. Tool definitions from the
     gateway catalogue are spliced into the agent's tool list alongside
     the local ``get_pr_diff`` and ``browse_url`` tools.
+
+    ``model_id_override`` lets :func:`common.runtime.invoke_with_fallback`
+    rebuild this agent on a different model after a throttle.
     """
     variant = pick_variant(run_id, "code_critic")
-    bedrock_model_id = model_id()
+    bedrock_model_id = model_id_override or model_id()
     return Agent(
         model=BedrockModel(
             model_id=bedrock_model_id,

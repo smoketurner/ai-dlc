@@ -28,12 +28,16 @@ The pipeline is single-PR-per-issue:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
+import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.pricing import calculate_cost
 from common.validators import NoneSafeList
+
+logger = structlog.get_logger()
 
 
 class _Frozen(BaseModel):
@@ -538,6 +542,63 @@ def default_retry_strategy(model_id: str) -> Any:
     if "haiku" in model_id.lower():
         return ModelRetryStrategy(max_attempts=4, initial_delay=2, max_delay=30)
     return ModelRetryStrategy(max_attempts=6, initial_delay=4, max_delay=128)
+
+
+def invoke_with_fallback[T](
+    *,
+    primary_model_id: str,
+    fallback_model_id: str | None,
+    build: Callable[[str], Any],
+    run: Callable[[Any], T],
+) -> tuple[Any, str, T]:
+    """Run a Strands ``Agent`` with cross-model fallback on throttling.
+
+    Builds the agent via ``build(primary_model_id)`` and invokes it via
+    ``run(agent)``. If the call raises ``ModelThrottledException`` (i.e.,
+    Bedrock kept throttling after the agent's ``retry_strategy``
+    exhausted its attempts), and a distinct ``fallback_model_id`` is
+    configured, a fresh agent is built with the fallback id and the
+    workflow is re-invoked once. The fallback agent runs the work from
+    scratch — any side effects the primary made before throttling are
+    redone, so ``run`` must be idempotent at the artifact level (e.g.,
+    overwriting the same S3 key is fine, opening a duplicate PR is not).
+
+    When ``fallback_model_id`` is ``None``, empty, or equal to the
+    primary id, no fallback is attempted and the throttle exception
+    propagates.
+
+    Args:
+        primary_model_id: Bedrock model id to try first.
+        fallback_model_id: Bedrock model id to retry with when the
+            primary throttles, or ``None`` to disable fallback.
+        build: ``build(model_id) -> Agent`` factory. Called once for
+            the primary and again with ``fallback_model_id`` if the
+            primary throttles.
+        run: ``run(agent) -> T`` workflow. Invoked under the agent
+            returned by ``build``; any return value is propagated.
+
+    Returns:
+        ``(agent, model_id_used, result)`` so the caller can read
+        usage metrics off the agent and price them against the model
+        that actually ran (the fallback if it kicked in).
+    """
+    from strands.types.exceptions import ModelThrottledException  # noqa: PLC0415
+
+    agent = build(primary_model_id)
+    try:
+        result = run(agent)
+    except ModelThrottledException as exc:
+        if not fallback_model_id or fallback_model_id == primary_model_id:
+            raise
+        logger.warning(
+            "primary bedrock model throttled — retrying with fallback",
+            primary_model_id=primary_model_id,
+            fallback_model_id=fallback_model_id,
+            error=str(exc),
+        )
+        agent = build(fallback_model_id)
+        return agent, fallback_model_id, run(agent)
+    return agent, primary_model_id, result
 
 
 def run_for_structured_output[T: BaseModel](

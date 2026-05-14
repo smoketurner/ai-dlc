@@ -443,6 +443,14 @@ resource "aws_bedrockagentcore_agent_runtime" "agent" {
     {
       AIDLC_BUS_NAME = var.bus_name
     },
+    # Optional fallback Bedrock model. When set, the Strands agents'
+    # `common.runtime.invoke_with_fallback` rebuilds the agent on this
+    # model after a `ModelThrottledException` from the primary. Skip the
+    # env var entirely when unset so the agent's `os.environ.get` returns
+    # `None` and the helper short-circuits.
+    var.agents[each.key].bedrock_fallback_model_id != "" ? {
+      AIDLC_BEDROCK_FALLBACK_MODEL_ID = var.agents[each.key].bedrock_fallback_model_id
+    } : {},
     contains(var.agents[each.key].targets, "repo_helper") ? {
       AIDLC_REPO_HELPER_FUNCTION_NAME = module.tool_lambda["repo_helper"].lambda_function_name
     } : {},

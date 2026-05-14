@@ -21,7 +21,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands.tools.mcp import MCPClient
 
-from code_critic.agent import build_agent, critique_pr, model_id
+from code_critic.agent import build_agent, critique_pr, fallback_model_id, model_id
 from code_critic.critique import Critique, render_critique, severity_counts
 from code_critic.tools import critique_s3_key
 from common.event_emit import publish
@@ -33,7 +33,12 @@ from common.gateway_tools import (
     gateway_mcp_client,
 )
 from common.ids import CorrelationId, RunId, new_event_id
-from common.runtime import CodeCriticInput, CodeCriticResult, usage_from_strands
+from common.runtime import (
+    CodeCriticInput,
+    CodeCriticResult,
+    invoke_with_fallback,
+    usage_from_strands,
+)
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
@@ -66,17 +71,23 @@ def run_code_critic(payload: CodeCriticInput, async_task_id: int) -> None:
     """Body of the code-critic run — adversarial review of the integrated diff."""
     try:
         with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-            agent = build_agent(payload.run_id, mcp_client=mcp_client)
-            critique = critique_pr(
-                agent,
-                project_slug=payload.project_slug,
-                plan_s3_key=payload.plan_s3_key,
-                run_id=payload.run_id,
-                pr_url=payload.pr_url,
-                revision_number=payload.revision_number,
-                source_issue_url=payload.source_issue_url,
-                source_issue_title=payload.source_issue_title,
-                source_issue_body=payload.source_issue_body,
+            agent, used_model_id, critique = invoke_with_fallback(
+                primary_model_id=model_id(),
+                fallback_model_id=fallback_model_id(),
+                build=lambda m: build_agent(
+                    payload.run_id, mcp_client=mcp_client, model_id_override=m
+                ),
+                run=lambda a: critique_pr(
+                    a,
+                    project_slug=payload.project_slug,
+                    plan_s3_key=payload.plan_s3_key,
+                    run_id=payload.run_id,
+                    pr_url=payload.pr_url,
+                    revision_number=payload.revision_number,
+                    source_issue_url=payload.source_issue_url,
+                    source_issue_title=payload.source_issue_title,
+                    source_issue_body=payload.source_issue_body,
+                ),
             )
             upload_critique(
                 mcp_client,
@@ -99,7 +110,7 @@ def run_code_critic(payload: CodeCriticInput, async_task_id: int) -> None:
                 low_severity_count=counts["low"],
                 summary=critique.summary[:2048],
                 session_id=f"{payload.run_id}-code-critic-r{payload.revision_number}",
-                **usage_from_strands(agent, model_id=model_id()),
+                **usage_from_strands(agent, model_id=used_model_id),
             )
             logger.info(
                 "code critique ready",

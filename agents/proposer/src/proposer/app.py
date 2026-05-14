@@ -32,8 +32,8 @@ from common.gateway_tools import (
     gateway_mcp_client,
 )
 from common.ids import CorrelationId, RunId, new_event_id
-from common.runtime import ProposerInput
-from proposer.agent import build_agent, propose_research
+from common.runtime import ProposerInput, invoke_with_fallback
+from proposer.agent import build_agent, fallback_model_id, model_id, propose_research
 from proposer.proposal import FileEdit, Proposal
 
 logger = structlog.get_logger()
@@ -81,18 +81,24 @@ def run_proposer(payload: ProposerInput, async_task_id: int) -> None:
 
 def run_research(payload: ProposerInput, *, mcp_client: MCPClient) -> None:
     """Research path — synthesise the issue's URLs, comment on the issue, optional PR."""
-    if payload.intent is None or payload.issue_number is None:
+    intent = payload.intent
+    issue_number = payload.issue_number
+    if intent is None or issue_number is None:
         msg = "research trigger requires intent + issue_number"
         raise ValueError(msg)
-    agent = build_agent(payload.run_id, mcp_client=mcp_client)
-    proposal = propose_research(
-        agent,
-        project_slug=payload.project_slug,
-        intent=payload.intent,
-        issue_number=payload.issue_number,
-        target_repo=payload.target_repo,
-        triggering_comment_body=payload.triggering_comment_body,
-        triggering_commenter=payload.triggering_commenter,
+    _, _, proposal = invoke_with_fallback(
+        primary_model_id=model_id(),
+        fallback_model_id=fallback_model_id(),
+        build=lambda m: build_agent(payload.run_id, mcp_client=mcp_client, model_id_override=m),
+        run=lambda a: propose_research(
+            a,
+            project_slug=payload.project_slug,
+            intent=intent,
+            issue_number=issue_number,
+            target_repo=payload.target_repo,
+            triggering_comment_body=payload.triggering_comment_body,
+            triggering_commenter=payload.triggering_commenter,
+        ),
     )
     if proposal.summary_comment.strip():
         post_research_comment(mcp_client, payload=payload, body=proposal.summary_comment)

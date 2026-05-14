@@ -19,6 +19,14 @@ variable "agents" {
     AgentCore compute resources; valid values are `browser` and
     `code_interpreter`. Image deploys happen via the images-build workflow's
     update-agent-runtime call — terraform doesn't track image SHAs.
+
+    `bedrock_fallback_model_id`, when set, is plumbed into the agent
+    container as `AIDLC_BEDROCK_FALLBACK_MODEL_ID`. The agent's
+    `common.runtime.invoke_with_fallback` catches a
+    `ModelThrottledException` from the primary model (after the retry
+    strategy is exhausted) and re-runs the workflow once on the fallback.
+    Useful for keeping Opus as the primary while letting daily-token-quota
+    throttles transparently degrade to Sonnet.
   EOT
   type = map(object({
     description                         = string
@@ -26,23 +34,27 @@ variable "agents" {
     features                            = optional(set(string), [])
     allowed_resource_oauth2_return_urls = optional(list(string), [])
     bedrock_model_id                    = optional(string, "")
+    bedrock_fallback_model_id           = optional(string, "")
   }))
   default = {
     architect = {
-      description      = "Architect agent — writes the spec bundle (requirements + design + tasks)."
-      targets          = ["artifact_tool"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description               = "Architect agent — writes the spec bundle (requirements + design + tasks)."
+      targets                   = ["artifact_tool"]
+      bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     critic = {
-      description      = "Critic agent — adversarially reviews the spec (advisory)."
-      targets          = ["artifact_tool"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description               = "Critic agent — adversarially reviews the spec (advisory)."
+      targets                   = ["artifact_tool"]
+      bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     code_critic = {
-      description      = "Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
-      targets          = ["artifact_tool", "repo_helper"]
-      features         = ["code_interpreter"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description               = "Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
+      targets                   = ["artifact_tool", "repo_helper"]
+      features                  = ["code_interpreter"]
+      bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     implementer = {
       description      = "Implementer agent — works the tasks list one PR at a time."
@@ -62,10 +74,11 @@ variable "agents" {
       bedrock_model_id = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     }
     proposer = {
-      description      = "Proposer agent — research-driven; opens PRs proposing prompt/MEMORY edits."
-      targets          = ["repo_helper"]
-      features         = ["browser"]
-      bedrock_model_id = "us.anthropic.claude-opus-4-6-v1"
+      description               = "Proposer agent — research-driven; opens PRs proposing prompt/MEMORY edits."
+      targets                   = ["repo_helper"]
+      features                  = ["browser"]
+      bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
+      bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
     }
     retrospector = {
       description      = "Retrospector agent — fires on every terminal event; appends lessons to MEMORY.md via PR."

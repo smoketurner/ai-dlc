@@ -19,7 +19,7 @@ import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands.tools.mcp import MCPClient
 
-from architect.agent import build_agent, generate_plan, model_id
+from architect.agent import build_agent, fallback_model_id, generate_plan, model_id
 from architect.plan import extract_proposed_adrs, extract_summary
 from architect.repo_grounding import (
     clone_target_repo,
@@ -36,7 +36,12 @@ from common.gateway_tools import (
     gateway_mcp_client,
 )
 from common.ids import CorrelationId, RunId, new_event_id
-from common.runtime import ArchitectInput, ArchitectResult, usage_from_strands
+from common.runtime import (
+    ArchitectInput,
+    ArchitectResult,
+    invoke_with_fallback,
+    usage_from_strands,
+)
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
@@ -86,16 +91,22 @@ def run_architect(payload: ArchitectInput, task_id: int) -> None:
         )
         sync_stack_profile_from_clone(project_slug=payload.project_slug)
         with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-            agent = build_agent(payload.run_id, mcp_client=mcp_client)
-            generate_plan(
-                agent,
-                project_slug=payload.project_slug,
-                run_id=payload.run_id,
-                intent=payload.intent,
-                triggering_comment_body=payload.triggering_comment_body,
-                source_issue_url=payload.source_issue_url,
-                source_issue_title=payload.source_issue_title,
-                source_issue_body=payload.source_issue_body,
+            agent, used_model_id, _ = invoke_with_fallback(
+                primary_model_id=model_id(),
+                fallback_model_id=fallback_model_id(),
+                build=lambda m: build_agent(
+                    payload.run_id, mcp_client=mcp_client, model_id_override=m
+                ),
+                run=lambda a: generate_plan(
+                    a,
+                    project_slug=payload.project_slug,
+                    run_id=payload.run_id,
+                    intent=payload.intent,
+                    triggering_comment_body=payload.triggering_comment_body,
+                    source_issue_url=payload.source_issue_url,
+                    source_issue_title=payload.source_issue_title,
+                    source_issue_body=payload.source_issue_body,
+                ),
             )
             plan_body = fetch_plan_body(mcp_client, payload.run_id)
             result = ArchitectResult(
@@ -103,7 +114,7 @@ def run_architect(payload: ArchitectInput, task_id: int) -> None:
                 summary=extract_summary(plan_body),
                 proposed_adrs=extract_proposed_adrs(plan_body),
                 session_id=payload.run_id,
-                **usage_from_strands(agent, model_id=model_id()),
+                **usage_from_strands(agent, model_id=used_model_id),
             )
             logger.info(
                 "plan ready",

@@ -23,8 +23,13 @@ from common.event_emit import publish
 from common.events import CritiqueReady, EventEnvelope, RunFailed
 from common.gateway_tools import ARTIFACT_TOOL, call_gateway_tool, gateway_mcp_client
 from common.ids import CorrelationId, RunId, new_event_id
-from common.runtime import CriticInput, CriticResult, usage_from_strands
-from critic.agent import build_agent, critique_plan, model_id
+from common.runtime import (
+    CriticInput,
+    CriticResult,
+    invoke_with_fallback,
+    usage_from_strands,
+)
+from critic.agent import build_agent, critique_plan, fallback_model_id, model_id
 from critic.critique import Critique, render_critique, severity_counts
 from critic.tools import critique_s3_key
 
@@ -63,16 +68,22 @@ def run_critic(payload: CriticInput, task_id: int) -> None:
     """
     try:
         with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-            agent = build_agent(payload.run_id, mcp_client=mcp_client)
-            critique = critique_plan(
-                agent,
-                project_slug=payload.project_slug,
-                run_id=payload.run_id,
-                plan_s3_key=payload.plan_s3_key,
-                intent=payload.intent,
-                source_issue_url=payload.source_issue_url,
-                source_issue_title=payload.source_issue_title,
-                source_issue_body=payload.source_issue_body,
+            agent, used_model_id, critique = invoke_with_fallback(
+                primary_model_id=model_id(),
+                fallback_model_id=fallback_model_id(),
+                build=lambda m: build_agent(
+                    payload.run_id, mcp_client=mcp_client, model_id_override=m
+                ),
+                run=lambda a: critique_plan(
+                    a,
+                    project_slug=payload.project_slug,
+                    run_id=payload.run_id,
+                    plan_s3_key=payload.plan_s3_key,
+                    intent=payload.intent,
+                    source_issue_url=payload.source_issue_url,
+                    source_issue_title=payload.source_issue_title,
+                    source_issue_body=payload.source_issue_body,
+                ),
             )
             upload_critique(mcp_client, critique, run_id=payload.run_id)
 
@@ -85,7 +96,7 @@ def run_critic(payload: CriticInput, task_id: int) -> None:
                 low_severity_count=counts["low"],
                 summary=critique.summary[:2048],
                 session_id=payload.run_id,
-                **usage_from_strands(agent, model_id=model_id()),
+                **usage_from_strands(agent, model_id=used_model_id),
             )
             logger.info(
                 "critique ready",
