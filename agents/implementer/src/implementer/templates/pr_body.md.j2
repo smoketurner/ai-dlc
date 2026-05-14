@@ -1,32 +1,32 @@
-{% if report and report.summary -%}
+{% if summary -%}
 ## Summary
 
-{{ report.summary | trim }}
+{{ summary }}
 
 {% endif -%}
 {% if source_issue_url -%}
 Closes {{ source_issue_url }}
 
 {% endif -%}
-> Run: `{{ run_id }}`
-{% if report and report.files_changed %}
+{% if report and report.files_changed -%}
 ## Files changed
 
 {% for path in report.files_changed -%}
 - `{{ path }}`
 {% endfor %}
-{%- endif -%}
-{% if report and report.tests_run %}
+{% endif -%}
+{% if report and report.tests_run -%}
 ## Tests run
 
 {% for tr in report.tests_run -%}
 - `{{ tr.name }}` — {{ tr.status }}
 {% endfor %}
-{%- endif -%}
-{% if report and report.risks %}
+{% endif -%}
+{% if report and report.risks -%}
 ## Residual risks
 
 {% for risk in report.risks -%}
 - {{ risk }}
 {% endfor %}
-{%- endif -%}
+{% endif -%}
+<!-- ai-dlc-run: {{ run_id }} -->

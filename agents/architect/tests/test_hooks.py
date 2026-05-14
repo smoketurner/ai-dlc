@@ -92,24 +92,20 @@ def test_validate_plan_artifact_skips_non_plan_keys() -> None:
 
 def test_input_validator_cancels_put_artifact_with_bad_plan() -> None:
     validator = build_hooks()[1]
-    event = StubBeforeToolCall(
-        tool_use={
-            "name": "put_artifact",
-            "input": {"key": "runs/abc/plan.md", "content": "## Context only"},
-        },
+    event = call(
+        validator,
+        "put_artifact",
+        {"key": "runs/abc/plan.md", "content": "## Context only"},
     )
-    validator.check(event)
     assert event.cancel_tool is not None
     assert "missing required level-2 section" in event.cancel_tool
 
 
 def test_input_validator_allows_complete_plan() -> None:
     validator = build_hooks()[1]
-    event = StubBeforeToolCall(
-        tool_use={
-            "name": "put_artifact",
-            "input": {"key": "runs/abc/plan.md", "content": full_plan_body()},
-        },
+    event = call(
+        validator,
+        "put_artifact",
+        {"key": "runs/abc/plan.md", "content": full_plan_body()},
     )
-    validator.check(event)
     assert event.cancel_tool is None

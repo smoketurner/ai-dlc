@@ -19,6 +19,11 @@ Claude retries when it tries to dump the spec into the report.
 
 The :func:`audit_log_writes` ``PostToolUse`` hook appends one JSONL row per
 mutating tool call to ``/workspace/audit.jsonl`` for post-session forensics.
+
+:func:`require_finish_on_stop` is a ``Stop`` hook factory: it blocks the
+session from ending until the agent has actually called ``finish``. Without
+it, the SDK happily lets Claude drop off the end of the loop with an empty
+:class:`FinishSink`, leaving the wrapper with no structured report.
 """
 
 from __future__ import annotations
@@ -26,16 +31,20 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from aws_lambda_powertools import Logger
 from claude_agent_sdk.types import HookContext, HookInput, SyncHookJSONOutput
 from pydantic import ValidationError
 
 from common.hooks import validate_no_spec_dump
 from common.steering import Accept, JudgeResult, Retry
-from implementer.finish import FinishReport
+from implementer.finish import FinishReport, FinishSink
+
+logger = Logger(service="implementer")
 
 DANGEROUS_BASH_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\brm\s+-[a-z]*rf?[a-z]*\s+/", re.IGNORECASE),
@@ -227,3 +236,61 @@ async def validate_finish_report(
     if isinstance(verdict, Retry):
         return deny_post(verdict.reason)
     return allow()
+
+
+HookCallback = Callable[
+    [HookInput, str | None, HookContext],
+    Coroutine[Any, Any, SyncHookJSONOutput],
+]
+
+FINISH_REQUIRED_REASON = (
+    "You did not call the `finish` tool. Call "
+    "`mcp__finish_server__finish` now with `summary`, `files_changed`, "
+    "`tests_run`, `risks`, and `status='done'` (or `status='blocked'` "
+    "plus `blocked_reason` if you cannot proceed). The platform uses "
+    "your finish report to open the PR — without it the PR ships with "
+    "an empty body. Do not stop until finish has been called."
+)
+
+
+def block_stop(reason: str) -> SyncHookJSONOutput:
+    """Return a Stop-hook output that tells Claude to keep going."""
+    return cast("SyncHookJSONOutput", {"decision": "block", "reason": reason})
+
+
+def require_finish_on_stop(sink: FinishSink) -> HookCallback:
+    """Build a Stop hook that blocks shutdown until ``finish`` has fired.
+
+    Returns an async callable matching the SDK's hook signature, closed
+    over the per-session :class:`FinishSink`. Behaviour:
+
+    * ``sink.report`` is set → allow the stop (the agent finished cleanly).
+    * ``sink.report`` is ``None`` and ``stop_hook_active`` is ``False``
+      (first stop attempt this session) → return ``decision='block'`` with
+      :data:`FINISH_REQUIRED_REASON`. Claude resumes the loop and (per
+      system prompt + reason) should call ``finish`` next.
+    * ``sink.report`` is ``None`` and ``stop_hook_active`` is ``True``
+      (we already blocked once and Claude is trying to stop again) →
+      log a warning and allow the stop. Letting it loop further would
+      just burn the turn / budget cap. The implementer wrapper still
+      handles ``report=None`` gracefully (empty-summary fall-backs in
+      the PR title/body).
+    """
+
+    async def stop_hook(
+        input_data: HookInput,
+        _tool_use_id: str | None,
+        _context: HookContext,
+    ) -> SyncHookJSONOutput:
+        if sink.report is not None:
+            return allow()
+        raw = cast("dict[str, Any]", input_data)
+        if raw.get("stop_hook_active"):
+            logger.warning(
+                "agent stopped without calling finish even after a block; "
+                "proceeding with report=None",
+            )
+            return allow()
+        return block_stop(FINISH_REQUIRED_REASON)
+
+    return stop_hook

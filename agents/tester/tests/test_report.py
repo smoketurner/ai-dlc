@@ -127,7 +127,8 @@ def test_suggestion_requires_at_least_one_cover() -> None:
 
 def test_render_report_includes_gaps_and_suggestions() -> None:
     out = render_report(make_report())
-    assert "# Test report — run `r-1`" in out
+    assert out.startswith("# Test report\n")
+    assert "<!-- ai-dlc-run: r-1 -->" in out
     assert "**2** gap(s) · **2** suggestion(s)" in out
     assert "- **Context:** Adds a /healthz liveness route" in out
     assert "- **Coverage gap:** No test exercises the unauthenticated" in out

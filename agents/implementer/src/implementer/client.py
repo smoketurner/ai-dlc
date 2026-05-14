@@ -118,12 +118,10 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
 
         pr_url = open_impl_pr(
             mcp_client,
+            payload,
             session_target_repo=session.target_repo,
-            requestor_sub=payload.requestor_sub,
             impl_branch=impl_branch,
-            run_id=payload.run_id,
             report=report,
-            source_issue_url=payload.source_issue_url,
         )
 
     return ImplementerResult(
@@ -364,21 +362,29 @@ def build_commit_message(run_id: str, *, report: FinishReport | None) -> str:
 
 def open_impl_pr(
     mcp_client: MCPClient,
+    payload: ImplementerInput,
     *,
     session_target_repo: str,
-    requestor_sub: str | None,
     impl_branch: str,
-    run_id: str,
     report: FinishReport | None,
-    source_issue_url: str | None,
 ) -> str:
     """Open the unified impl PR via the gateway-routed ``repo_helper.open_pr``."""
-    body = render_pr_body(report=report, run_id=run_id, source_issue_url=source_issue_url)
-    title = pr_title(report=report, run_id=run_id)
+    body = render_pr_body(
+        report=report,
+        run_id=payload.run_id,
+        source_issue_url=payload.source_issue_url,
+        source_issue_title=payload.source_issue_title,
+        intent=payload.intent,
+    )
+    title = pr_title(
+        report=report,
+        source_issue_title=payload.source_issue_title,
+        intent=payload.intent,
+    )
     result = invoke_repo_helper(
         mcp_client,
         op="open_pr",
-        requestor_sub=requestor_sub,
+        requestor_sub=payload.requestor_sub,
         repo=session_target_repo,
         head=impl_branch,
         base="main",
@@ -392,12 +398,33 @@ def open_impl_pr(
     return pr_url
 
 
-def pr_title(*, report: FinishReport | None, run_id: str) -> str:
-    """Build the PR title from the finish report's summary (or a fallback)."""
-    if report and report.summary:
-        first = report.summary.strip().splitlines()[0]
-        return first[:200] or f"aidlc: run {run_id[:8]}"
-    return f"aidlc: run {run_id[:8]}"
+_TITLE_MAX = 200
+
+
+def pr_title(
+    *,
+    report: FinishReport | None,
+    source_issue_title: str | None,
+    intent: str | None,
+) -> str:
+    """Build the PR title with no run-UUID fallback.
+
+    Priority: source issue title → first line of the agent's finish summary →
+    first line of the original intent. Each candidate is stripped, truncated
+    to ``_TITLE_MAX`` chars, and the first non-empty one wins.
+    """
+    candidates: list[str | None] = [
+        source_issue_title,
+        report.summary if report and report.summary else None,
+        intent,
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        first = candidate.strip().splitlines()[0].strip()
+        if first:
+            return first[:_TITLE_MAX]
+    return "ai-dlc: automated changes"
 
 
 def render_pr_body(
@@ -405,15 +432,49 @@ def render_pr_body(
     report: FinishReport | None,
     run_id: str,
     source_issue_url: str | None,
+    source_issue_title: str | None,
+    intent: str | None,
 ) -> str:
     """Render the PR body from the finish report + run metadata."""
     template = make_template_env(__package__).get_template("pr_body.md.j2")
+    summary = pr_body_summary(
+        report=report,
+        source_issue_title=source_issue_title,
+        intent=intent,
+    )
     body = template.render(
+        summary=summary,
         report=report,
         run_id=run_id,
         source_issue_url=source_issue_url,
     )
     return body.rstrip() + "\n"
+
+
+def pr_body_summary(
+    *,
+    report: FinishReport | None,
+    source_issue_title: str | None,
+    intent: str | None,
+) -> str | None:
+    """Pick the best available summary string for the PR body.
+
+    Prefers the agent's own finish-report summary (a paragraph describing
+    what the PR does), then the issue title, then the original intent.
+    Returns ``None`` if nothing is available so the template can omit
+    the section.
+    """
+    for candidate in (
+        report.summary if report and report.summary else None,
+        source_issue_title,
+        intent,
+    ):
+        if not candidate:
+            continue
+        text = candidate.strip()
+        if text:
+            return text
+    return None
 
 
 def format_feedback_item(item: FeedbackItem) -> str:

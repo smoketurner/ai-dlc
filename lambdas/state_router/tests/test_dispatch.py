@@ -307,6 +307,7 @@ class TestRunCritiqued:
             plan_s3_key=PLAN_KEY,
             critique_s3_key=CRITIQUE_KEY,
             source_issue_url=ISSUE_URL,
+            source_issue_title="add X",
         )
         action = decide(run)
         assert isinstance(action, InvokeAgent)
@@ -315,6 +316,8 @@ class TestRunCritiqued:
         assert action.payload["plan_s3_key"] == PLAN_KEY
         assert action.payload["critique_s3_key"] == CRITIQUE_KEY
         assert action.payload["source_issue_url"] == ISSUE_URL
+        assert action.payload["source_issue_title"] == "add X"
+        assert "intent" in action.payload
         assert action.payload["revision_number"] == 0
         assert action.advance_to == RunState.implementer_running.value
 
@@ -512,6 +515,8 @@ class TestRunRevising:
             plan_s3_key=PLAN_KEY,
             critique_s3_key=CRITIQUE_KEY,
             pr_url=PR_URL,
+            source_issue_url=ISSUE_URL,
+            source_issue_title="add X",
             pending_revision_feedback=(
                 {
                     "kind": "issue_comment_mention",
@@ -529,6 +534,9 @@ class TestRunRevising:
         assert action.payload["plan_s3_key"] == PLAN_KEY
         assert action.payload["critique_s3_key"] == CRITIQUE_KEY
         assert action.payload["pr_url"] == PR_URL
+        assert action.payload["source_issue_url"] == ISSUE_URL
+        assert action.payload["source_issue_title"] == "add X"
+        assert "intent" in action.payload
         # IMPL.ITERATION_REQUESTED is uncapped — revision_count stays put.
         assert action.payload["revision_number"] == 1
         assert action.payload["revision_feedback"] == [

@@ -117,7 +117,8 @@ def test_severity_counts_zero_for_empty_review() -> None:
 
 def test_render_review_includes_verdict_and_comments() -> None:
     out = render_review(make_review())
-    assert "# Review — run `01999999-9999-7999-9999-999999999999`" in out
+    assert out.startswith("# Code review\n")
+    assert "<!-- ai-dlc-run: 01999999-9999-7999-9999-999999999999 -->" in out
     assert "Verdict: **request_changes**" in out
     assert "1 high · 1 medium · 0 low" in out
     assert "- **Context:** Adds a /healthz liveness route" in out

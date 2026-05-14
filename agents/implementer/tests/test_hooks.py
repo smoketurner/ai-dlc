@@ -10,11 +10,14 @@ import pytest
 from claude_agent_sdk.types import HookContext, HookInput
 
 from common.steering import Accept, Retry
+from implementer.finish import FinishReport, FinishSink
 from implementer.hooks import (
+    FINISH_REQUIRED_REASON,
     audit_log_writes,
     deny_dangerous_bash,
     deny_sensitive_writes,
     judge_finish_report,
+    require_finish_on_stop,
     validate_finish_report,
 )
 
@@ -309,3 +312,38 @@ def test_judge_finish_report_retries_on_spec_dump() -> None:
     verdict = judge_finish_report(args)
     assert isinstance(verdict, Retry)
     assert "spec content" in verdict.reason
+
+
+def stop_input(*, stop_hook_active: bool) -> HookInput:
+    return cast(
+        "HookInput",
+        {"hook_event_name": "Stop", "stop_hook_active": stop_hook_active},
+    )
+
+
+@pytest.mark.asyncio
+async def test_require_finish_on_stop_blocks_when_sink_empty() -> None:
+    """First stop with no finish report → block + feedback to retry."""
+    sink = FinishSink()
+    hook = require_finish_on_stop(sink)
+    result = await hook(stop_input(stop_hook_active=False), None, stub_context())
+    assert result == {"decision": "block", "reason": FINISH_REQUIRED_REASON}
+
+
+@pytest.mark.asyncio
+async def test_require_finish_on_stop_allows_when_report_set() -> None:
+    """Agent called finish → sink populated → stop is fine."""
+    sink = FinishSink()
+    sink.set(FinishReport(summary="Did the work.", status="done"))
+    hook = require_finish_on_stop(sink)
+    result = await hook(stop_input(stop_hook_active=False), None, stub_context())
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_require_finish_on_stop_allows_on_reentry() -> None:
+    """Already blocked once; agent still won't finish → let it stop."""
+    sink = FinishSink()
+    hook = require_finish_on_stop(sink)
+    result = await hook(stop_input(stop_hook_active=True), None, stub_context())
+    assert result == {}

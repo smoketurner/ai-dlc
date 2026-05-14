@@ -186,17 +186,91 @@ def test_render_pr_body_includes_summary_and_issue_link() -> None:
         report=report,
         run_id="r-1",
         source_issue_url="https://github.com/owner/name/issues/9",
+        source_issue_title="Add /healthz route",
+        intent="Add /healthz route",
     )
     assert "## Summary" in body
     assert "Added /healthz route" in body
     assert "Closes https://github.com/owner/name/issues/9" in body
     assert "- `app.py`" in body
     assert "## Residual risks" in body
-    assert "Run: `r-1`" in body
+    # Run ID hidden in HTML comment trailer (not visible to readers).
+    assert "<!-- ai-dlc-run: r-1 -->" in body
+    assert "Run: `r-1`" not in body
 
 
-def test_pr_title_falls_back_when_no_report() -> None:
-    assert client.pr_title(report=None, run_id="01999999-9999-7999") == "aidlc: run 01999999"
+def test_render_pr_body_falls_back_to_issue_title_when_no_report() -> None:
+    """No finish report → summary section uses the issue title as fallback."""
+    body = client.render_pr_body(
+        report=None,
+        run_id="r-2",
+        source_issue_url="https://github.com/owner/name/issues/9",
+        source_issue_title="Add deterministic lint gates",
+        intent="anything",
+    )
+    assert "## Summary" in body
+    assert "Add deterministic lint gates" in body
+    assert "Closes https://github.com/owner/name/issues/9" in body
+    assert "<!-- ai-dlc-run: r-2 -->" in body
+
+
+def test_render_pr_body_falls_back_to_intent_for_dashboard_runs() -> None:
+    """No report, no issue title → use the dashboard intent as the summary."""
+    body = client.render_pr_body(
+        report=None,
+        run_id="r-3",
+        source_issue_url=None,
+        source_issue_title=None,
+        intent="Investigate slow queries",
+    )
+    assert "## Summary" in body
+    assert "Investigate slow queries" in body
+    assert "Closes" not in body
+    assert "<!-- ai-dlc-run: r-3 -->" in body
+
+
+def test_pr_title_prefers_issue_title() -> None:
+    """Issue title wins over the agent's finish summary."""
+    report = FinishReport(summary="Done.", files_changed=[], status="done")
+    title = client.pr_title(
+        report=report,
+        source_issue_title="Add deterministic lint gates",
+        intent="something else",
+    )
+    assert title == "Add deterministic lint gates"
+
+
+def test_pr_title_uses_finish_summary_when_no_issue() -> None:
+    """No issue → first line of the agent's finish summary."""
+    report = FinishReport(
+        summary="Added /healthz route.\nMore details.",
+        files_changed=[],
+        status="done",
+    )
+    title = client.pr_title(report=report, source_issue_title=None, intent=None)
+    assert title == "Added /healthz route."
+
+
+def test_pr_title_uses_intent_when_nothing_else() -> None:
+    """Last-resort fallback is the original intent (no run UUID)."""
+    title = client.pr_title(
+        report=None,
+        source_issue_title=None,
+        intent="Investigate slow queries on /metrics",
+    )
+    assert title == "Investigate slow queries on /metrics"
+
+
+def test_pr_title_static_fallback_when_no_context() -> None:
+    """Nothing available → a clean static string, never the run UUID."""
+    title = client.pr_title(report=None, source_issue_title=None, intent=None)
+    assert title == "ai-dlc: automated changes"
+
+
+def test_pr_title_truncates_long_strings() -> None:
+    long_title = "x" * 500
+    title = client.pr_title(report=None, source_issue_title=long_title, intent=None)
+    assert len(title) == 200
 
 
 def test_compose_implementation_prompt_mentions_plan_and_critique(

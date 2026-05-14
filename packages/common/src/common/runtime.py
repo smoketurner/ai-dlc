@@ -251,6 +251,12 @@ class ImplementerInput(_Frozen):
         ]
         | None
     ) = None
+    # Used as the primary PR title for issue-driven runs and the fallback
+    # summary line in the PR body when the agent's ``finish`` report omits one.
+    source_issue_title: Annotated[str, Field(max_length=512)] | None = None
+    # Free-text prompt from the dashboard form (or the issue title for
+    # issue-driven runs). Used as the last-resort PR title fallback.
+    intent: Annotated[str, Field(max_length=4096)] | None = None
 
 
 class ImplementerResult(_UsageMixin):

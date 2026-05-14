@@ -13,6 +13,7 @@ from implementer.hooks import (
     audit_log_writes,
     deny_dangerous_bash,
     deny_sensitive_writes,
+    require_finish_on_stop,
     validate_finish_report,
 )
 from implementer.prompts import RESOLVER_SYSTEM_PROMPT
@@ -114,6 +115,7 @@ def build_options(run_id: str, *, finish_sink: FinishSink) -> ClaudeAgentOptions
                 HookMatcher(matcher=FINISH_TOOL_NAME, hooks=[validate_finish_report]),
                 HookMatcher(matcher="Write|Edit|Bash|NotebookEdit", hooks=[audit_log_writes]),
             ],
+            "Stop": [HookMatcher(hooks=[require_finish_on_stop(finish_sink)])],
         },
         env={
             # Claude Code uses Bedrock when this is set.

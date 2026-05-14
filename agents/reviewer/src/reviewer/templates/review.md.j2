@@ -1,4 +1,4 @@
-# Review — run `{{ review.run_id }}`
+# Code review
 
 > Verdict: **{{ review.verdict }}** · {{ counts.high }} high · {{ counts.medium }} medium · {{ counts.low }} low
 
@@ -51,3 +51,5 @@
 - {{ item }}
 {% endfor -%}
 {%- endif %}
+
+<!-- ai-dlc-run: {{ review.run_id }} -->

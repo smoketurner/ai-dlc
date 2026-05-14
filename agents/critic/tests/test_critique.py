@@ -91,7 +91,8 @@ def test_empty_issues_rejected() -> None:
 
 def test_render_critique_includes_counts_and_issues() -> None:
     out = render_critique(make_critique())
-    assert "# Critique — run `r-1`" in out
+    assert out.startswith("# Critique\n")
+    assert "<!-- ai-dlc-run: r-1 -->" in out
     assert "**1** high · **1** medium · **1** low" in out
     assert "### 1. [high] runs/r-1/plan.md (Files to modify / create)" in out
     assert "## Strengths" in out
