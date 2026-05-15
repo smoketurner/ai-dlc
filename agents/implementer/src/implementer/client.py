@@ -46,6 +46,7 @@ from common.runtime import (
 )
 from common.templating import make_template_env
 from implementer.finish import FinishReport, FinishSink
+from implementer.lint_gate import run_lint_gate
 from implementer.options import build_options
 from implementer.repo_ops import (
     call_artifact_tool,
@@ -114,6 +115,18 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
         commit_message = build_commit_message(payload.run_id, report=report)
         if has_uncommitted_changes():
             commit_changes(commit_message)
+
+        gate_result = await run_lint_gate(
+            run_id=payload.run_id,
+            drive_agent_fn=drive_agent,
+        )
+        if not gate_result.passed:
+            msg = (
+                f"lint gate exhausted after {gate_result.attempts} attempts; "
+                f"last failure:\n{gate_result.last_failure}"
+            )
+            raise RuntimeError(msg)
+
         push_branch(impl_branch)
 
         pr_url = open_impl_pr(
@@ -184,6 +197,18 @@ async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResu
             commit_changes(
                 f"revision r{revision_number}: address aggregated feedback",
             )
+
+        gate_result = await run_lint_gate(
+            run_id=payload.run_id,
+            drive_agent_fn=drive_agent,
+        )
+        if not gate_result.passed:
+            msg = (
+                f"lint gate exhausted after {gate_result.attempts} attempts; "
+                f"last failure:\n{gate_result.last_failure}"
+            )
+            raise RuntimeError(msg)
+
         push_branch(impl_branch)
 
         if report is not None and report.inline_replies and payload.pr_url is not None:
