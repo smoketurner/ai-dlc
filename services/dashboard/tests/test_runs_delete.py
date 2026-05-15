@@ -59,23 +59,19 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def seed_run(
     run_id: str,
     *,
-    current_state: str,
-    status: str = "STATUS",
+    status: str,
     event_count: int = 0,
 ) -> None:
-    """Seed a STATE row plus ``event_count`` synthetic event rows for ``run_id``.
+    """Seed a SUMMARY row plus ``event_count`` synthetic event rows for ``run_id``.
 
-    ``current_state`` is the state-machine cursor that gates terminal
-    operations like delete. ``status`` (last event type) is preserved
-    only as a display field; the dashboard no longer uses it for
-    terminal detection.
+    ``status`` is the latest event type — the dashboard derives "is this
+    run terminal?" from this field instead of a separate state cursor.
     """
     ddb().put_item(
         TableName=RUNS,
         Item={
             "pk": {"S": f"RUN#{run_id}"},
-            "sk": {"S": "STATE"},
-            "current_state": {"S": current_state},
+            "sk": {"S": "SUMMARY"},
             "status": {"S": status},
             "project_slug": {"S": "acme-widgets"},
         },
@@ -108,7 +104,7 @@ def test_delete_run_returns_404_when_unknown() -> None:
 
 
 def test_delete_run_returns_409_when_not_terminal() -> None:
-    seed_run("r-active", current_state="received", event_count=2)
+    seed_run("r-active", status="REQUEST.RECEIVED", event_count=2)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-active")
     assert resp.status_code == 409
@@ -117,7 +113,7 @@ def test_delete_run_returns_409_when_not_terminal() -> None:
 
 
 def test_delete_run_cascades_when_done() -> None:
-    seed_run("r-done", current_state="done", event_count=30)
+    seed_run("r-done", status="RUN.COMPLETED", event_count=30)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-done")
     assert resp.status_code == 204
@@ -125,7 +121,7 @@ def test_delete_run_cascades_when_done() -> None:
 
 
 def test_delete_run_handles_failed_state() -> None:
-    seed_run("r-failed", current_state="failed", event_count=1)
+    seed_run("r-failed", status="RUN.FAILED", event_count=1)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-failed")
     assert resp.status_code == 204
@@ -134,7 +130,7 @@ def test_delete_run_handles_failed_state() -> None:
 
 def test_delete_run_handles_cancelled_state() -> None:
     """Cancelled runs are terminal — used to be unreachable via the dashboard."""
-    seed_run("r-cancelled", current_state="cancelled", event_count=1)
+    seed_run("r-cancelled", status="RUN.CANCEL_REQUESTED", event_count=1)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-cancelled")
     assert resp.status_code == 204
@@ -142,8 +138,8 @@ def test_delete_run_handles_cancelled_state() -> None:
 
 
 def test_delete_run_does_not_touch_other_runs() -> None:
-    seed_run("r-keep", current_state="done", event_count=2)
-    seed_run("r-drop", current_state="done", event_count=2)
+    seed_run("r-keep", status="RUN.COMPLETED", event_count=2)
+    seed_run("r-drop", status="RUN.COMPLETED", event_count=2)
     with TestClient(app) as client:
         resp = client.delete("/v1/runs/r-drop")
     assert resp.status_code == 204

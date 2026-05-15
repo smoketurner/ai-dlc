@@ -100,21 +100,20 @@ module "state_router" {
   docker_image    = "public.ecr.aws/sam/build-python3.14:latest-arm64"
 
   environment_variables = merge(local.common_aws_env, {
-    AIDLC_RUNS_TABLE                = var.runs_table
-    AIDLC_BUS_NAME                  = var.bus_name
-    AIDLC_ARTIFACTS_BUCKET          = var.artifacts_bucket
-    AIDLC_REPO_HELPER_FUNCTION_NAME = var.repo_helper_function_name
-    AIDLC_ARCHITECT_RUNTIME_ARN     = local.architect_runtime_arn
-    AIDLC_CRITIC_RUNTIME_ARN        = local.critic_runtime_arn
-    AIDLC_IMPLEMENTER_RUNTIME_ARN   = local.implementer_runtime_arn
-    AIDLC_PROPOSER_RUNTIME_ARN      = local.proposer_runtime_arn
-    AIDLC_REVIEWER_RUNTIME_ARN      = local.reviewer_runtime_arn
-    AIDLC_TESTER_RUNTIME_ARN        = local.tester_runtime_arn
-    AIDLC_TRIAGE_RUNTIME_ARN        = var.triage_runtime_arn
-    POWERTOOLS_SERVICE_NAME         = "state_router"
-    POWERTOOLS_METRICS_NAMESPACE    = "ai-dlc"
-    POWERTOOLS_LOG_LEVEL            = "INFO"
-    POWERTOOLS_LOGGER_LOG_EVENT     = "false"
+    AIDLC_RUNS_TABLE              = var.runs_table
+    AIDLC_BUS_NAME                = var.bus_name
+    AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
+    AIDLC_ARCHITECT_RUNTIME_ARN   = local.architect_runtime_arn
+    AIDLC_CRITIC_RUNTIME_ARN      = local.critic_runtime_arn
+    AIDLC_IMPLEMENTER_RUNTIME_ARN = local.implementer_runtime_arn
+    AIDLC_PROPOSER_RUNTIME_ARN    = local.proposer_runtime_arn
+    AIDLC_REVIEWER_RUNTIME_ARN    = local.reviewer_runtime_arn
+    AIDLC_TESTER_RUNTIME_ARN      = local.tester_runtime_arn
+    AIDLC_TRIAGE_RUNTIME_ARN      = var.triage_runtime_arn
+    POWERTOOLS_SERVICE_NAME       = "state_router"
+    POWERTOOLS_METRICS_NAMESPACE  = "ai-dlc"
+    POWERTOOLS_LOG_LEVEL          = "INFO"
+    POWERTOOLS_LOGGER_LOG_EVENT   = "false"
   })
 
   cloudwatch_logs_retention_in_days = var.lambda_log_retention_days
@@ -123,18 +122,12 @@ module "state_router" {
   policy_statements = merge(
     {
       runs_table = {
-        # Query reads STATE + TASK rows; UpdateItem advances state
-        # conditionally; PutItem (rare) for seeding task rows after
-        # spec_approved; TransactWriteItems atomically reverts a
-        # failed dispatch and writes the retry OUTBOX row in one
-        # commit, so the pipe always sees the rollback through.
+        # Query reads the run's EVENT rows; no writes — the router
+        # only reads. State changes go via emitted events through the
+        # projector.
         effect = "Allow"
         actions = [
           "dynamodb:Query",
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:TransactWriteItems",
         ]
         resources = [var.runs_table_arn]
       }
@@ -142,8 +135,7 @@ module "state_router" {
         # The Lambda event source mapping handles ReceiveMessage +
         # DeleteMessage via the function execution role. The router
         # never publishes to the queue directly — beacons originate
-        # from the DDB outbox row written by the projector (happy
-        # path) or by the dispatch-failure rollback (retry path).
+        # from the EVENT row INSERT forwarded by the EventBridge Pipe.
         effect = "Allow"
         actions = [
           "sqs:ReceiveMessage",
@@ -153,16 +145,11 @@ module "state_router" {
         resources = [var.beacon_queue_arn]
       }
       put_events = {
-        # RUN.COMPLETED + any synthetic state-advancement events.
+        # Dispatch markers, RUN.FAILED on synchronous AgentCore failure,
+        # RUN.CANCEL_REQUESTED on triage-driven cancel.
         effect    = "Allow"
         actions   = ["events:PutEvents"]
         resources = [var.bus_arn]
-      }
-      invoke_repo_helper = {
-        # Open the impl PR, post comments, query check state.
-        effect    = "Allow"
-        actions   = ["lambda:InvokeFunction"]
-        resources = [var.repo_helper_function_arn]
       }
     },
     length(local.state_router_runtime_arns) > 0 ? {
@@ -211,7 +198,7 @@ module "event_projector" {
   version = "~> 8.0"
 
   function_name = "${local.prefix}-event-projector"
-  description   = "EventBridge → runs read-model + outbox row + AgentCore Memory CreateEvent."
+  description   = "EventBridge → runs read-model (EVENT + SUMMARY) + AgentCore Memory CreateEvent."
   handler       = "event_projector.handler.handler"
   runtime       = "python3.14"
   architectures = ["arm64"]
@@ -242,18 +229,13 @@ module "event_projector" {
   attach_policy_statements = true
   policy_statements = {
     runs_table = {
-      # PutItem writes the EVENT row + the initial STATE upsert; UpdateItem
-      # accumulates usage, applies iteration accumulators; GetItem reads
-      # current_state / status off STATE and TASK rows for
-      # ``apply_state_transition``'s conditional updates;
-      # TransactWriteItems advances state and writes the OUTBOX row in
-      # one atomic step (the outbox row is what the EventBridge Pipe
-      # forwards to the state-router beacon queue).
+      # TransactWriteItems atomically inserts the EVENT row + updates
+      # the SUMMARY row (UpdateItem semantics participate in the
+      # transaction). The EVENT row insert is what the EventBridge
+      # Pipe forwards to the state-router beacon queue.
       effect = "Allow"
       actions = [
-        "dynamodb:PutItem",
         "dynamodb:UpdateItem",
-        "dynamodb:GetItem",
         "dynamodb:TransactWriteItems",
       ]
       resources = [var.runs_table_arn]

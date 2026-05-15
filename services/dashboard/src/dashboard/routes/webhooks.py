@@ -60,6 +60,7 @@ from common.events import (
     ImplIterationRequested,
     RunCancelRequested,
     RunCompleted,
+    ValidationRequested,
 )
 from common.github_mentions import has_bot_mention
 from common.ids import (
@@ -380,7 +381,11 @@ def handle_pr_comment(
     *,
     delivery_id: str,
 ) -> dict[str, Any]:
-    """PR conversation comments — on bot mention, emit IMPL.ITERATION_REQUESTED."""
+    """PR conversation comments — branch on bot-mention command.
+
+    * ``@aidlc-bot review`` (or ``validate``) → emit ``VALIDATION.REQUESTED``.
+    * Any other ``@aidlc-bot`` mention → emit ``IMPL.ITERATION_REQUESTED``.
+    """
     issue = payload.get("issue") or {}
     issue_pr = issue.get("pull_request") or {}
     pr_url = issue_pr.get("html_url") or issue.get("html_url") or ""
@@ -393,9 +398,16 @@ def handle_pr_comment(
         return {"ok": True, "ignored": "no match"}
     comment = payload.get("comment") or {}
     commenter = (comment.get("user") or {}).get("login", "unknown")
+    react_to_issue_comment(payload.get("repository") or {}, comment)
+    if is_validation_request(body, settings().github_bot_login):
+        return emit_validation_request(
+            row,
+            pr_url=pr_url,
+            delivery_id=delivery_id,
+            commenter=commenter,
+        )
     comment_id_raw = comment.get("id")
     comment_id = comment_id_raw if isinstance(comment_id_raw, int) and comment_id_raw >= 1 else None
-    react_to_issue_comment(payload.get("repository") or {}, comment)
     return emit_impl_iteration(
         row,
         pr_url=pr_url,
@@ -405,6 +417,26 @@ def handle_pr_comment(
         feedback_body=body,
         comment_id=comment_id,
     )
+
+
+_VALIDATION_COMMANDS: tuple[str, ...] = ("review", "validate")
+
+
+def is_validation_request(body: str, bot_login: str) -> bool:
+    """``True`` iff the comment is ``@<bot> review`` or ``@<bot> validate``.
+
+    The bot mention is recognised case-insensitively; the trailing
+    command must be the first non-whitespace token after the mention.
+    """
+    if not bot_login or not body:
+        return False
+    needle = f"@{bot_login.lower()}"
+    lower = body.lower()
+    idx = lower.find(needle)
+    if idx < 0:
+        return False
+    rest = lower[idx + len(needle) :].lstrip()
+    return any(rest.startswith(cmd) for cmd in _VALIDATION_COMMANDS)
 
 
 def handle_issue_only_comment(
@@ -713,6 +745,36 @@ def emit_impl_iteration(
         ),
     )
     return {"ok": True, "decision": "iteration_requested", "source": source}
+
+
+def emit_validation_request(
+    row: dict[str, Any],
+    *,
+    pr_url: str,
+    delivery_id: str,
+    commenter: str,
+) -> dict[str, Any]:
+    """Publish ``VALIDATION.REQUESTED`` — the router dispatches the three validators."""
+    if not delivery_id:
+        return {"ok": True, "ignored": "missing delivery_id"}
+    run_id = run_id_of(row)
+    correlation_id = attr(row, "correlation_id")
+    payload = ValidationRequested(
+        project_slug=attr(row, "project_slug"),
+        pr_url=pr_url,
+        delivery_id=delivery_id,
+        commenter=commenter,
+    )
+    emit(
+        envelope_for(
+            event_type="VALIDATION.REQUESTED",
+            run_id=run_id,
+            correlation_id=correlation_id,
+            actor="webhook",
+            payload=payload,
+        ),
+    )
+    return {"ok": True, "decision": "validation_requested"}
 
 
 def emit_checks_passed(

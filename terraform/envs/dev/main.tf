@@ -213,9 +213,6 @@ module "pipeline" {
 
   agent_runtime_arns = module.agents.runtime_arns
 
-  repo_helper_function_name = element(split(":", module.agents.tool_lambda_arns["repo_helper"]), 6)
-  repo_helper_function_arn  = module.agents.tool_lambda_arns["repo_helper"]
-
   triage_runtime_arn   = lookup(module.agents.runtime_arns, "triage", "")
   artifacts_bucket     = module.state.artifacts_bucket
   artifacts_bucket_arn = module.state.artifacts_bucket_arn

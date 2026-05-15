@@ -42,14 +42,13 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     ddb.cache_clear()
 
 
-def seed_state(run_id: str, *, current_state: str) -> None:
+def seed_state(run_id: str, *, status: str = "REQUEST.RECEIVED") -> None:
     ddb().put_item(
         TableName=RUNS,
         Item={
             "pk": {"S": f"RUN#{run_id}"},
-            "sk": {"S": "STATE"},
-            "current_state": {"S": current_state},
-            "status": {"S": "RUNNING"},
+            "sk": {"S": "SUMMARY"},
+            "status": {"S": status},
             "project_slug": {"S": "acme"},
         },
     )
@@ -76,7 +75,7 @@ def seed_event(run_id: str, *, event_id: str, event_type: str, timestamp: str) -
 
 
 def test_returns_all_events_without_cursor() -> None:
-    seed_state("r1", current_state="received")
+    seed_state("r1")
     seed_event("r1", event_id="0001", event_type="REQUEST.RECEIVED", timestamp="t1")
     seed_event("r1", event_id="0002", event_type="ISSUE.TRIAGED", timestamp="t2")
 
@@ -90,7 +89,7 @@ def test_returns_all_events_without_cursor() -> None:
 
 
 def test_filters_events_after_cursor() -> None:
-    seed_state("r2", current_state="received")
+    seed_state("r2")
     seed_event("r2", event_id="0001", event_type="REQUEST.RECEIVED", timestamp="t1")
     seed_event("r2", event_id="0002", event_type="ISSUE.TRIAGED", timestamp="t2")
 
@@ -103,7 +102,7 @@ def test_filters_events_after_cursor() -> None:
 
 
 def test_signals_terminal_for_done_runs() -> None:
-    seed_state("r3", current_state="done")
+    seed_state("r3", status="RUN.COMPLETED")
     seed_event("r3", event_id="0001", event_type="RUN.COMPLETED", timestamp="t1")
 
     with TestClient(app) as client:
@@ -113,7 +112,7 @@ def test_signals_terminal_for_done_runs() -> None:
     body = resp.json()
     assert body["terminal"] is True
     assert body["progress"] is None
-    assert body["current_state"] == "done"
+    assert body["status"] == "RUN.COMPLETED"
 
 
 def test_returns_progress_for_active_state() -> None:
@@ -122,9 +121,8 @@ def test_returns_progress_for_active_state() -> None:
         TableName=RUNS,
         Item={
             "pk": {"S": "RUN#r4"},
-            "sk": {"S": "STATE"},
-            "current_state": {"S": "architect_running"},
-            "status": {"S": "RUNNING"},
+            "sk": {"S": "SUMMARY"},
+            "status": {"S": "ARCHITECT.DISPATCHED"},
             "project_slug": {"S": "acme"},
             "updated_at": {"S": "2026-05-13T12:00:00Z"},
         },
@@ -137,8 +135,7 @@ def test_returns_progress_for_active_state() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["terminal"] is False
-    assert body["current_state"] == "architect_running"
+    assert body["status"] == "ARCHITECT.DISPATCHED"
     assert body["updated_at"] == "2026-05-13T12:00:00Z"
     assert body["progress"]["agent"] == "Architect"
     assert body["progress"]["since"] == "2026-05-13T12:00:00Z"
-    assert {"event": "DESIGN.READY", "state": "designed"} in body["progress"]["expected_next"]

@@ -2,22 +2,14 @@
 
 Validates the request body, applies idempotency via Powertools'
 ``DynamoDBPersistenceLayer``, then delegates to :func:`common.runs.start_run`
-which:
+which publishes ``REQUEST.RECEIVED`` onto the platform bus. The event_projector
+writes the EVENT + SUMMARY rows on receipt and the DDB Stream → Pipe
+forwards the EVENT insert to the state-router queue as the wake-up beacon.
 
-  1. **DynamoDB PutItem** — writes the run STATE row at
-     ``pk=RUN#{run_id}, sk=STATE``. ``current_state`` is intentionally
-     absent — the event_projector applies the
-     ``REQUEST.RECEIVED → received`` transition on the event arriving back
-     via EventBridge.
-  2. **EventBridge PutEvents** — emits ``REQUEST.RECEIVED`` for the
-     projector to consume.
-  3. **SQS SendMessage** — delivers a beacon to the state-router queue
-     with ``DelaySeconds=10`` so the router doesn't race the projector.
-
-If any step fails the whole call raises and Powertools' idempotency
-record stays in ``IN_PROGRESS`` — the next invocation re-executes from
-scratch. The 202 with ``run_id``/``correlation_id`` is returned only
-after all three succeed.
+If publishing fails the whole call raises and Powertools' idempotency
+record stays in ``IN_PROGRESS`` — the next invocation re-executes
+from scratch. The 202 with ``run_id``/``correlation_id`` is returned
+only after the event lands.
 
 The dashboard service publishes through the same shared helper without
 going through this Lambda; this lambda exists for the API-Gateway entry

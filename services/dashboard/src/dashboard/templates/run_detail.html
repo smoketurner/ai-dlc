@@ -30,18 +30,14 @@
     </div>
     <div class="flex items-baseline gap-3">
       <span class="px-2 py-0.5 rounded text-xs bg-slate-200" x-text="lastType || '{{ summary.status }}'"></span>
-      {% if summary.current_state in terminal_states %}
+      {% if summary.status in terminal_statuses %}
       <button type="button" @click="deleteRun()"
               class="text-rose-600 hover:text-rose-800 text-xs underline">delete</button>
       {% endif %}
     </div>
   </div>
   {% if summary.total_cost_usd or summary.total_token_in %}
-  <dl class="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-white shadow-sm rounded p-4 text-sm">
-    <div>
-      <dt class="text-slate-500 text-xs uppercase tracking-wide">revisions</dt>
-      <dd class="font-mono">{{ summary.revision_count }}</dd>
-    </div>
+  <dl class="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-white shadow-sm rounded p-4 text-sm">
     <div>
       <dt class="text-slate-500 text-xs uppercase tracking-wide">tokens in</dt>
       <dd class="font-mono">{{ "{:,}".format(summary.total_token_in) }}</dd>
@@ -67,23 +63,12 @@
         </span>
         <span class="text-sm font-semibold" x-text="'Currently: ' + (progress && progress.agent)"></span>
       </span>
-      <span class="text-xs px-2 py-0.5 rounded bg-slate-200 font-mono" x-text="progress && progress.state"></span>
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-200 font-mono" x-text="progress && progress.status"></span>
       <span class="text-xs font-mono"
             :class="stuck ? 'text-amber-800' : 'text-slate-600'"
             x-text="elapsed"></span>
       <span x-show="stuck" class="text-xs px-2 py-0.5 rounded bg-amber-200 text-amber-900">looks stuck</span>
     </header>
-    <p class="text-xs text-slate-600" x-show="progress && progress.expected_next && progress.expected_next.length">
-      <span class="text-slate-500">Next:</span>
-      <template x-for="(step, i) in (progress && progress.expected_next) || []" :key="step.event + step.state">
-        <span>
-          <span x-show="i > 0" class="text-slate-400"> · </span>
-          <span class="font-mono" x-text="step.event"></span>
-          <span class="text-slate-400">→</span>
-          <span class="font-mono" x-text="step.state"></span>
-        </span>
-      </template>
-    </p>
   </section>
   {% if failure %}
   <section class="bg-rose-50 border border-rose-200 shadow-sm rounded p-4 space-y-2">
@@ -120,9 +105,7 @@
   </section>
   {% endif %}
   {% if summary.pr_url %}
-  {# Single impl PR — one PR per issue under the unified pipeline. The
-     reviewer verdict, check state, and revision count surface from the
-     STATE row and refresh on full page reload. #}
+  {# Single impl PR — one PR per issue under the unified pipeline. #}
   <section class="bg-white shadow-sm rounded p-4 space-y-3">
     <header class="flex items-baseline gap-3">
       <h2 class="text-base font-semibold">Implementation PR</h2>
@@ -130,44 +113,8 @@
     <div class="flex items-baseline gap-3 text-sm">
       <a href="{{ summary.pr_url }}" target="_blank" rel="noopener"
          class="text-sky-700 hover:underline truncate font-mono flex-1 min-w-0">{{ summary.pr_url }}</a>
-      {% if summary.current_state %}
-      <span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ summary.current_state }}</span>
-      {% endif %}
+      <span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700 font-mono">{{ summary.status }}</span>
     </div>
-    <div class="flex flex-wrap items-baseline gap-2 text-xs">
-      {% if summary.reviewer_verdict %}
-      {% if summary.reviewer_verdict == "approve" %}
-      <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">reviewer: approve</span>
-      {% elif summary.reviewer_verdict == "request_changes" %}
-      <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">reviewer: request_changes</span>
-      {% else %}
-      <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">reviewer: {{ summary.reviewer_verdict }}</span>
-      {% endif %}
-      {% endif %}
-      {% if summary.check_state %}
-      {% if summary.check_state == "passed" %}
-      <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-mono">checks: passed</span>
-      {% elif summary.check_state == "failed" %}
-      <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">checks: failed</span>
-      {% else %}
-      <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono">checks: {{ summary.check_state }}</span>
-      {% endif %}
-      {% endif %}
-      {% if summary.revision_count %}
-      <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">revisions: {{ summary.revision_count }}</span>
-      {% endif %}
-      {% if summary.review_high_severity_count or summary.review_medium_severity_count or summary.review_low_severity_count %}
-      <span class="px-2 py-0.5 rounded bg-rose-100 text-rose-800 font-mono">{{ summary.review_high_severity_count }} high</span>
-      <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-mono">{{ summary.review_medium_severity_count }} med</span>
-      <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono">{{ summary.review_low_severity_count }} low</span>
-      {% endif %}
-    </div>
-    {% if summary.plan_s3_key or summary.critique_s3_key %}
-    <p class="text-xs text-slate-500 font-mono space-x-3">
-      {% if summary.plan_s3_key %}<span title="plan">plan: {{ summary.plan_s3_key }}</span>{% endif %}
-      {% if summary.critique_s3_key %}<span title="critique">critique: {{ summary.critique_s3_key }}</span>{% endif %}
-    </p>
-    {% endif %}
   </section>
   {% endif %}
   <ul class="bg-white shadow-sm rounded divide-y">

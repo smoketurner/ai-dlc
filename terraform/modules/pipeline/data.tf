@@ -1,8 +1,8 @@
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
-# Outbox pipe — assume-role for the EventBridge Pipes service.
-data "aws_iam_policy_document" "outbox_pipe_assume" {
+# Event pipe — assume-role for the EventBridge Pipes service.
+data "aws_iam_policy_document" "event_pipe_assume" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
@@ -12,9 +12,9 @@ data "aws_iam_policy_document" "outbox_pipe_assume" {
   }
 }
 
-# Outbox pipe — runtime permissions: read the runs-table DDB stream and
+# Event pipe — runtime permissions: read the runs-table DDB stream and
 # send to the state-router beacon queue.
-data "aws_iam_policy_document" "outbox_pipe" {
+data "aws_iam_policy_document" "event_pipe" {
   statement {
     actions = [
       "dynamodb:DescribeStream",

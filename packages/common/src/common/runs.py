@@ -2,33 +2,25 @@
 
 Three surfaces start a run: the API Gateway entry adapter Lambda, the
 dashboard's ``POST /v1/runs``, and the GitHub webhook handler when an
-issue trigger fires. Each one needs to do the same three things in the
-same order:
+issue trigger fires. Each one publishes ``REQUEST.RECEIVED`` to
+EventBridge — that's it.
 
-  1. Write the run STATE row to the runs DDB table.
-  2. Publish ``REQUEST.RECEIVED`` onto the platform EventBridge bus.
-  3. Send an SQS beacon so the state-router picks the run up.
+Downstream:
 
-If any step is skipped the run sits in the system half-constructed.
-This module concentrates the sequence so all three callers behave
-identically, and so future entry surfaces don't drift.
+* The event_projector receives the EventBridge event and atomically
+  writes the EVENT row + SUMMARY row in DynamoDB.
+* The DDB Stream → EventBridge Pipe → SQS forwards the EVENT row
+  INSERT to the state-router queue, generating a beacon.
+* The state-router reads the event log and dispatches the next agent.
 
-The function reads ``AIDLC_RUNS_TABLE``, ``AIDLC_BUS_NAME``, and
-``AIDLC_BEACON_QUEUE_URL`` from the environment — the same names the
-entry_adapter Lambda and the state_router already use.
+There's no entry-side DDB write and no manual SQS beacon — the
+projector and the Pipe own the read-model + wake-up edge respectively.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from functools import cache
-from typing import TYPE_CHECKING, Any
-
-import boto3
 
 from common.event_emit import publish
 from common.events import EventEnvelope, RequestReceived
@@ -40,52 +32,17 @@ from common.ids import (
     new_run_id,
 )
 
-if TYPE_CHECKING:
-    from mypy_boto3_dynamodb.client import DynamoDBClient
-    from mypy_boto3_sqs.client import SQSClient
-
 logger = logging.getLogger(__name__)
-
-# Time the router waits before its first look at the run, in seconds. Long
-# enough that the projector has applied REQUEST.RECEIVED → received before
-# the router peeks at the STATE row.
-BEACON_INITIAL_DELAY_SECONDS = 10
-
-
-@cache
-def ddb() -> DynamoDBClient:
-    """Process-cached DynamoDB client."""
-    return boto3.client("dynamodb")
-
-
-@cache
-def sqs() -> SQSClient:
-    """Process-cached SQS client."""
-    return boto3.client("sqs")
-
-
-def runs_table() -> str:
-    """DynamoDB runs-table name."""
-    return os.environ["AIDLC_RUNS_TABLE"]
-
-
-def beacon_queue_url() -> str:
-    """SQS beacon queue URL."""
-    return os.environ["AIDLC_BEACON_QUEUE_URL"]
-
-
-def now_iso() -> str:
-    """Tz-aware ISO-8601 UTC timestamp."""
-    return datetime.now(UTC).isoformat()
 
 
 @dataclass(frozen=True, slots=True)
 class IssueContext:
-    """Issue-driven trigger context persisted on the STATE row.
+    """Issue-driven trigger context — passed inline on the REQUEST.RECEIVED payload.
 
     The Triage agent's ``TriageInput`` requires every one of these fields,
-    so the webhook captures them at trigger time and the state-router's
-    ``invoke_triage`` reads them off the STATE row when dispatching.
+    so the webhook captures them at trigger time. The state-router's
+    payload builder reads them off the REQUEST.RECEIVED event when
+    dispatching triage.
 
     ``triggering_comment_body`` / ``triggering_commenter`` are populated
     when the run was minted from an ``issue_comment`` event (a reply with
@@ -115,12 +72,7 @@ def start_run(  # noqa: PLR0913
     run_id: RunId | None = None,
     correlation_id: CorrelationId | None = None,
 ) -> tuple[RunId, CorrelationId]:
-    """Mint a run, write the STATE row, emit REQUEST.RECEIVED, send beacon.
-
-    Sequence is strict: DDB ``PutItem`` first (the source of truth), then
-    EventBridge ``PutEvents`` (the projector picks up state from here),
-    then SQS ``SendMessage`` with a 10s delay (the router's first look).
-    Any step raises propagate; the caller decides whether to retry.
+    """Mint a run and publish ``REQUEST.RECEIVED``.
 
     ``run_id`` and ``correlation_id`` are accepted to support callers
     that already minted them (e.g., for idempotent reservation in the
@@ -128,40 +80,35 @@ def start_run(  # noqa: PLR0913
 
     For issue-driven runs, the caller supplies an :class:`IssueContext`
     carrying every field the Triage agent's ``TriageInput`` requires —
-    those land on the STATE row so the router can rebuild the triage
-    payload without re-reading the GitHub API.
+    the fields ride on the ``REQUEST.RECEIVED`` payload so the router
+    can build the triage dispatch from the event log alone.
     """
     rid = run_id or new_run_id()
     cid = correlation_id or new_correlation_id()
     actor = actor_id or requestor
-    write_state_row(
-        run_id=str(rid),
-        correlation_id=str(cid),
-        project_slug=project_slug,
-        intent=intent,
-        requestor=requestor,
-        actor_id=actor,
-        target_repo=target_repo,
-        requestor_sub=requestor_sub,
-        issue=issue,
-    )
-    envelope = EventEnvelope[RequestReceived](
-        event_id=new_event_id(),
-        type="REQUEST.RECEIVED",
-        run_id=rid,
-        correlation_id=cid,
-        actor_id=actor,
-        payload=RequestReceived(
-            project_slug=project_slug,
-            intent=intent,
-            requestor=requestor,
-            requestor_sub=requestor_sub,
-            target_repo=target_repo,
-            source_issue_url=issue.issue_url if issue else None,
+    publish(
+        EventEnvelope[RequestReceived](
+            event_id=new_event_id(),
+            type="REQUEST.RECEIVED",
+            run_id=rid,
+            correlation_id=cid,
+            actor_id=actor,
+            payload=RequestReceived(
+                project_slug=project_slug,
+                intent=intent,
+                requestor=requestor,
+                requestor_sub=requestor_sub,
+                target_repo=target_repo,
+                source_issue_url=issue.issue_url if issue else None,
+                issue_number=issue.issue_number if issue else None,
+                issue_title=issue.issue_title if issue else None,
+                issue_body=issue.issue_body if issue else None,
+                issue_labels=list(issue.issue_labels) if issue else [],
+                triggering_comment_body=issue.triggering_comment_body if issue else None,
+                triggering_commenter=issue.triggering_commenter if issue else None,
+            ),
         ),
     )
-    publish(envelope)
-    send_beacon(run_id=str(rid), project_slug=project_slug)
     logger.info(
         "run started",
         extra={
@@ -171,76 +118,3 @@ def start_run(  # noqa: PLR0913
         },
     )
     return rid, cid
-
-
-def write_state_row(  # noqa: PLR0913
-    *,
-    run_id: str,
-    correlation_id: str,
-    project_slug: str,
-    intent: str,
-    requestor: str,
-    actor_id: str,
-    target_repo: str | None,
-    requestor_sub: str | None,
-    issue: IssueContext | None,
-) -> None:
-    """Write the run's STATE row at ``pk=RUN#{run_id}, sk=STATE``.
-
-    ``current_state`` is intentionally absent — the event_projector sets
-    it on receipt of ``REQUEST.RECEIVED`` so we keep one writer of run
-    state. The ``attribute_not_exists(pk)`` guard prevents clobbering a
-    pre-existing row if the same run_id is ever submitted twice (UUID7
-    collision is effectively impossible, but we'd rather error than
-    overwrite).
-    """
-    ts = now_iso()
-    item: dict[str, dict[str, Any]] = {
-        "pk": {"S": f"RUN#{run_id}"},
-        "sk": {"S": "STATE"},
-        "run_id": {"S": run_id},
-        "correlation_id": {"S": correlation_id},
-        "project_slug": {"S": project_slug},
-        "intent": {"S": intent},
-        "requestor": {"S": requestor},
-        "actor_id": {"S": actor_id},
-        "phase": {"S": "triage"},
-        "created_at": {"S": ts},
-        "updated_at": {"S": ts},
-    }
-    if target_repo:
-        item["target_repo"] = {"S": target_repo}
-    if requestor_sub:
-        item["requestor_sub"] = {"S": requestor_sub}
-    if issue is not None:
-        item["source_issue_url"] = {"S": issue.issue_url}
-        item["issue_number"] = {"N": str(issue.issue_number)}
-        item["issue_title"] = {"S": issue.issue_title}
-        item["issue_body"] = {"S": issue.issue_body}
-        if issue.issue_labels:
-            item["issue_labels"] = {"SS": list(issue.issue_labels)}
-        if issue.triggering_comment_body:
-            item["triggering_comment_body"] = {"S": issue.triggering_comment_body}
-        if issue.triggering_commenter:
-            item["triggering_commenter"] = {"S": issue.triggering_commenter}
-    ddb().put_item(
-        TableName=runs_table(),
-        Item=item,
-        ConditionExpression="attribute_not_exists(pk)",
-    )
-
-
-def send_beacon(*, run_id: str, project_slug: str) -> None:
-    """Enqueue the SQS beacon with a short initial delay.
-
-    The 10s delay covers the projector's REQUEST.RECEIVED → received
-    transition so the router's first look at the STATE row sees an
-    actionable cursor. ``MessageGroupId`` is set to ``project_slug`` so
-    SQS fair-queue noisy-neighbor metrics are keyed per project.
-    """
-    sqs().send_message(
-        QueueUrl=beacon_queue_url(),
-        MessageBody=json.dumps({"run_id": run_id}),
-        DelaySeconds=BEACON_INITIAL_DELAY_SECONDS,
-        MessageGroupId=project_slug,
-    )

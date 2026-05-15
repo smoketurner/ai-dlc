@@ -65,16 +65,6 @@ resource "aws_dynamodb_table" "runs" {
   stream_enabled   = true
   stream_view_type = "NEW_AND_OLD_IMAGES"
 
-  # Outbox rows (sk = ``OUTBOX#{event_id}``) carry an ``expire_at``
-  # attribute set ~1h after creation. Other rows (STATE, TASK#, EVENT#)
-  # don't set ``expire_at`` and are therefore exempt from sweeps. The
-  # pipe forwards outbox rows to SQS within seconds; TTL is a hygiene
-  # backstop so the outbox doesn't accumulate.
-  ttl {
-    attribute_name = "expire_at"
-    enabled        = true
-  }
-
   point_in_time_recovery {
     enabled = true
   }

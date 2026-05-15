@@ -16,10 +16,9 @@ casing.
 Example::
 
     update = (
-        UpdateBuilder(table="runs", key={"pk": "RUN#1", "sk": "STATE"})
+        UpdateBuilder(table="runs", key={"pk": "RUN#1", "sk": "SUMMARY"})
         .set("status", "DESIGN.READY")
         .add("total_token_in", 4000)
-        .condition_eq("current_state", "architect_running")
     )
     put = PutBuilder(
         table="runs",

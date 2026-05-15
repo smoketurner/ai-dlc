@@ -17,16 +17,15 @@ class _Frozen(BaseModel):
 class RunSummary(_Frozen):
     """Compact run row for the runs list.
 
-    Under the single-PR-per-issue contract a run carries at most one
-    impl PR (``pr_url``). The spec-slug / per-task counters are gone;
-    revision count + check state + reviewer verdict surface on the
-    detail page from the STATE row.
+    ``status`` is the latest event type — the dashboard's display state
+    is derived from it via :mod:`dashboard.state_progress`. Per-revision
+    counters, verdicts, and severity totals are now derived on demand
+    from the event log on the detail page, not denormalised here.
     """
 
     run_id: str
     project_slug: str
     status: str
-    current_state: str | None = None
     created_at: datetime | None = None
     updated_at: str | None = None
     total_token_in: int = 0
@@ -35,17 +34,8 @@ class RunSummary(_Frozen):
     total_duration_ms: int = 0
     target_repo: str | None = None
     source_issue_url: str | None = None
-    issue_number: int | None = None
     issue_title: str | None = None
     pr_url: str | None = None
-    revision_count: int = 0
-    check_state: str | None = None
-    reviewer_verdict: str | None = None
-    review_high_severity_count: int = 0
-    review_medium_severity_count: int = 0
-    review_low_severity_count: int = 0
-    plan_s3_key: str | None = None
-    critique_s3_key: str | None = None
 
 
 class EventLink(_Frozen):

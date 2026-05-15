@@ -80,10 +80,10 @@ Hard rules:
    attempts at 3 — if you still cannot get verification green after
    three attempts, push what you have and add a clearly labelled
    ``### Verification status: failing`` section to your ``finish``
-   summary listing exactly which command failed and the relevant output.
-   This is load-bearing: pushing red shifts the failure to GitHub
-   Actions, which burns a revision attempt against the platform's
-   ``MAX_REVISIONS=3`` cap. Run the commands locally, fix locally.
+   summary listing exactly which command failed and the relevant
+   output. This is load-bearing: pushing red shifts the failure to
+   GitHub Actions and burns a fresh revision cycle. Run the commands
+   locally, fix locally.
 4. Make small, focused commits with imperative one-line subjects.
 5. When you finish, call the ``finish`` tool exactly once. Required
    fields:

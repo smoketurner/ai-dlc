@@ -26,7 +26,7 @@
           class="border-b last:border-0 hover:bg-slate-50">
         <td class="px-3 py-2"><a href="/runs/{{ run.run_id }}" class="text-sky-700 hover:underline">{{ run.run_id }}</a></td>
         <td class="px-3 py-2">{{ run.project_slug }}</td>
-        <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs bg-slate-200">{{ run.current_state or run.status }}</span></td>
+        <td class="px-3 py-2"><span class="px-2 py-0.5 rounded text-xs bg-slate-200">{{ run.status }}</span></td>
         <td class="px-3 py-2">
           {% set p = runs_progress.get(run.run_id) %}
           {% if p %}
@@ -52,7 +52,7 @@
           {% if run.total_cost_usd %}${{ "%.3f"|format(run.total_cost_usd) }}{% else %}—{% endif %}
         </td>
         <td class="px-3 py-2 text-right">
-          {% if run.current_state in terminal_states %}
+          {% if run.status in terminal_statuses %}
           <button type="button" @click="deleteRun('{{ run.run_id }}')"
                   class="text-rose-600 hover:text-rose-800 text-xs underline">delete</button>
           {% endif %}

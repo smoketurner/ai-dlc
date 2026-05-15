@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
   "title": "CHECKS.FAILED",
-  "description": "One or more required GitHub Checks for the impl PR's HEAD sha did not succeed. Triggers an implementer revision (counts toward MAX_REVISIONS).",
+  "description": "One or more required GitHub Checks for the impl PR's HEAD sha did not succeed. Triggers an implementer revision.",
   "type": "object",
   "additionalProperties": false,
   "required": [

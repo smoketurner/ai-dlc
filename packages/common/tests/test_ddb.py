@@ -127,17 +127,17 @@ def test_mixed_set_add_remove_composes_one_expression() -> None:
 
 def test_condition_eq_attaches_condition() -> None:
     update = UpdateBuilder(table=TABLE, key={"pk": "p", "sk": "s"}).condition_eq(
-        "current_state",
-        "received",
+        "status",
+        "REQUEST.RECEIVED",
     )
     item = update.to_item()["Update"]
     assert item["ConditionExpression"] == "#a0 = :v0"
-    assert item["ExpressionAttributeValues"][":v0"] == {"S": "received"}
+    assert item["ExpressionAttributeValues"][":v0"] == {"S": "REQUEST.RECEIVED"}
 
 
 def test_condition_not_exists_attaches_condition() -> None:
     update = UpdateBuilder(table=TABLE, key={"pk": "p", "sk": "s"}).condition_not_exists(
-        "current_state",
+        "status",
     )
     item = update.to_item()["Update"]
     assert item["ConditionExpression"] == "attribute_not_exists(#a0)"

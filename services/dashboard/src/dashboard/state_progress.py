@@ -1,123 +1,99 @@
-"""Derive in-flight progress signals from the run-state cursor.
+"""Derive display state from the latest event in a run's history.
 
-Pure functions — no I/O. Given the current ``RunState`` (and optionally
-``updated_at`` to compute elapsed-since-transition), produce:
+Pure functions, no I/O. Given the run's most recent event type (the
+``status`` field on the SUMMARY row), produce:
 
-* ``agent_label`` — human-readable name of the agent (or wait-on
-  party) responsible for advancing the run from this state.
-* ``next_steps`` — the ``(event, next_state)`` pairs that advance from
-  here, derived by inverting :data:`common.state_transitions.RUN_TRANSITIONS`.
-* ``stuck_threshold_seconds`` — when this many seconds elapse in the
-  same state without a transition, the dashboard surfaces an amber
-  "looks stuck" indicator.
+* ``agent_label`` — what's currently happening, or who's currently
+  on the hook (e.g. "Human reviewer" while we wait for a merge).
+* ``stuck_threshold_seconds`` — UI surfaces an amber indicator when
+  the run sits at the same status longer than this.
+* ``is_terminal`` — true when the run has wrapped up.
 
-``updated_at`` on the STATE row is bumped on every write (state advance
-plus same-state usage rollups), so the elapsed value is a coarse "≥"
-bound on time-in-state rather than a precise transition timestamp.
+The state machine is gone; ``status`` (the latest event type) is the
+only display input the dashboard reads.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping
 from typing import Final
 
-from common.events import EventType
-from common.state import RunState
-from common.state_transitions import RUN_TRANSITIONS
+TERMINAL_EVENT_TYPES: Final[frozenset[str]] = frozenset(
+    {"RUN.COMPLETED", "RUN.FAILED", "RUN.CANCEL_REQUESTED"},
+)
+"""Event types that mark a run as finished."""
 
-_AGENT_LABELS: Final[Mapping[RunState, str]] = {
-    RunState.triaging: "Triage",
-    RunState.architect_running: "Architect",
-    RunState.critic_running: "Critic",
-    RunState.implementer_running: "Implementer",
-    RunState.validation_running: "Reviewer + Tester + Code-Critic",
-    RunState.revising: "Implementer (revision)",
-    RunState.proposer_running: "Proposer",
-    RunState.awaiting_checks: "GitHub Checks",
-    RunState.awaiting_human_merge: "Human reviewer",
+_AGENT_LABELS: Final[Mapping[str, str]] = {
+    "REQUEST.RECEIVED": "Triage",
+    "TRIAGE.DISPATCHED": "Triage",
+    "ISSUE.TRIAGED": "Architect",
+    "ARCHITECT.DISPATCHED": "Architect",
+    "DESIGN.READY": "Implementer",
+    "IMPLEMENTER.DISPATCHED": "Implementer",
+    "CRITIQUE.READY": "Implementer",
+    "IMPL_PR.OPENED": "Human reviewer",
+    "REVISION.READY": "Human reviewer",
+    "IMPL.ITERATION_REQUESTED": "Implementer (revision)",
+    "CHECKS.FAILED": "Implementer (revision)",
+    "CHECKS.PASSED": "Human reviewer",
+    "VALIDATION.REQUESTED": "Reviewer + Tester + Code-Critic",
+    "VALIDATORS.DISPATCHED": "Reviewer + Tester + Code-Critic",
+    "REVIEW.READY": "Human reviewer",
+    "TEST_REPORT.READY": "Human reviewer",
+    "CODE_CRITIQUE.READY": "Human reviewer",
+    "PROPOSER.DISPATCHED": "Proposer",
 }
 
-_WAIT_STATES: Final[frozenset[RunState]] = frozenset(
-    {RunState.awaiting_checks, RunState.awaiting_human_merge},
-)
+_HUMAN_LABELS: Final[frozenset[str]] = frozenset({"Human reviewer"})
 
 _AGENT_RUNNING_THRESHOLD_S: Final[int] = 15 * 60
 _HUMAN_WAIT_THRESHOLD_S: Final[int] = 30 * 60
 
 
-def agent_label(state: RunState | None) -> str | None:
-    """Display name of the party working from ``state``, or ``None``.
-
-    Returns ``None`` for steady-cursor states (``received``,
-    ``triage_decided``, ``designed``, ``critiqued``, ``impl_pr_open``,
-    ``validation_complete``) and terminal states — the system is
-    between transitions, not actively working.
-    """
-    if state is None:
+def agent_label(status: str | None) -> str | None:
+    """Display name of the party working from this status, or ``None``."""
+    if status is None:
         return None
-    return _AGENT_LABELS.get(state)
+    return _AGENT_LABELS.get(status)
 
 
-def is_active(state: RunState | None) -> bool:
-    """``True`` when ``state`` has an associated agent or wait party."""
-    return agent_label(state) is not None
+def is_terminal(status: str | None) -> bool:
+    """``True`` when ``status`` is a terminal event type."""
+    return status in TERMINAL_EVENT_TYPES if status else False
 
 
-def next_steps(state: RunState | None) -> list[tuple[EventType, RunState]]:
-    """Events that advance ``state`` and the resulting next state.
-
-    Inverts :data:`RUN_TRANSITIONS` on ``current_state``. Wildcard
-    transitions (``RUN.FAILED`` / ``RUN.CANCEL_REQUESTED``) are
-    intentionally excluded — they're abort paths, not "what's expected".
-    """
-    if state is None:
-        return []
-    return _NEXT_STEPS.get(state, [])
+def is_active(status: str | None) -> bool:
+    """``True`` when ``status`` maps to an active agent or wait party."""
+    return agent_label(status) is not None
 
 
-def stuck_threshold_seconds(state: RunState | None) -> int | None:
-    """Seconds of in-state dwell after which the UI flags the run as stuck."""
-    if state is None or state not in _AGENT_LABELS:
+def stuck_threshold_seconds(status: str | None) -> int | None:
+    """Seconds at the same status before the UI flags the run as stuck."""
+    label = agent_label(status)
+    if label is None:
         return None
-    if state in _WAIT_STATES:
+    if label in _HUMAN_LABELS:
         return _HUMAN_WAIT_THRESHOLD_S
     return _AGENT_RUNNING_THRESHOLD_S
 
 
 def progress_dict(
-    state: RunState | None,
+    status: str | None,
     *,
     updated_at: str | None,
 ) -> dict[str, object] | None:
     """Build a JSON-serialisable payload for the "currently running" panel.
 
-    Returns ``None`` when ``state`` has no active agent (steady-cursor
-    or terminal). ``updated_at`` is passed through verbatim as the
-    "in-state since" anchor; the client formats elapsed time.
+    Returns ``None`` for terminal states or unknown statuses.
     """
-    label = agent_label(state)
-    if label is None or state is None:
+    if is_terminal(status):
+        return None
+    label = agent_label(status)
+    if label is None or status is None:
         return None
     return {
         "agent": label,
-        "state": state.value,
+        "status": status,
         "since": updated_at,
-        "stuck_threshold_seconds": stuck_threshold_seconds(state),
-        "expected_next": [
-            {"event": event, "state": next_state.value} for event, next_state in next_steps(state)
-        ],
+        "stuck_threshold_seconds": stuck_threshold_seconds(status),
     }
-
-
-def _build_next_steps() -> dict[RunState, list[tuple[EventType, RunState]]]:
-    """Invert ``RUN_TRANSITIONS`` once at import time."""
-    inverse: dict[RunState, list[tuple[EventType, RunState]]] = defaultdict(list)
-    for (event, current), nxt in RUN_TRANSITIONS.items():
-        if current is None:
-            continue
-        inverse[current].append((event, nxt))
-    return dict(inverse)
-
-
-_NEXT_STEPS: Final[Mapping[RunState, list[tuple[EventType, RunState]]]] = _build_next_steps()

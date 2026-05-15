@@ -47,22 +47,21 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def seed_state(run_id: str, **extra: object) -> None:
-    """Write a STATE row with optional GitHub-linkage attributes."""
-    current_state = str(extra.pop("current_state", "received"))
+    """Write a SUMMARY row with optional GitHub-linkage attributes."""
+    status = str(extra.pop("status", "REQUEST.RECEIVED"))
     item: dict[str, dict[str, str]] = {
         "pk": {"S": f"RUN#{run_id}"},
-        "sk": {"S": "STATE"},
-        "current_state": {"S": current_state},
-        "status": {"S": "RUNNING"},
+        "sk": {"S": "SUMMARY"},
+        "status": {"S": status},
         "project_slug": {"S": "acme"},
     }
-    for key in ("target_repo", "source_issue_url", "issue_title", "pr_url"):
+    issue_title = extra.pop("issue_title", None)
+    if issue_title is not None:
+        item["source_issue_title"] = {"S": str(issue_title)}
+    for key in ("target_repo", "source_issue_url", "pr_url"):
         value = extra.get(key)
         if value is not None:
             item[key] = {"S": str(value)}
-    issue_number = extra.get("issue_number")
-    if issue_number is not None:
-        item["issue_number"] = {"N": str(issue_number)}
     ddb().put_item(TableName=RUNS, Item=item)
 
 
@@ -99,13 +98,12 @@ def test_renders_issue_and_repo_links_in_header() -> None:
     assert "https://github.com/smoketurner/ai-dlc" in body
     assert "smoketurner/ai-dlc" in body
     assert "https://github.com/smoketurner/ai-dlc/issues/42" in body
-    assert "#42" in body
     assert "add login" in body
 
 
 def test_renders_impl_pr_card_when_pr_url_present() -> None:
     """The detail page surfaces the single impl PR + verdict / check-state pills."""
-    seed_state("r2", pr_url="https://github.com/o/r/pull/1", current_state="awaiting_human_merge")
+    seed_state("r2", pr_url="https://github.com/o/r/pull/1", status="IMPL_PR.OPENED")
     seed_event("r2", event_id="0001", event_type="IMPL_PR.OPENED", payload={})
 
     with TestClient(app) as client:
