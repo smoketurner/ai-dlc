@@ -11,7 +11,7 @@ module "entry_adapter" {
   version = "~> 8.0"
 
   function_name = "${local.prefix}-entry-adapter"
-  description   = "POST /v1/runs → write run row → emit REQUEST.RECEIVED → enqueue state-router beacon."
+  description   = "POST /v1/runs → emit REQUEST.RECEIVED onto the platform bus."
   handler       = "entry_adapter.handler.handler"
   runtime       = "python3.14"
   architectures = ["arm64"]
@@ -32,8 +32,6 @@ module "entry_adapter" {
     AIDLC_BUS_NAME               = var.bus_name
     AIDLC_IDEMPOTENCY_TABLE      = var.idempotency_table
     AIDLC_IDEMPOTENCY_TTL        = "86400"
-    AIDLC_RUNS_TABLE             = var.runs_table
-    AIDLC_BEACON_QUEUE_URL       = var.beacon_queue_url
     POWERTOOLS_SERVICE_NAME      = "entry_adapter"
     POWERTOOLS_METRICS_NAMESPACE = "ai-dlc"
     POWERTOOLS_LOG_LEVEL         = "INFO"
@@ -51,20 +49,10 @@ module "entry_adapter" {
       actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
       resources = [var.idempotency_table_arn]
     }
-    runs_table_put = {
-      effect    = "Allow"
-      actions   = ["dynamodb:PutItem"]
-      resources = [var.runs_table_arn]
-    }
     put_events = {
       effect    = "Allow"
       actions   = ["events:PutEvents"]
       resources = [var.bus_arn]
-    }
-    enqueue_beacon = {
-      effect    = "Allow"
-      actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
-      resources = [var.beacon_queue_arn]
     }
   }
 

@@ -46,7 +46,6 @@ module "function" {
     AIDLC_BUS_NAME                    = var.bus_name
     AIDLC_RUNS_TABLE                  = var.runs_table
     AIDLC_IDEMPOTENCY_TABLE           = var.idempotency_table
-    AIDLC_BEACON_QUEUE_URL            = var.beacon_queue_url
     AIDLC_ARTIFACTS_BUCKET            = var.artifacts_bucket
     AIDLC_GITHUB_APP_SECRET_ARN       = var.github_app_secret_arn
     AIDLC_GITHUB_WEBHOOK_SECRET_ID    = var.github_webhook_secret_id
@@ -72,22 +71,31 @@ module "function" {
   attach_policy_statements = true
   policy_statements = merge(
     {
-      runs_table = {
+      runs_table_read = {
+        # Dashboard only reads the runs table (SUMMARY rows for the
+        # list, EVENT rows for the detail page). State changes flow
+        # through EventBridge → projector.
         effect = "Allow"
         actions = [
           "dynamodb:GetItem",
-          "dynamodb:PutItem",
           "dynamodb:Query",
           "dynamodb:Scan",
-          "dynamodb:UpdateItem",
         ]
         resources = [
           var.runs_table_arn,
           "${var.runs_table_arn}/index/*",
-          var.idempotency_table_arn,
         ]
       }
+      idempotency_table = {
+        # POST /v1/runs reserves an idempotency key with a conditional
+        # PutItem before publishing REQUEST.RECEIVED.
+        effect    = "Allow"
+        actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        resources = [var.idempotency_table_arn]
+      }
       runs_table_delete = {
+        # DELETE /v1/runs/{run_id} cascades over the partition for
+        # terminal runs.
         effect = "Allow"
         actions = [
           "dynamodb:DeleteItem",
@@ -99,11 +107,6 @@ module "function" {
         effect    = "Allow"
         actions   = ["events:PutEvents"]
         resources = [var.bus_arn]
-      }
-      enqueue_beacon = {
-        effect    = "Allow"
-        actions   = ["sqs:SendMessage", "sqs:GetQueueAttributes"]
-        resources = [var.beacon_queue_arn]
       }
       read_github_app_secret = {
         effect    = "Allow"

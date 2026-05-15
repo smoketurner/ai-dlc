@@ -26,7 +26,6 @@ class Settings(BaseModel):
     bus_name: str
     runs_table: str
     idempotency_table: str
-    beacon_queue_url: str
     artifacts_bucket: str
     github_app_secret_id: str
     github_webhook_secret_id: str
@@ -62,7 +61,6 @@ def settings() -> Settings:
         bus_name=os.environ["AIDLC_BUS_NAME"],
         runs_table=os.environ["AIDLC_RUNS_TABLE"],
         idempotency_table=os.environ["AIDLC_IDEMPOTENCY_TABLE"],
-        beacon_queue_url=os.environ["AIDLC_BEACON_QUEUE_URL"],
         artifacts_bucket=os.environ["AIDLC_ARTIFACTS_BUCKET"],
         github_app_secret_id=os.environ["AIDLC_GITHUB_APP_SECRET_ARN"],
         github_webhook_secret_id=os.environ["AIDLC_GITHUB_WEBHOOK_SECRET_ID"],

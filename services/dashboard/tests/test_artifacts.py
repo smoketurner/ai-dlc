@@ -51,10 +51,6 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("AIDLC_IDEMPOTENCY_TABLE", "test-idempotency")
     monkeypatch.setenv("AIDLC_ARTIFACTS_BUCKET", ARTIFACTS)
     monkeypatch.setenv(
-        "AIDLC_BEACON_QUEUE_URL",
-        "https://sqs.us-east-1.amazonaws.com/000000000000/test-beacon",
-    )
-    monkeypatch.setenv(
         "AIDLC_GITHUB_APP_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:0:secret:app"
     )
     monkeypatch.setenv("AIDLC_GITHUB_WEBHOOK_SECRET_ID", "test-secret")
