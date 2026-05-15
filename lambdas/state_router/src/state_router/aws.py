@@ -1,16 +1,13 @@
-"""AWS clients and the low-level primitives the router calls.
+"""AWS clients and the AgentCore dispatch primitive.
 
-Two kinds of code live here:
+The router only reads DynamoDB (for the event log) and invokes
+AgentCore Runtime (for agent dispatches). Every other side-effecting
+path is gone with the state-machine rewrite:
 
-* Process-cached boto3 client factories.
-* The two side-effecting primitives the router invokes — the
-  atomic ``transactional_advance`` (state Update + outbox Put) and
-  the AgentCore Runtime ``dispatch_to_runtime`` call — plus the
-  ``now_iso`` timestamp helper used by both.
-
-Everything above this layer (executors, circuit breaker) calls
-through these primitives instead of touching boto3 directly, which
-keeps mocking surfaces small and the dependency graph one-way.
+* No more conditional state advances → no ``transactional_advance``.
+* No more state-row writes from the router → DDB is read-only here.
+* No more ``repo_helper`` direct invokes from the router → agents
+  call ``repo_helper`` through the AgentCore Gateway.
 """
 
 from __future__ import annotations
@@ -26,19 +23,14 @@ from aws_lambda_powertools import Logger, Tracer
 from botocore.config import Config
 from botocore.exceptions import ClientError, ReadTimeoutError
 
-from common.ddb import PutBuilder, TransactWriteItemsBuilder, UpdateBuilder
-from common.ids import new_event_id
 from common.trace_context import current_trace_context
 from state_router.config import (
     DISPATCH_CONNECT_TIMEOUT_SECONDS,
     DISPATCH_READ_TIMEOUT_SECONDS,
-    runs_table,
 )
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
-    from mypy_boto3_lambda.client import LambdaClient
-    from mypy_boto3_s3.client import S3Client
 
 logger = Logger(service="state_router")
 tracer = Tracer(service="state_router")
@@ -51,32 +43,14 @@ def ddb() -> DynamoDBClient:
 
 
 @cache
-def lambda_client() -> LambdaClient:
-    """Process-cached Lambda client (for repo_helper invokes)."""
-    return boto3.client("lambda")
-
-
-@cache
-def s3() -> S3Client:
-    """Process-cached S3 client (currently unused but kept for parity)."""
-    return boto3.client("s3")
-
-
-@cache
 def runtime_client() -> Any:
     """Process-cached AgentCore Runtime client.
 
-    The agents use the AgentCore SDK's async-task pattern
-    (``add_async_task`` + a daemon thread), so the entrypoint returns
-    in ~100ms and the dispatch is a clean fast call. The 10s read
-    timeout covers the AgentCore frontend's worst-case acknowledge
-    time — anything longer is a real failure, not the
-    ReadTimeoutError-as-success pattern this client used to have.
-
-    Client-side retries stay disabled because the dispatch contract
-    is at-least-once via the SQS beacon: a real failure rolls back
-    state, the breaker counter increments, and the next beacon
-    re-attempts.
+    The agents implement the async-task pattern: their entrypoint
+    validates input, spawns a daemon thread, returns ``{"status":
+    "dispatched"}`` in ~100ms. The 10s read timeout covers the worst
+    case for the AgentCore frontend's acknowledgement; anything
+    longer is a real failure (the executor emits ``RUN.FAILED``).
     """
     return boto3.client(
         "bedrock-agentcore",
@@ -90,80 +64,8 @@ def runtime_client() -> Any:
 
 
 def now_iso() -> str:
-    """Tz-aware UTC ISO timestamp for ``updated_at``."""
+    """Tz-aware UTC ISO timestamp."""
     return datetime.now(UTC).isoformat()
-
-
-OUTBOX_TTL_SECONDS = 3600
-"""How long an OUTBOX row lives before DDB TTL sweeps it.
-
-Mirrors :data:`event_projector.handler.OUTBOX_TTL_SECONDS`. The pipe
-forwards within seconds; the row is needed only briefly. Stream
-records persist for 24h independent of TTL, so a pipe outage of up
-to 24h still recovers.
-"""
-
-
-@tracer.capture_method
-def transactional_advance(
-    *,
-    run_id: str,
-    project_slug: str,
-    target_pk: str,
-    target_sk: str,
-    advance_from: str,
-    advance_to: str,
-    extra_attrs: dict[str, str] | None = None,
-    extra_increments: dict[str, int] | None = None,
-) -> bool:
-    """Atomically advance state and write an OUTBOX row in one transaction.
-
-    The state Update is conditional on the previous value (race
-    guard); the OUTBOX Put is unconditional but uses a fresh ULID
-    sk so re-deliveries can't collide. Both items commit together —
-    if the conditional check fails, neither lands. Returns ``True``
-    on success, ``False`` on a conditional-check loss.
-
-    The OUTBOX row is what the EventBridge Pipe forwards to the
-    state-router beacon queue, so every state advance produces
-    exactly one beacon for the next dispatch (or a Noop ack when
-    advancing into a wait state).
-
-    All row state lives on the run STATE row's ``current_state``
-    attribute. (Task rows were removed when the platform consolidated
-    to one issue → one impl PR.)
-
-    ``extra_attrs`` adds ``SET`` clauses (string values).
-    ``extra_increments`` adds ``ADD`` clauses (integer deltas) — used
-    by the rollback path to bump ``dispatch_failure_count`` atomically
-    with the state reversal.
-    """
-    state_attr = "current_state"
-    update = (
-        UpdateBuilder(
-            table=runs_table(),
-            key={"pk": target_pk, "sk": target_sk},
-        )
-        .set(state_attr, advance_to)
-        .set("updated_at", now_iso())
-        .condition_eq(state_attr, advance_from)
-    )
-    for attribute, value in (extra_attrs or {}).items():
-        update.set(attribute, value)
-    for attribute, delta in (extra_increments or {}).items():
-        update.add(attribute, delta)
-    expire_at = int(datetime.now(UTC).timestamp()) + OUTBOX_TTL_SECONDS
-    outbox = PutBuilder(
-        table=runs_table(),
-        item={
-            "pk": f"RUN#{run_id}",
-            "sk": f"OUTBOX#{new_event_id()}",
-            "run_id": run_id,
-            "project_slug": project_slug,
-            "expire_at": expire_at,
-        },
-    )
-    return TransactWriteItemsBuilder().update(update).put(outbox).commit(ddb())
 
 
 def dispatch_to_runtime(
@@ -173,30 +75,12 @@ def dispatch_to_runtime(
     runtime_user_id: str,
     payload: dict[str, Any],
 ) -> bool:
-    """Invoke the AgentCore Runtime; return ``True`` when the agent acknowledged the work.
+    """Invoke the AgentCore Runtime; return ``True`` on acknowledgement.
 
-    The agents implement the AgentCore async-task pattern: the
-    entrypoint validates the input, spawns a daemon thread for the
-    actual work, and returns ``{"status": "dispatched", ...}`` in
-    ~100ms. So a normal dispatch returns a clean 200 well inside the
-    10s read timeout.
-
-    ``runtime_user_id`` is forwarded to AgentCore as the
-    ``X-Amzn-Bedrock-AgentCore-Runtime-User-Id`` header. The data
-    plane mints a workload access token on behalf of that identity
-    and injects it as the ``WorkloadAccessToken`` header on the
-    container's ``/invocations`` call, which the agent SDK uses to
-    bootstrap M2M / OAuth tokens for gateway-routed tools. Without
-    it the SDK falls through to local-dev auth, which tries to
-    ``CreateWorkloadIdentity`` and fails closed under the runtime
-    role's least-privilege policy.
-
-    A :class:`ReadTimeoutError` now means a real failure — AgentCore
-    didn't acknowledge within 10s. A :class:`ClientError` (4xx / 5xx)
-    means the runtime rejected the request or the entrypoint raised
-    before kicking off the background thread. Both feed the rollback
-    path: ``execute_invoke_agent`` reverses the state advance and
-    bumps ``dispatch_failure_count`` so the breaker eventually trips.
+    Fire-and-forget — the agent's container spawns a daemon thread
+    and the frontend returns ``{"status": "dispatched"}`` synchronously.
+    A :class:`ReadTimeoutError` or :class:`ClientError` is a real
+    failure; the executor emits ``RUN.FAILED`` instead of wedging.
     """
     try:
         runtime_client().invoke_agent_runtime(
@@ -206,7 +90,7 @@ def dispatch_to_runtime(
             runtimeUserId=runtime_user_id,
             contentType="application/json",
             accept="application/json",
-            payload=json.dumps(payload).encode("utf-8"),
+            payload=json.dumps(payload, default=str).encode("utf-8"),
             **current_trace_context(),
         )
     except ReadTimeoutError:

@@ -66,16 +66,6 @@ variable "agent_runtime_arns" {
   default     = {}
 }
 
-variable "repo_helper_function_name" {
-  description = "Name of the repo_helper Lambda — Triage invokes it for issue comments + labels."
-  type        = string
-}
-
-variable "repo_helper_function_arn" {
-  description = "ARN of the repo_helper Lambda."
-  type        = string
-}
-
 variable "triage_runtime_arn" {
   description = <<-EOT
     ARN of the triage AgentCore Runtime. The dispatcher invokes this

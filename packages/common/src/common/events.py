@@ -38,18 +38,28 @@ from pydantic import BaseModel, ConfigDict, Field
 from common.ids import CorrelationId, EventId, RunId, new_event_id
 
 EventType = Literal[
+    # External triggers
     "REQUEST.RECEIVED",
+    "IMPL.ITERATION_REQUESTED",
+    "VALIDATION.REQUESTED",
+    "CHECKS.PASSED",
+    "CHECKS.FAILED",
+    # Router-emitted dispatch markers (idempotency proof for decide())
+    "TRIAGE.DISPATCHED",
+    "ARCHITECT.DISPATCHED",
+    "IMPLEMENTER.DISPATCHED",
+    "VALIDATORS.DISPATCHED",
+    "PROPOSER.DISPATCHED",
+    # Agent results
     "ISSUE.TRIAGED",
     "DESIGN.READY",
     "CRITIQUE.READY",
     "IMPL_PR.OPENED",
-    "IMPL.ITERATION_REQUESTED",
-    "CHECKS.PASSED",
-    "CHECKS.FAILED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
     "CODE_CRITIQUE.READY",
     "REVISION.READY",
+    # Terminal
     "RUN.COMPLETED",
     "RUN.FAILED",
     "RUN.CANCEL_REQUESTED",
@@ -97,6 +107,10 @@ class RequestReceived(Payload):
     OAuth token from the AgentCore Identity Token Vault. ``target_repo``
     is the GitHub repository (``owner/name``) the agents should operate
     on for this run.
+
+    Issue-driven runs carry the full GitHub-issue context inline so the
+    Triage agent's payload can be built entirely from the event log
+    without an extra DDB round-trip.
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -120,6 +134,15 @@ class RequestReceived(Payload):
         ]
         | None
     ) = None
+    # Issue-driven trigger context — only populated when the run was
+    # minted from a GitHub issue. The Triage agent reads these out of
+    # the event log via the state-router's payload builder.
+    issue_number: Annotated[int, Field(ge=1)] | None = None
+    issue_title: Annotated[str, Field(max_length=512)] | None = None
+    issue_body: Annotated[str, Field(max_length=16384)] | None = None
+    issue_labels: list[Annotated[str, Field(max_length=128)]] = []
+    triggering_comment_body: Annotated[str, Field(max_length=8192)] | None = None
+    triggering_commenter: Annotated[str, Field(max_length=128)] | None = None
 
 
 class IssueTriaged(Payload):
@@ -195,6 +218,83 @@ class ImplPrOpened(UsagePayload):
     session_id: str
 
 
+class TriageDispatched(Payload):
+    """The router has invoked the Triage agent.
+
+    Idempotency marker: the decide() function uses the presence of this
+    event after ``REQUEST.RECEIVED`` to know that triage is already
+    running and a duplicate beacon should be a noop.
+    """
+
+    project_slug: str
+    session_id: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class ArchitectDispatched(Payload):
+    """The router has invoked the Architect agent.
+
+    Idempotency marker emitted after ``ISSUE.TRIAGED`` (action=proceed).
+    """
+
+    project_slug: str
+    session_id: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class ImplementerDispatched(Payload):
+    """The router has invoked the Implementer.
+
+    Emitted on first dispatch (``mode=implementation``) and on every
+    revision (``mode=revision``). ``revision_number`` is ``0`` for the
+    initial implementation and the in-progress revision count for
+    revisions.
+    """
+
+    project_slug: str
+    session_id: Annotated[str, Field(min_length=1, max_length=128)]
+    mode: Literal["implementation", "revision"]
+    revision_number: Annotated[int, Field(ge=0)] = 0
+
+
+class ValidatorsDispatched(Payload):
+    """The router has invoked the three validators against the impl PR.
+
+    Emitted in response to ``VALIDATION.REQUESTED``. The individual
+    ``REVIEW.READY`` / ``TEST_REPORT.READY`` / ``CODE_CRITIQUE.READY``
+    events each carry their own session ids.
+    """
+
+    project_slug: str
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
+    revision_number: Annotated[int, Field(ge=0)] = 0
+
+
+class ProposerDispatched(Payload):
+    """The router has invoked the Proposer agent for a research-path run."""
+
+    project_slug: str
+    session_id: Annotated[str, Field(min_length=1, max_length=128)]
+
+
+class ValidationRequested(Payload):
+    """A human asked the platform to run validators against the impl PR.
+
+    Emitted by the dashboard webhook handler when ``@aidlc-bot review``
+    (or equivalent) appears in a PR comment. The router responds by
+    dispatching reviewer + tester + code-critic in parallel.
+    """
+
+    project_slug: str
+    pr_url: Annotated[
+        str,
+        Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/pull/\d+$"),
+    ]
+    delivery_id: Annotated[str, Field(min_length=1, max_length=128)]
+    commenter: Annotated[str, Field(min_length=1, max_length=128)]
+
+
 class ImplIterationRequested(Payload):
     """A signal arrived on the impl PR that should trigger an implementer revision.
 
@@ -254,9 +354,9 @@ class ChecksFailed(Payload):
     """One or more required GitHub Checks for the impl PR's HEAD sha did not succeed.
 
     Emitted by the dashboard webhook handler after aggregating Checks
-    events for the current HEAD sha. Triggers an implementer revision
-    (counted toward ``MAX_REVISIONS``); the failing workflow names +
-    URLs are passed to the implementer as :class:`common.runtime.CiFailureFeedback`.
+    events for the current HEAD sha. Triggers an implementer revision;
+    the failing workflow names + URLs are passed to the implementer
+    as :class:`common.runtime.CiFailureFeedback`.
     """
 
     project_slug: str
@@ -297,10 +397,9 @@ class ReviewReady(UsagePayload):
 
     Reviewer runs once per validation pass, against the integrated impl
     PR. Its ``verdict`` drives the run-level state machine: ``approve`` /
-    ``comment`` advances the run to ``awaiting_checks`` (then
-    ``awaiting_human_merge`` once Checks are green); ``request_changes``
-    triggers a revision pass by the implementer (capped at ``MAX_REVISIONS``).
-    Comments land on the impl PR via ``repo_helper.comment_pr``.
+    ``comment`` / ``approve`` mean the PR is in the human's hands;
+    ``request_changes`` triggers an implementer revision. Comments
+    land on the impl PR via ``repo_helper.comment_pr``.
     """
 
     project_slug: str
@@ -420,6 +519,12 @@ type AnyPayload = (
     | CritiqueReady
     | ImplPrOpened
     | ImplIterationRequested
+    | ValidationRequested
+    | TriageDispatched
+    | ArchitectDispatched
+    | ImplementerDispatched
+    | ValidatorsDispatched
+    | ProposerDispatched
     | ChecksPassed
     | ChecksFailed
     | ReviewReady

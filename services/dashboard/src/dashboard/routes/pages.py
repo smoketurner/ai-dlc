@@ -8,18 +8,17 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from common.state import RunState
 from dashboard.artifacts import read_critique
 from dashboard.auth import CurrentUser
 from dashboard.deps import ddb, settings
 from dashboard.github_repos import repos_for_user
 from dashboard.repos import (
-    TERMINAL_STATES,
+    TERMINAL_STATUSES,
     get_run_events,
     list_recent_runs,
     run_summary_from_item,
 )
-from dashboard.state_progress import progress_dict
+from dashboard.state_progress import is_terminal, progress_dict
 
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
@@ -37,7 +36,7 @@ async def runs_page(request: Request, user: CurrentUser) -> HTMLResponse:
             "runs": runs,
             "runs_progress": runs_progress,
             "user": user,
-            "terminal_states": TERMINAL_STATES,
+            "terminal_statuses": TERMINAL_STATUSES,
         },
     )
 
@@ -46,7 +45,7 @@ def _runs_progress(runs: list) -> dict[str, dict[str, object]]:  # type: ignore[
     """Map ``run_id`` to its in-flight progress payload (omits inactive runs)."""
     out: dict[str, dict[str, object]] = {}
     for run in runs:
-        prog = progress_dict(_coerce_state(run.current_state), updated_at=run.updated_at)
+        prog = progress_dict(run.status, updated_at=run.updated_at)
         if prog is not None:
             out[run.run_id] = prog
     return out
@@ -60,11 +59,8 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
     summary = first_known_run(run_id, events)
     critique = read_critique(run_id)
-    failure = run_failure_details(events) if summary.get("current_state") == "failed" else None
-    progress = progress_dict(
-        _coerce_state(summary.get("current_state")),
-        updated_at=summary.get("updated_at"),
-    )
+    failure = run_failure_details(events) if is_terminal(summary.get("status")) else None
+    progress = progress_dict(summary.get("status"), updated_at=summary.get("updated_at"))
     return templates.TemplateResponse(
         request,
         "run_detail.html",
@@ -76,30 +72,13 @@ async def run_detail_page(request: Request, run_id: str, user: CurrentUser) -> H
             "failure": failure,
             "progress": progress,
             "user": user,
-            "terminal_states": TERMINAL_STATES,
+            "terminal_statuses": TERMINAL_STATUSES,
         },
     )
 
 
-def _coerce_state(raw: object) -> RunState | None:
-    """Parse a STATE-row ``current_state`` string into a ``RunState``."""
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        return RunState(raw)
-    except ValueError:
-        return None
-
-
 def run_failure_details(events: list) -> dict[str, str] | None:  # type: ignore[type-arg]
-    """Pull the most recent ``RUN.FAILED`` payload off the event timeline.
-
-    Surfaces ``failed_state`` / ``error_class`` / ``error_message`` /
-    ``retryable`` to the run-detail page so an operator can see why the
-    run terminated without dropping into DynamoDB by hand. Returns
-    ``None`` when no ``RUN.FAILED`` event is present (run failed via a
-    different terminal path).
-    """
+    """Pull the most recent ``RUN.FAILED`` payload off the event timeline."""
     for ev in reversed(events):
         if ev.type != "RUN.FAILED":
             continue
@@ -133,17 +112,13 @@ async def healthz() -> HTMLResponse:
 
 
 def first_known_run(run_id: str, events: list) -> dict[str, str]:  # type: ignore[type-arg]
-    """Build a run summary from the STATE row, falling back to event payload.
-
-    The STATE row carries ``current_state`` (state-machine cursor), which
-    drives terminal-state UX. Synthesising from events alone misses it.
-    """
+    """Build a run summary from the SUMMARY row, falling back to event payload."""
     cfg = settings()
     item = (
         ddb()
         .get_item(
             TableName=cfg.runs_table,
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "SUMMARY"}},
         )
         .get("Item")
     )

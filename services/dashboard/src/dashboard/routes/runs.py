@@ -1,4 +1,4 @@
-"""POST /v1/runs — write STATE, emit REQUEST.RECEIVED, send beacon."""
+"""POST /v1/runs — emit REQUEST.RECEIVED; projector + Pipe do the rest."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from common.slug import slug_from_repo
 from dashboard.auth import CurrentUser
 from dashboard.deps import ddb, settings
 from dashboard.models import SubmitRunRequest, SubmitRunResponse
-from dashboard.repos import TERMINAL_STATES
+from dashboard.repos import TERMINAL_STATUSES
 
 router = APIRouter()
 logger = structlog.get_logger()
@@ -23,7 +23,12 @@ DDB_BATCH_LIMIT = 25
 
 @router.post("/v1/runs", response_model=SubmitRunResponse, status_code=status.HTTP_202_ACCEPTED)
 async def submit_run(req: SubmitRunRequest, user: CurrentUser) -> SubmitRunResponse:
-    """Submit a new run; write STATE row, emit ``REQUEST.RECEIVED``, beacon."""
+    """Submit a new run by publishing ``REQUEST.RECEIVED``.
+
+    The projector writes the SUMMARY + EVENT rows on receipt; the
+    DDB Stream → Pipe forwards the EVENT row insert to the state-router
+    queue as the wake-up beacon.
+    """
     cfg = settings()
     project_slug = slug_from_repo(req.target_repo)
     idempotency_key = req.idempotency_key or f"{user.sub}:{int(time.time() * 1000)}"
@@ -92,14 +97,14 @@ def fetch_existing_run(key: str, table: str) -> str | None:
 async def delete_run(run_id: str, user: CurrentUser) -> Response:
     """Hard-delete a terminal run from DynamoDB."""
     cfg = settings()
-    state = fetch_run_state(run_id, cfg.runs_table)
-    if state is None:
+    summary = fetch_run_summary(run_id, cfg.runs_table)
+    if summary is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found.")
-    current_state = state.get("current_state", {}).get("S", "")
-    if current_state not in TERMINAL_STATES:
+    current_status = summary.get("status", {}).get("S", "")
+    if current_status not in TERMINAL_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"error": "run_not_terminal", "current_state": current_state or "unknown"},
+            detail={"error": "run_not_terminal", "status": current_status or "unknown"},
         )
     runs_rows = delete_partition(cfg.runs_table, f"RUN#{run_id}")
     logger.info(
@@ -111,11 +116,11 @@ async def delete_run(run_id: str, user: CurrentUser) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def fetch_run_state(run_id: str, table: str) -> dict[str, Any] | None:
-    """Read the STATE row for ``run_id`` from the runs table."""
+def fetch_run_summary(run_id: str, table: str) -> dict[str, Any] | None:
+    """Read the SUMMARY row for ``run_id`` from the runs table."""
     resp = ddb().get_item(
         TableName=table,
-        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
+        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "SUMMARY"}},
     )
     return resp.get("Item")
 

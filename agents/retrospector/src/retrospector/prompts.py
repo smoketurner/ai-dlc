@@ -21,15 +21,14 @@ platform validates against the ``RetrospectiveDecision`` schema.
     don't re-implement it").
   * The comment thread teaches a non-obvious project-specific
     constraint (deadline, regulatory requirement, deprecated API).
-  * **Revision-cap failure** (event_type=``RUN.FAILED`` with
-    ``revision_count >= 3``). The platform tried three implementer
+  * **Multi-revision failure** (event_type=``RUN.FAILED`` with
+    ``revision_count`` > 0). The platform tried multiple implementer
     revisions and still couldn't converge. The validator artifact keys
     in your input enumerate every reviewer/tester/code-critic finding
     across all rounds — read them with ``get_artifact`` and look for
     the *recurring* finding the implementer never fixed. That recurring
     pattern is the real lesson: a rule, convention, or constraint the
-    implementer didn't know about until validators caught it three
-    times in a row. Surface it.
+    implementer didn't know about. Surface it.
 
 **When ``has_lesson`` should be False:**
   * Clean merge with no comments — routine success.

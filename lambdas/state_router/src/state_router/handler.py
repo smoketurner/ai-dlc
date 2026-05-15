@@ -1,26 +1,23 @@
-"""SQS-driven state router for the SDLC pipeline.
+"""SQS-driven state router — events-only edition.
 
-The beacon is an interrupt, not a heartbeat: a beacon means "the router
-has work to do right now". Each receive triggers this handler:
+The beacon is an interrupt, not a heartbeat. Each beacon means "an
+event landed on the platform bus for this run — re-read the event log
+and decide what to do next." The handler:
 
-1. Read the run's STATE row from DynamoDB.
-2. Compute the next :data:`~.actions.Action` via :func:`.dispatch.decide`.
-3. Execute the action via :func:`.execute.execute` — invoke an agent,
-   emit an event, call repo_helper, etc.
-4. Delete the beacon (success ack to SQS). The next state-advancing
-   event re-emits a fresh beacon from the projector.
+1. Decodes the beacon body → ``run_id``.
+2. Queries DynamoDB for every ``EVENT#*`` row on ``pk=RUN#{run_id}``.
+3. Parses the JSON envelopes (oldest first — DDB ``sk`` is a UUID7).
+4. Calls :func:`state_router.decide.decide` to get the next action.
+5. Calls :func:`state_router.execute.execute` to apply it.
 
-Implication: while a run is parked on a Noop (waiting on a human PR
-review, an agent's async response, etc.), the queue is empty and the
-router does not run. The webhook → EventBridge → projector pipeline is
-the wake-up edge.
+Implications:
 
-The router never advances state on its own initiative for "what
-happened in the world" transitions — those go through the projector
-applying events. The router does, however, write the per-action
-``*_running`` cursor (or other internal bookkeeping advances) using
-DDB ``ConditionExpression`` so concurrent routers can't dispatch the
-same agent twice.
+* Replaying any prefix of events is safe — :func:`decide` is pure.
+* The router never writes to DDB. Every state-affecting change goes
+  through the platform bus → projector.
+* Lambda crashes are SQS-retried. Same beacon redelivered = same
+  events read = same action computed = same side effect (modulo the
+  AgentCore session-id idempotency on agent invokes).
 """
 
 from __future__ import annotations
@@ -31,12 +28,13 @@ from typing import Any
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
+from pydantic import ValidationError
 
+from common.events import UntypedEnvelope
 from state_router.aws import ddb
 from state_router.config import runs_table
-from state_router.dispatch import decide
+from state_router.decide import decide
 from state_router.execute import execute
-from state_router.model import Run, parse_run
 
 logger = Logger(service="state_router")
 tracer = Tracer(service="state_router")
@@ -49,17 +47,9 @@ metrics = Metrics(namespace="ai-dlc", service="state_router")
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
     """Process every SQS record in the batch.
 
-    Each beacon is processed once per Lambda invocation and then deleted
-    by SQS (the handler returns no batch-item failures). If
-    :func:`process_record` raises, the exception propagates and SQS
-    redelivers under its standard error semantics; that is the only
-    path that keeps a beacon visible.
-
-    The empty ``batchItemFailures`` list is preserved in the response
-    shape so the event source mapping's
-    ``function_response_types=["ReportBatchItemFailures"]`` setting
-    keeps working — switching it off would require an infrastructure
-    change.
+    Returns ``{"batchItemFailures": []}`` so the event source mapping's
+    ``function_response_types=["ReportBatchItemFailures"]`` setting stays
+    happy. Uncaught exceptions still propagate and trigger SQS retry.
     """
     records = event.get("Records") or []
     for record in records:
@@ -71,11 +61,9 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
 def process_record(record: dict[str, Any]) -> None:
     """Decode + dispatch one beacon.
 
-    Always succeeds (returns ``None``) once the message body has been
-    parsed: malformed / orphan / terminal beacons are logged and the
-    SQS ack lets the message be deleted. State-advancing work is the
-    projector's responsibility; the next event from the platform bus
-    re-emits a beacon that the router will pick up.
+    Malformed bodies, missing run ids, and runs with no events all
+    succeed (ack the message) — the platform's wake-up edge is the
+    projector emitting new events, not redelivery of stale beacons.
     """
     try:
         body = json.loads(record.get("body") or "{}")
@@ -86,35 +74,58 @@ def process_record(record: dict[str, Any]) -> None:
     if not isinstance(run_id, str) or not run_id:
         logger.warning("beacon missing run_id", extra={"body": body})
         return
-    run = read_run(run_id)
-    if run is None:
-        logger.info("orphan beacon — no run row", extra={"run_id": run_id})
+    events = read_events(run_id)
+    if not events:
+        logger.info("no events for run", extra={"run_id": run_id})
         return
-    action = decide(run)
-    execute(run, action)
+    action = decide(events)
+    execute(action, events)
 
 
 @tracer.capture_method
-def read_run(run_id: str) -> Run | None:
-    """Fetch the run's STATE row in one Query.
+def read_events(run_id: str) -> list[UntypedEnvelope]:
+    """Fetch every ``EVENT#*`` row for ``run_id`` and parse the envelopes.
 
-    The Query also surfaces any lingering TASK rows for the same ``pk``
-    (left over from a pre-refactor run); we pass them through to
-    :func:`parse_run` which discards them — there is no Task model any
-    more.
+    Returns events in time order (DDB sort key is a UUID7, so the
+    natural query order is chronological).
     """
-    resp = ddb().query(
-        TableName=runs_table(),
-        KeyConditionExpression="pk = :pk",
-        ExpressionAttributeValues={":pk": {"S": f"RUN#{run_id}"}},
-    )
-    items = resp.get("Items") or []
-    state_item: dict[str, Any] = {}
-    task_items: list[dict[str, Any]] = []
+    items = query_all(f"RUN#{run_id}")
+    envelopes: list[UntypedEnvelope] = []
     for item in items:
-        sk = item.get("sk", {}).get("S", "")
-        if sk == "STATE":
-            state_item = item
-        elif sk.startswith("TASK#"):
-            task_items.append(item)
-    return parse_run(state_item, task_items)
+        sk = (item.get("sk") or {}).get("S", "")
+        if not sk.startswith("EVENT#"):
+            continue
+        envelope_json = (item.get("envelope") or {}).get("S")
+        if not envelope_json:
+            continue
+        try:
+            envelope = UntypedEnvelope.model_validate_json(envelope_json)
+        except ValidationError as exc:
+            logger.warning(
+                "skipping unparseable event",
+                extra={"run_id": run_id, "sk": sk, "errors": exc.errors()},
+            )
+            continue
+        envelopes.append(envelope)
+    envelopes.sort(key=lambda env: str(env.event_id))
+    return envelopes
+
+
+def query_all(pk: str) -> list[dict[str, Any]]:
+    """Run a paginated Query across all sk values for ``pk``."""
+    items: list[dict[str, Any]] = []
+    last_evaluated: dict[str, Any] | None = None
+    while True:
+        kwargs: dict[str, Any] = {
+            "TableName": runs_table(),
+            "KeyConditionExpression": "pk = :pk",
+            "ExpressionAttributeValues": {":pk": {"S": pk}},
+        }
+        if last_evaluated is not None:
+            kwargs["ExclusiveStartKey"] = last_evaluated
+        response = ddb().query(**kwargs)
+        items.extend(response.get("Items") or [])
+        last_evaluated = response.get("LastEvaluatedKey")
+        if not last_evaluated:
+            break
+    return items

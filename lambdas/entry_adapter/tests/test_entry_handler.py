@@ -14,12 +14,9 @@ from entry_adapter.handler import handler, persistence
 from moto import mock_aws
 
 from common.event_emit import events_client as events
-from common.runs import ddb, sqs
 
 BUS = "ai-dlc-test-bus"
 TABLE = "ai-dlc-test-idempotency"
-RUNS_TABLE = "ai-dlc-test-runs"
-BEACON_QUEUE = "ai-dlc-test-state-router"
 
 
 def ctx() -> LambdaContext:
@@ -37,15 +34,12 @@ def ctx() -> LambdaContext:
 
 
 @pytest.fixture(autouse=True)
-def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """Create the bus, runs table, idempotency table, and beacon queue under moto."""
+def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Create the bus + Powertools idempotency table under moto."""
     monkeypatch.setenv("AIDLC_BUS_NAME", BUS)
     monkeypatch.setenv("AIDLC_IDEMPOTENCY_TABLE", TABLE)
-    monkeypatch.setenv("AIDLC_RUNS_TABLE", RUNS_TABLE)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     events.cache_clear()
-    ddb.cache_clear()
-    sqs.cache_clear()
     with mock_aws():
         boto3.client("events").create_event_bus(Name=BUS)
         boto3.client("dynamodb").create_table(
@@ -54,30 +48,14 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
             KeySchema=[{"AttributeName": "idempotency_key", "KeyType": "HASH"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        boto3.client("dynamodb").create_table(
-            TableName=RUNS_TABLE,
-            AttributeDefinitions=[
-                {"AttributeName": "pk", "AttributeType": "S"},
-                {"AttributeName": "sk", "AttributeType": "S"},
-            ],
-            KeySchema=[
-                {"AttributeName": "pk", "KeyType": "HASH"},
-                {"AttributeName": "sk", "KeyType": "RANGE"},
-            ],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        queue_url = boto3.client("sqs").create_queue(QueueName=BEACON_QUEUE)["QueueUrl"]
-        monkeypatch.setenv("AIDLC_BEACON_QUEUE_URL", queue_url)
         # Module-level persistence was built before moto patched boto3, so
         # its cached DDB resource targets the real AWS. Repoint it at moto.
         # Powertools doesn't expose these as a typed public API, so use
         # setattr to bypass static-attribute checks.
         setattr(persistence, "table", boto3.resource("dynamodb").Table(TABLE))  # noqa: B010
         setattr(persistence, "client", boto3.client("dynamodb"))  # noqa: B010
-        yield queue_url
+        yield
     events.cache_clear()
-    ddb.cache_clear()
-    sqs.cache_clear()
 
 
 def submit(body: dict[str, Any]) -> dict[str, Any]:
@@ -140,50 +118,8 @@ def test_event_published_to_bus() -> None:
     assert True
 
 
-def test_run_row_written_to_dynamodb() -> None:
-    out = submit(
-        {
-            "project_slug": "demo",
-            "intent": "Add /healthz",
-            "requestor": "alice",
-            "idempotency_key": "client-xyz-12345678",
-        },
-    )
-    run_id = json.loads(out["body"])["run_id"]
-    state = ddb().get_item(
-        TableName=RUNS_TABLE,
-        Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-    )["Item"]
-    assert state["run_id"]["S"] == run_id
-    assert state["project_slug"]["S"] == "demo"
-    assert state["intent"]["S"] == "Add /healthz"
-    assert state["requestor"]["S"] == "alice"
-    # current_state is intentionally absent — the projector sets it on
-    # REQUEST.RECEIVED.
-    assert "current_state" not in state
-
-
-def test_beacon_sent_to_state_router_queue(aws_env: str) -> None:
-    submit(
-        {
-            "project_slug": "demo",
-            "intent": "x",
-            "requestor": "alice",
-            "idempotency_key": "client-xyz-12345678",
-        },
-    )
-    # Beacon has DelaySeconds=10, so it doesn't materialise on a normal
-    # ReceiveMessage in moto. Inspect the queue's not-yet-visible count.
-    attrs = boto3.client("sqs").get_queue_attributes(
-        QueueUrl=aws_env,
-        AttributeNames=["ApproximateNumberOfMessagesDelayed", "ApproximateNumberOfMessages"],
-    )["Attributes"]
-    delayed = int(attrs["ApproximateNumberOfMessagesDelayed"])
-    visible = int(attrs["ApproximateNumberOfMessages"])
-    assert delayed + visible == 1
-
-
-def test_replay_does_not_double_write_run_row() -> None:
+def test_replay_returns_same_run_id() -> None:
+    """A replay returns the cached response — same run_id, no double-emit."""
     body = {
         "project_slug": "demo",
         "intent": "x",
@@ -192,10 +128,5 @@ def test_replay_does_not_double_write_run_row() -> None:
     }
     first = submit(body)
     second = submit(body)
-    # Both invocations return the same run_id (cached idempotent reply).
     run_id = json.loads(first["body"])["run_id"]
     assert json.loads(second["body"])["run_id"] == run_id
-    # Only one STATE row exists.
-    items = ddb().scan(TableName=RUNS_TABLE)["Items"]
-    state_rows = [i for i in items if i["sk"]["S"] == "STATE"]
-    assert len(state_rows) == 1

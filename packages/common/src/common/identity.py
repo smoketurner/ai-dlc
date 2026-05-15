@@ -61,34 +61,3 @@ def runtime_user_id(
             namespace = "gh-app" if stripped.endswith("[bot]") else "gh"
             return f"{namespace}:{stripped}"
     return fallback
-
-
-def revision_commenter(pending_revision_feedback: list[dict[str, object]]) -> str | None:
-    """Return the most recent human commenter from the revision-feedback queue.
-
-    ``pending_revision_feedback`` is the append-ordered list the
-    projector accumulates on the run's STATE row. Each entry is one
-    :data:`common.runtime.FeedbackItem`. Items with ``kind="ci_failure"``
-    have no human attribution and are skipped.
-
-    Args:
-        pending_revision_feedback: The list as read off the STATE row.
-
-    Returns:
-        The GitHub login of the latest human-driven feedback item, or
-        ``None`` when the queue is empty or only contains CI failures.
-        Callers pass the result through :func:`runtime_user_id` to
-        namespace it; ``None`` means fall back to the original
-        ``run.requestor``.
-    """
-    for item in reversed(pending_revision_feedback):
-        kind = item.get("kind")
-        if kind == "review_changes_requested":
-            reviewer = item.get("reviewer")
-            if isinstance(reviewer, str) and reviewer:
-                return reviewer
-        elif kind in ("review_comment_mention", "issue_comment_mention"):
-            commenter = item.get("commenter")
-            if isinstance(commenter, str) and commenter:
-                return commenter
-    return None
