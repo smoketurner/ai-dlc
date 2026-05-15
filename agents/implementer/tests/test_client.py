@@ -10,6 +10,7 @@ import pytest
 from common.runtime import ImplementerInput
 from implementer import client
 from implementer.finish import FinishReport
+from implementer.lint_gate import LintGateResult
 from implementer.repo_ops import RepoSession
 
 
@@ -97,6 +98,12 @@ def install_implementation_mocks(
         return drive_agent_report, usage
 
     monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+
+    async def fake_run_lint_gate(*, run_id: str, drive_agent_fn: Any) -> LintGateResult:
+        del run_id, drive_agent_fn
+        return LintGateResult(passed=True, attempts=1, last_failure=None)
+
+    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
     return calls
 
 
