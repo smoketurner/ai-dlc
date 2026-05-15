@@ -331,3 +331,87 @@ def test_fetch_revision_inputs_pulls_via_gateway(monkeypatch: pytest.MonkeyPatch
     assert "runs/r-1/validation/critique-r0.md" in keys
     assert inputs["review"].startswith("<body for ")
     assert inputs["mention"] == ""  # raised → swallowed → empty
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_calls_lint_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """run_lint_gate is called before push_branch in revision flow."""
+    payload = ImplementerInput(
+        project_slug=payload.project_slug,
+        run_id=payload.run_id,
+        correlation_id=payload.correlation_id,
+        target_repo=payload.target_repo,
+        mode="revision",
+        revision_number=1,
+    )
+    gate_calls: list[str] = []
+    push_order: list[str] = []
+
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=FinishReport(summary="Fixed.", status="done"),
+        made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+
+    async def fake_run_lint_gate(*, run_id: str, drive_agent_fn: Any) -> LintGateResult:
+        gate_calls.append(run_id)
+        push_order.append("gate")
+        return LintGateResult(passed=True, attempts=1, last_failure=None)
+
+    def ordered_push(branch: str) -> None:
+        push_order.append(f"push:{branch}")
+        calls["push_branch"].append(branch)
+
+    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
+    monkeypatch.setattr(client, "push_branch", ordered_push)
+    monkeypatch.setattr(client, "checkout_impl_branch", lambda *_: None)
+    monkeypatch.setattr(client, "fetch_revision_inputs", lambda *_, **__: {})
+
+    await client.execute_revision(payload)
+
+    assert gate_calls == [payload.run_id]
+    gate_idx = push_order.index("gate")
+    push_idx = next(i for i, s in enumerate(push_order) if s.startswith("push:"))
+    assert gate_idx < push_idx
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_raises_on_lint_gate_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """When run_lint_gate returns passed=False, RuntimeError is raised before push."""
+    payload = ImplementerInput(
+        project_slug=payload.project_slug,
+        run_id=payload.run_id,
+        correlation_id=payload.correlation_id,
+        target_repo=payload.target_repo,
+        mode="revision",
+        revision_number=1,
+    )
+    calls = install_implementation_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=FinishReport(summary="Fixed.", status="done"),
+        made_real_changes=True,
+        has_uncommitted_changes=True,
+    )
+
+    async def fake_run_lint_gate(*, run_id: str, drive_agent_fn: Any) -> LintGateResult:
+        return LintGateResult(passed=False, attempts=3, last_failure="make test: FAILED")
+
+    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
+    monkeypatch.setattr(client, "checkout_impl_branch", lambda *_: None)
+    monkeypatch.setattr(client, "fetch_revision_inputs", lambda *_, **__: {})
+
+    with pytest.raises(RuntimeError, match="lint gate exhausted"):
+        await client.execute_revision(payload)
+
+    assert calls["push_branch"] == [], "push_branch must not be called on gate failure"

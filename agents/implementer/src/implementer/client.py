@@ -63,7 +63,6 @@ from implementer.repo_ops import (
     post_inline_replies,
     push_branch,
     repo_made_real_changes,
-    run_git,
     short_diff_summary,
 )
 
@@ -573,8 +572,6 @@ def run_cancelled(run_id: str) -> bool:
     return state in {"cancelled", "failed"}
 
 
-# Re-exported so app.py can call run_git directly if needed (kept for
-# future use; not currently wired).
 __all__ = [
     "any_ci_failure_feedback",
     "build_commit_message",
@@ -591,5 +588,4 @@ __all__ = [
     "render_pr_body",
     "resolve_target_repo",
     "run_cancelled",
-    "run_git",
 ]

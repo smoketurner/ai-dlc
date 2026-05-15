@@ -8,17 +8,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from common.runtime import ImplementerInput
-from implementer import client
-from implementer.finish import FinishReport
 from implementer.lint_gate import (
     MAX_REMEDIATION_PASSES,
-    LintGateResult,
     run_all_gate_commands,
     run_lint_gate,
     run_make_command,
 )
-from implementer.repo_ops import RepoSession
 
 # ---------------------------------------------------------------------------
 # run_make_command
@@ -37,6 +32,19 @@ def test_individual_command_failure_captured(tmp_path: Path) -> None:
     returncode, output = run_make_command("sh -c 'echo boom >&2; exit 1'", cwd=tmp_path)
     assert returncode != 0
     assert "boom" in output
+
+
+def test_empty_output_handling(tmp_path: Path) -> None:
+    """Empty stdout/stderr are handled correctly."""
+    with patch(
+        "subprocess.run",
+        return_value=MagicMock(returncode=1, stdout=None, stderr=None),
+    ):
+        returncode, output = run_make_command("make test", cwd=tmp_path)
+
+    assert returncode == 1
+    assert output == ""
+    assert isinstance(output, str)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +82,28 @@ def test_run_all_gate_commands_stops_on_first_failure(tmp_path: Path) -> None:
     assert "make format" not in call_log
 
 
+def test_stops_at_first_failing_command(tmp_path: Path) -> None:
+    """Stops when the second command fails; third and fourth are not called."""
+    call_log: list[str] = []
+
+    def fake_run(cmd: str, cwd: Path) -> tuple[int, str]:
+        call_log.append(cmd)
+        if cmd == "make lint":
+            return 1, "lint failed"
+        return 0, ""
+
+    with patch("implementer.lint_gate.run_make_command", side_effect=fake_run):
+        passed, failing_command, output = run_all_gate_commands(tmp_path)
+
+    assert passed is False
+    assert failing_command == "make lint"
+    assert output == "lint failed"
+    assert "make test" in call_log
+    assert "make lint" in call_log
+    assert "make type" not in call_log
+    assert "make format" not in call_log
+
+
 # ---------------------------------------------------------------------------
 # run_lint_gate
 # ---------------------------------------------------------------------------
@@ -84,8 +114,8 @@ async def test_all_commands_pass_first_try(tmp_path: Path) -> None:
     """Gate passes on the first attempt — no agent call needed."""
     drive_calls: list[str] = []
 
-    async def fake_drive(prompt: str, *, run_id: str) -> Any:
-        drive_calls.append(prompt)
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        drive_calls.append(user_prompt)
         return None, {}
 
     with (
@@ -112,7 +142,7 @@ async def test_remediation_pass_after_one_failure(tmp_path: Path) -> None:
             return False, "make lint", "lint error"
         return True, "", ""
 
-    async def fake_drive(prompt: str, *, run_id: str) -> Any:
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
         return None, {}
 
     with (
@@ -132,8 +162,8 @@ async def test_exhausted_remediation_returns_failure(tmp_path: Path) -> None:
     """All MAX_REMEDIATION_PASSES attempts fail — result.passed is False."""
     drive_calls: list[str] = []
 
-    async def fake_drive(prompt: str, *, run_id: str) -> Any:
-        drive_calls.append(prompt)
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        drive_calls.append(user_prompt)
         return None, {}
 
     with (
@@ -168,7 +198,7 @@ async def test_lint_gate_commits_agent_fixes(tmp_path: Path) -> None:
 
     commits: list[str] = []
 
-    async def fake_drive(prompt: str, *, run_id: str) -> Any:
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
         return None, {}
 
     with (
@@ -184,142 +214,169 @@ async def test_lint_gate_commits_agent_fixes(tmp_path: Path) -> None:
     assert "make format" in commits[0]
 
 
-# ---------------------------------------------------------------------------
-# Integration with client.py
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_output_truncation_for_large_failures(tmp_path: Path) -> None:
+    """Large failure output is truncated to 8000 chars in the remediation prompt."""
+    large_output = "x" * 10000
+    captured_prompts: list[str] = []
 
+    call_count = 0
 
-@pytest.fixture
-def payload() -> ImplementerInput:
-    return ImplementerInput(
-        project_slug="ai-dlc",
-        run_id="01999999-9999-7999-9999-999999999999",
-        correlation_id="01999999-9999-7999-9999-999999999998",
-        target_repo="owner/name",
-        mode="implementation",
-        plan_s3_key="runs/01999999-9999-7999-9999-999999999999/plan.md",
-        critique_s3_key="runs/01999999-9999-7999-9999-999999999999/critique.md",
-        source_issue_url="https://github.com/owner/name/issues/42",
-    )
+    def fake_all_gate(cwd: Path) -> tuple[bool, str, str]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return False, "make test", large_output
+        return True, "", ""
 
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        captured_prompts.append(user_prompt)
+        return None, {}
 
-@pytest.fixture
-def fake_session() -> RepoSession:
-    return RepoSession(
-        target_repo="owner/name",
-        access_token="ghs_test",  # noqa: S106
-        author_login="ai-dlc[bot]",
-        author_email="ai-dlc-bot@users.noreply.github.com",
-        on_behalf_of_user=False,
-    )
+    with (
+        patch("implementer.lint_gate.run_all_gate_commands", side_effect=fake_all_gate),
+        patch("implementer.lint_gate.repo_path", return_value=tmp_path),
+        patch("implementer.lint_gate.has_uncommitted_changes", return_value=False),
+    ):
+        result = await run_lint_gate(run_id="r-1", drive_agent_fn=fake_drive)
 
-
-def _wire_client_mocks(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    fake_session: RepoSession,
-    drive_agent_report: FinishReport | None,
-    lint_gate_result: LintGateResult,
-    pr_url: str = "https://github.com/owner/name/pull/77",
-) -> dict[str, list[Any]]:
-    calls: dict[str, list[Any]] = {"push_branch": [], "run_lint_gate": []}
-
-    fake_mcp = MagicMock()
-    fake_mcp.__enter__.return_value = fake_mcp
-    fake_mcp.__exit__.return_value = False
-
-    monkeypatch.setattr(client, "gateway_mcp_client", lambda: fake_mcp)
-    monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
-    monkeypatch.setattr(client, "clone_repo", lambda *_: None)
-    monkeypatch.setattr(client, "create_branch", lambda *_: None)
-    monkeypatch.setattr(client, "fetch_plan_and_critique", lambda *_, **__: None)
-    monkeypatch.setattr(client, "commit_changes", lambda *_: "deadbeef")
-    monkeypatch.setattr(client, "push_branch", calls["push_branch"].append)
-    monkeypatch.setattr(client, "short_diff_summary", lambda: "stat")
-    monkeypatch.setattr(client, "repo_made_real_changes", lambda: True)
-    monkeypatch.setattr(client, "has_uncommitted_changes", lambda: True)
-    monkeypatch.setattr(
-        client,
-        "invoke_repo_helper",
-        lambda _mcp, **kw: {"pr_url": pr_url} if kw.get("op") == "open_pr" else {},
-    )
-
-    usage = {"token_in": 0, "token_out": 0, "cost_usd": 0.0, "duration_ms": 0}
-
-    async def fake_drive(
-        _prompt: str,
-        *,
-        run_id: str,
-    ) -> tuple[FinishReport | None, dict[str, Any]]:
-        del run_id
-        return drive_agent_report, usage
-
-    monkeypatch.setattr(client, "drive_agent", fake_drive)
-
-    async def fake_run_lint_gate(*, run_id: str, drive_agent_fn: Any) -> LintGateResult:
-        calls["run_lint_gate"].append(run_id)
-        return lint_gate_result
-
-    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
-    return calls
+    assert result.passed is True
+    assert len(captured_prompts) == 1
+    assert "x" * 8000 in captured_prompts[0]
+    assert "x" * 8001 not in captured_prompts[0]
 
 
 @pytest.mark.asyncio
-async def test_execute_implementation_calls_lint_gate(
-    monkeypatch: pytest.MonkeyPatch,
-    payload: ImplementerInput,
-    fake_session: RepoSession,
-) -> None:
-    """run_lint_gate is called before push_branch in the happy path."""
-    push_order: list[str] = []
+async def test_remediation_prompt_formatting(tmp_path: Path) -> None:
+    """Remediation prompt includes command name, exit code context, and output."""
+    captured_prompts: list[str] = []
 
-    calls = _wire_client_mocks(
-        monkeypatch,
-        fake_session=fake_session,
-        drive_agent_report=FinishReport(summary="Done.", status="done"),
-        lint_gate_result=LintGateResult(passed=True, attempts=1, last_failure=None),
-    )
+    call_count = 0
 
-    # Track order: gate first, push second.
-    original_push = calls["push_branch"].append
+    def fake_all_gate(cwd: Path) -> tuple[bool, str, str]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return False, "make lint", "error: unused import"
+        return True, "", ""
 
-    def ordered_push(branch: str) -> None:
-        push_order.append(f"push:{branch}")
-        original_push(branch)
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        captured_prompts.append(user_prompt)
+        return None, {}
 
-    monkeypatch.setattr(client, "push_branch", ordered_push)
+    with (
+        patch("implementer.lint_gate.run_all_gate_commands", side_effect=fake_all_gate),
+        patch("implementer.lint_gate.repo_path", return_value=tmp_path),
+        patch("implementer.lint_gate.has_uncommitted_changes", return_value=False),
+    ):
+        await run_lint_gate(run_id="r-1", drive_agent_fn=fake_drive)
 
-    async def fake_run_lint_gate(*, run_id: str, drive_agent_fn: Any) -> LintGateResult:
-        push_order.append("gate")
-        calls["run_lint_gate"].append(run_id)
-        return LintGateResult(passed=True, attempts=1, last_failure=None)
-
-    monkeypatch.setattr(client, "run_lint_gate", fake_run_lint_gate)
-
-    await client.execute_implementation(payload)
-
-    assert calls["run_lint_gate"] == ["01999999-9999-7999-9999-999999999999"]
-    # Gate must appear before push in push_order.
-    gate_idx = push_order.index("gate")
-    push_idx = next(i for i, s in enumerate(push_order) if s.startswith("push:"))
-    assert gate_idx < push_idx
+    assert len(captured_prompts) == 1
+    prompt = captured_prompts[0]
+    assert "Command: make lint" in prompt
+    assert "Exit code: non-zero" in prompt
+    assert "error: unused import" in prompt
+    assert "Do not open a PR" in prompt
 
 
 @pytest.mark.asyncio
-async def test_execute_implementation_raises_on_lint_gate_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    payload: ImplementerInput,
-    fake_session: RepoSession,
-) -> None:
-    """When run_lint_gate returns passed=False, RuntimeError is raised before push."""
-    calls = _wire_client_mocks(
-        monkeypatch,
-        fake_session=fake_session,
-        drive_agent_report=FinishReport(summary="Done.", status="done"),
-        lint_gate_result=LintGateResult(passed=False, attempts=3, last_failure="make test: FAILED"),
-    )
+async def test_lint_gate_passes_correct_run_id_to_drive_agent(tmp_path: Path) -> None:
+    """run_id is correctly passed to drive_agent_fn during remediation."""
+    captured_run_ids: list[str] = []
 
-    with pytest.raises(RuntimeError, match="lint gate exhausted"):
-        await client.execute_implementation(payload)
+    call_count = 0
 
-    assert calls["push_branch"] == [], "push_branch must not be called on gate failure"
+    def fake_all_gate(cwd: Path) -> tuple[bool, str, str]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return False, "make test", "fail"
+        return True, "", ""
+
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        captured_run_ids.append(run_id)
+        return None, {}
+
+    with (
+        patch("implementer.lint_gate.run_all_gate_commands", side_effect=fake_all_gate),
+        patch("implementer.lint_gate.repo_path", return_value=tmp_path),
+        patch("implementer.lint_gate.has_uncommitted_changes", return_value=False),
+    ):
+        await run_lint_gate(run_id="test-run-123", drive_agent_fn=fake_drive)
+
+    assert captured_run_ids == ["test-run-123"]
+
+
+@pytest.mark.asyncio
+async def test_lint_gate_handles_drive_agent_exception(tmp_path: Path) -> None:
+    """Exception from drive_agent_fn during remediation propagates."""
+
+    async def failing_drive(user_prompt: str, *, run_id: str) -> Any:
+        raise RuntimeError("Agent session failed")
+
+    with (
+        patch(
+            "implementer.lint_gate.run_all_gate_commands",
+            return_value=(False, "make test", "test failed"),
+        ),
+        patch("implementer.lint_gate.repo_path", return_value=tmp_path),
+        patch("implementer.lint_gate.has_uncommitted_changes", return_value=False),
+        pytest.raises(RuntimeError, match="Agent session failed"),
+    ):
+        await run_lint_gate(run_id="r-1", drive_agent_fn=failing_drive)
+
+
+@pytest.mark.asyncio
+async def test_commit_message_includes_pass_number_and_command(tmp_path: Path) -> None:
+    """Commit message includes pass number and failing command."""
+    committed_messages: list[str] = []
+    call_count = 0
+
+    def fake_all_gate(cwd: Path) -> tuple[bool, str, str]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return False, "make type", "type error"
+        return True, "", ""
+
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        return None, {}
+
+    with (
+        patch("implementer.lint_gate.run_all_gate_commands", side_effect=fake_all_gate),
+        patch("implementer.lint_gate.repo_path", return_value=tmp_path),
+        patch("implementer.lint_gate.has_uncommitted_changes", return_value=True),
+        patch("implementer.lint_gate.commit_changes", side_effect=committed_messages.append),
+    ):
+        await run_lint_gate(run_id="r-1", drive_agent_fn=fake_drive)
+
+    assert len(committed_messages) == 1
+    assert "lint-gate fix (pass 1): make type" in committed_messages[0]
+
+
+@pytest.mark.asyncio
+async def test_all_four_commands_pass_on_second_attempt(tmp_path: Path) -> None:
+    """All four commands pass after remediation on second attempt."""
+    attempt_count = 0
+
+    def fake_all_gate(cwd: Path) -> tuple[bool, str, str]:
+        nonlocal attempt_count
+        attempt_count += 1
+        if attempt_count == 1:
+            return False, "make lint", "lint error"
+        return True, "", ""
+
+    async def fake_drive(user_prompt: str, *, run_id: str) -> Any:
+        return None, {}
+
+    with (
+        patch("implementer.lint_gate.run_all_gate_commands", side_effect=fake_all_gate),
+        patch("implementer.lint_gate.repo_path", return_value=tmp_path),
+        patch("implementer.lint_gate.has_uncommitted_changes", return_value=True),
+        patch("implementer.lint_gate.commit_changes", return_value="abc123"),
+    ):
+        result = await run_lint_gate(run_id="r-1", drive_agent_fn=fake_drive)
+
+    assert result.passed is True
+    assert result.attempts == 2
+    assert result.last_failure is None
