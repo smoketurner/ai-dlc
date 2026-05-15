@@ -9,8 +9,9 @@ target repo into ``/workspace/repo``; ``read_repo_file`` and
 After the clone, :func:`sync_memory_md_from_clone` syncs ``MEMORY.md``
 (at the repo root, or under ``docs/`` for legacy projects) and
 ``AGENTS.md`` from the clone into the per-project
-S3 bucket so downstream agents (Critic, Proposer) — which never clone —
-can ground themselves via ``read_memory_md``.
+S3 bucket so downstream agents (Reviewer, Tester, Code-Critic,
+Proposer) — which never clone — can ground themselves via
+``read_memory_md``.
 
 This module is read-only with respect to the target repo: no commits,
 no pushes, no remote tracking — the architect's job is to look, not to
@@ -269,8 +270,8 @@ def sync_stack_profile_from_clone(*, project_slug: str) -> None:
     ``list_repo_paths`` and ``read_repo_file``.
 
     Companion to :func:`sync_memory_md_from_clone`. Both functions write
-    to the same per-project bucket so downstream agents (Critic,
-    Reviewer, Tester) pick up structured stack context alongside the
+    to the same per-project bucket so downstream agents (Reviewer,
+    Tester, Code-Critic) pick up structured stack context alongside the
     human-written MEMORY.md.
     """
     if not REPO_PATH.exists():

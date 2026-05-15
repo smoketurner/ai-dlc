@@ -41,7 +41,7 @@
         "target_repo": { "type": "string", "minLength": 3, "maxLength": 128 },
         "agent_owner": {
           "type": "string",
-          "enum": ["architect", "critic", "implementer", "reviewer", "tester", "proposer", "triage"]
+          "enum": ["architect", "code_critic", "implementer", "reviewer", "tester", "proposer", "triage"]
         },
         "prompt_variant": { "type": "string", "minLength": 1, "maxLength": 8 },
         "detected_at": { "type": "string", "format": "date-time" },

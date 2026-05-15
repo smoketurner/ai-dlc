@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from reviewer.review import (
+    AssumptionCheck,
     Review,
     ReviewComment,
     ReviewSummary,
@@ -182,3 +183,53 @@ def test_review_is_frozen() -> None:
     review = make_review()
     with pytest.raises(ValidationError):
         review.run_id = "r-2"  # type: ignore[misc]  # frozen=True forbids assignment
+
+
+def test_assumption_check_round_trips() -> None:
+    check = AssumptionCheck(
+        assumption="The agent feeds output back to the same ClaudeSDKClient session.",
+        verdict="rebutted",
+        citation='Issue: "feed the failing tool\'s stderr/stdout back to the same session"',
+    )
+    assert check.verdict == "rebutted"
+    assert "same session" in check.citation
+
+
+def test_assumption_check_unsupported_allows_empty_citation() -> None:
+    check = AssumptionCheck(
+        assumption="The target repo has a Makefile at its root.",
+        verdict="unsupported",
+    )
+    assert check.citation == ""
+
+
+def test_assumption_check_rejects_unknown_verdict() -> None:
+    with pytest.raises(ValidationError):
+        AssumptionCheck(
+            assumption="x",
+            verdict="maybe",  # ty: ignore[invalid-argument-type]
+        )
+
+
+def test_render_review_includes_assumption_checks_section() -> None:
+    review = make_review()
+    review = review.model_copy(
+        update={
+            "assumption_checks": [
+                AssumptionCheck(
+                    assumption="Lint gate must run before push.",
+                    verdict="confirmed",
+                    citation='Issue: "Before pushing"',
+                ),
+            ],
+        },
+    )
+    out = render_review(review)
+    assert "## Architect assumption checks" in out
+    assert "**[confirmed]** Lint gate must run before push." in out
+    assert "Citation: Issue:" in out
+
+
+def test_render_review_skips_assumption_checks_section_when_empty() -> None:
+    out = render_review(make_review(with_comments=False, verdict="approve"))
+    assert "## Architect assumption checks" not in out

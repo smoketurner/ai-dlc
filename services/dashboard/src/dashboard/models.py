@@ -55,17 +55,6 @@ class RunEvent(_Frozen):
     links: list[EventLink] = []
 
 
-class Critique(_Frozen):
-    """Architect-spec critique attached to a run, parsed from S3."""
-
-    summary: str
-    issue_count: int = 0
-    high_severity_count: int = 0
-    medium_severity_count: int = 0
-    low_severity_count: int = 0
-    body_html: str
-
-
 class SubmitRunRequest(_Frozen):
     """POST /v1/runs body. ``project_slug`` is derived from ``target_repo``."""
 

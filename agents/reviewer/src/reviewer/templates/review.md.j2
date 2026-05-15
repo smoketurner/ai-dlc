@@ -12,6 +12,19 @@
 - **Actual vs. expected:** {{ review.summary.actual_vs_expected }}
 {%- endif %}
 - **Impact:** {{ review.summary.impact }}
+{%- if review.assumption_checks %}
+
+## Architect assumption checks
+
+Each load-bearing assumption from the plan, verified against the source issue body.
+
+{% for check in review.assumption_checks -%}
+- **[{{ check.verdict }}]** {{ check.assumption }}
+{%- if check.citation %}
+  - Citation: {{ check.citation }}
+{%- endif %}
+{% endfor -%}
+{%- endif %}
 {%- if review.comments %}
 
 ## Comments

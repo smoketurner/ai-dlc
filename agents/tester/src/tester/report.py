@@ -51,6 +51,13 @@ class Gap(_Frozen):
 
     ``language`` + ``code_excerpt`` render the untested code as a
     fenced block so the reader sees which branch lacks coverage.
+
+    ``verified_absent`` carries the result of the
+    enumerate-before-listing structural check: ``true`` when the
+    gap's named test does NOT appear in the report's ``existing_tests``
+    list (it's actually missing), ``false`` when flagging weakness in
+    an existing test (e.g., "this test exists but doesn't cover the
+    edge case").
     """
 
     path: Annotated[str, Field(min_length=1, max_length=256)]
@@ -59,6 +66,7 @@ class Gap(_Frozen):
     description: Annotated[str, Field(min_length=1, max_length=1024)]
     language: Annotated[str, Field(max_length=32)] | None = None
     code_excerpt: Annotated[str, Field(max_length=4096)] | None = None
+    verified_absent: bool = True
 
 
 class Suggestion(_Frozen):
@@ -84,10 +92,20 @@ class Suggestion(_Frozen):
 
 
 class Report(_Frozen):
-    """The full test gap report produced by the Tester per impl-PR validation pass."""
+    """The full test gap report produced by the Tester per impl-PR validation pass.
+
+    ``existing_tests`` carries the enumerate-before-listing structural
+    check: the Tester must list every ``test_*`` (or language-equivalent)
+    function name visible in the diff's test files before claiming gaps.
+    Without this enumeration the Tester is prone to inventing gaps for
+    tests that already exist.
+    """
 
     run_id: Annotated[str, Field(min_length=1, max_length=64)]
     summary: ReportSummary
+    existing_tests: Annotated[NoneSafeList[str], Field(max_length=256)] = Field(
+        default_factory=list,
+    )
     gaps: Annotated[NoneSafeList[Gap], Field(max_length=64)] = Field(default_factory=list)
     suggestions: Annotated[NoneSafeList[Suggestion], Field(max_length=64)] = Field(
         default_factory=list,

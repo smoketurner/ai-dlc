@@ -92,7 +92,7 @@ module "state_router" {
     AIDLC_BUS_NAME                = var.bus_name
     AIDLC_ARTIFACTS_BUCKET        = var.artifacts_bucket
     AIDLC_ARCHITECT_RUNTIME_ARN   = local.architect_runtime_arn
-    AIDLC_CRITIC_RUNTIME_ARN      = local.critic_runtime_arn
+    AIDLC_CODE_CRITIC_RUNTIME_ARN = local.code_critic_runtime_arn
     AIDLC_IMPLEMENTER_RUNTIME_ARN = local.implementer_runtime_arn
     AIDLC_PROPOSER_RUNTIME_ARN    = local.proposer_runtime_arn
     AIDLC_REVIEWER_RUNTIME_ARN    = local.reviewer_runtime_arn
@@ -218,11 +218,14 @@ module "event_projector" {
   policy_statements = {
     runs_table = {
       # TransactWriteItems atomically inserts the EVENT row + updates
-      # the SUMMARY row (UpdateItem semantics participate in the
-      # transaction). The EVENT row insert is what the EventBridge
-      # Pipe forwards to the state-router beacon queue.
+      # the SUMMARY row. IAM evaluates the per-item actions inside the
+      # transaction, so PutItem (EVENT) and UpdateItem (SUMMARY) are
+      # both required alongside TransactWriteItems. The EVENT row
+      # insert is what the EventBridge Pipe forwards to the
+      # state-router beacon queue.
       effect = "Allow"
       actions = [
+        "dynamodb:PutItem",
         "dynamodb:UpdateItem",
         "dynamodb:TransactWriteItems",
       ]

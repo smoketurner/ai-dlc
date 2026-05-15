@@ -3,8 +3,8 @@
 Mirrors the Reviewer's cap on plan reads — ``get_artifact`` at most 2
 times per invocation. Mapping plan steps to tests shouldn't require
 re-reading the plan repeatedly. The op name matches the
-gateway-routed ``artifact_tool`` operation; critic uses the same
-naming axis.
+gateway-routed ``artifact_tool`` operation; the reviewer and code-critic
+use the same naming axis.
 """
 
 from __future__ import annotations

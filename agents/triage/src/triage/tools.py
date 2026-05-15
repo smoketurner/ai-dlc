@@ -1,8 +1,8 @@
 """Triage-local Strands tools — currently just AgentCore Browser.
 
 The triage agent reads no S3 artifacts or MEMORY.md through the gateway,
-so unlike the critic / architect it has no MCP client wiring. The only
-tool it carries is :func:`browse_url`, used when an issue body links to
+so unlike the architect it has no MCP client wiring. The only tool it
+carries is :func:`browse_url`, used when an issue body links to
 load-bearing external context (spec, RFC, PR, README) the model wants
 to read before classifying.
 """

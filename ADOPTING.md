@@ -1,8 +1,8 @@
 # Adopting ai-dlc on your repo
 
 This guide is for project maintainers who want the ai-dlc agentic team
-(Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer,
-Retrospector) to operate on a GitHub repo they own.
+(Architect, Implementer, Reviewer, Tester, Code-Critic, Triage,
+Proposer, Retrospector) to operate on a GitHub repo they own.
 
 ai-dlc is a *platform* — one deployment serves many repos. You don't
 fork it for each project; you install its GitHub App on the repo,
@@ -118,17 +118,25 @@ dashboard shows the run state machine in real time.
 }
 ```
 
-Either way you'll see a spec PR within a few minutes, then a code PR
-per task. Both gates are human-in-the-loop — you approve them like any
-other PR.
+Either way you'll see a single impl PR within a few minutes. It's the
+only PR you need to review — merge gates the run.
 
 ## What happens automatically
 
-- **Spec phase:** Architect drafts requirements + design + tasks; Critic
-  reviews advisorily; spec lands as a PR you approve.
-- **Implementation phase:** One Implementer PR per task. Reviewer
-  flags code issues; Tester flags coverage gaps. Both advisory; you
-  decide whether to merge.
+- **Plan:** Architect reads the issue + your `MEMORY.md` / `AGENTS.md`
+  and writes a single `plan.md` to S3 (Context, Assumptions, Approach,
+  Files, Reuse, Implementation steps, Verification, Out of scope).
+  Internal artifact; no spec PR.
+- **Implementation:** One Implementer PR off `aidlc/impl/{run_id}`.
+- **Validation:** As soon as the impl PR opens, Reviewer + Tester +
+  Code-Critic run in parallel against it. The Reviewer gates the run
+  (`approve` / `comment` / `request_changes`) and verifies each
+  architect assumption against your original issue text. The Tester
+  reports test gaps. The Code-Critic grades the PR against the
+  original issue. All three post a bot comment on the PR.
+- **Revisions:** A `@aidlc-bot` mention on the PR, a `request_changes`
+  reviewer verdict, or a failing required CI Check kicks off an
+  implementer revision pass on the same branch.
 - **Retrospectives:** On every terminal event (PR merge/close,
   issue close), the Retrospector reads the artifacts and may propose a
   `MEMORY.md` or `AGENTS.md` edit as a PR.

@@ -87,10 +87,11 @@ module "function" {
         ]
       }
       idempotency_table = {
-        # POST /v1/runs reserves an idempotency key with a conditional
-        # PutItem before publishing REQUEST.RECEIVED.
+        # Powertools' DynamoDBPersistenceLayer needs UpdateItem in
+        # addition to PutItem/GetItem to flip in-progress records to
+        # completed.
         effect    = "Allow"
-        actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"]
         resources = [var.idempotency_table_arn]
       }
       runs_table_delete = {

@@ -2,9 +2,9 @@
 
 Live tracker for the AI-DLC build.
 
-The platform's eight agents (Architect, Critic, Implementer, Reviewer, Tester, Triage, Proposer, Retrospector), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed.
+The platform's eight agents (Architect, Implementer, Reviewer, Tester, Code-Critic, Triage, Proposer, Retrospector), the FastAPI dashboard, and the SQS-beacon + DDB-state orchestration are all in place. Step Functions and the four legacy orchestration Lambdas (`hitl_handler`, `runtime_invoker`, `iteration_reactor`, `triage_dispatcher`) have been removed in the SQS cutover. The eval pipeline (state machine + drift detector + GitHub Actions workflow) was also removed. The plan-stage Critic + the spec PR + per-task PRs have all been removed in favor of the single-impl-PR-per-issue model.
 
-**Current focus:** architect grounding + spec PR iteration. Two work streams: fix the architect's grounding so it stops inventing tech choices when the canonical project context is unavailable, and add a spec-iteration state so a human can comment on the spec PR and the architect regenerates.
+**Current focus:** failure-context plumbing for revisions. Workflow Run logs flow into the validator dispatch payload as `ci_failure_excerpt` so the reviewer grounds CI-failure claims in real output; the same excerpt + the triggering `@aidlc-bot` comment land in S3 as `r{N}-checks.md` and `r{N}-mention.md` so the implementer's revision pass has the full context. Previous focus — validator grounding (Reviewer assumption checks, Tester enumerate-before-gaps, auto-dispatch validators on `IMPL_PR.OPENED`) — shipped.
 
 Legend: ✅ done · 🟡 in progress · ⬜ todo
 
@@ -15,72 +15,36 @@ Legend: ✅ done · 🟡 in progress · ⬜ todo
 ```
 REQUEST.RECEIVED
   → ISSUE.TRIAGED        (Triage classifies issue-driven runs — Haiku 4.5)
-  → SPEC.READY           (Architect — Opus 4.7)
-  → CRITIQUE.READY       (Critic — Opus 4.7, advisory)
-  → SPEC.APPROVED        (gate 1 — human merges the spec PR)
-  → TASK.READY           ┐
-  → REVIEW.READY         │ Reviewer — Sonnet 4.6, advisory
-  → TEST_REPORT.READY    │ Tester — Haiku 4.5, advisory
-  → TASK.APPROVED        │ loop while tasks remain — one PR per task
-  → ...                  ┘
-  → RUN.COMPLETED
+  → DESIGN.READY         (Architect writes plan.md to S3 — Opus 4.6)
+  → IMPL_PR.OPENED       (Implementer pushes one branch, opens one PR — Sonnet 4.6)
+  → REVIEW.READY         (Reviewer — Sonnet 4.6, gates the run)
+  → TEST_REPORT.READY    (Tester — Haiku 4.5, advisory)
+  → CODE_CRITIQUE.READY  (Code-Critic — Opus 4.6, advisory; PR vs. original issue)
+  → CHECKS.PASSED        (all required GitHub Checks green)
+                           ↓
+                       awaiting_human_merge
+                           ↓
+  → RUN.COMPLETED        (human merges the impl PR)
 ```
 
-The state cursor (`RunState` / `TaskState` enums in `common.state`) is advanced by the `event_projector` Lambda applying transitions from `common.state_transitions`. The `state_router` Lambda reads the cursor off the runs DDB table on each SQS-beacon delivery and dispatches the next side-effect (agent invoke, `repo_helper` call, event emit). The router never advances state on its own initiative for "what happened" transitions — those go through the projector.
+Revisions branch off via `CHECKS.FAILED`, `IMPL.ITERATION_REQUESTED` (human `@aidlc-bot` mention), or a reviewer `request_changes` verdict — the implementer runs in `mode=revision` on the same branch, emits `REVISION.READY`, and validators re-run.
+
+The state cursor is no longer a separate enum — `decide()` in `state_router/decide.py` is a pure function over the event log. The `state_router` Lambda reads the run's events on each SQS-beacon delivery and dispatches the next side-effect (agent invoke, `repo_helper` call, event emit). The `event_projector` writes the events to DDB; no router or projector advances state on its own initiative.
 
 ---
 
-## SQS cutover stabilization ✅
+## In flight 🟡
 
-Behavioural gaps the SFN→SQS cutover left behind. All shipped:
-
-- [x] Architect / Critic / Triage agents emit their completion events (`common.event_emit.publish`) — `architect_running` / `critic_running` / `triaging` were dead-end states without these.
-- [x] Shared `common.runs.start_run(...)` helper used by all three entry paths (entry_adapter, dashboard `/v1/runs`, webhook): writes the STATE row, emits `REQUEST.RECEIVED`, sends the SQS beacon.
-- [x] `handle_spec_approved` seeds one TASK row per task before transitioning to `tasks_in_progress`. `SpecReady` carries `task_ids` so the seeder doesn't need to fetch the spec from S3.
-- [x] State router opens spec PRs via `repo_helper` op `open_spec_pr` (compound: read 3 S3 docs → branch → commit → PR).
-- [x] `target_repo`, `intent`, full issue context (`issue_number`, `issue_title`, `issue_body`, `issue_labels`) persisted on the STATE row at trigger time so the router can rebuild agent payloads without re-reading GitHub.
-- [x] Projector extracts `workflow_kind` + `triage_action` from `ISSUE.TRIAGED` so `handle_triage_decided` branches correctly on `proceed` / `ask` / `defer` / `decline`.
-- [x] `gsi_pr` populated: router writes `pr_url` on STATE row when opening the spec PR; projector writes `pr_url` on TASK rows when applying `TASK.READY`. Webhook resolves PRs via this index — no PR-body marker parsing.
-- [x] Webhook idempotency on `X-GitHub-Delivery` for issue-driven mints (Powertools `idempotent_function`). `project_slug` derived consistently via `slug_from_repo` across all entry paths.
-- [x] `parse_run` falls back to deriving `run_id` from `pk = "RUN#{id}"` when the attribute is missing on projector-created rows.
-- ~~State advance triggers a fresh beacon.~~ Rejected — would create multiple in-flight beacons per run, violating the single-beacon-per-run design. The 60s visibility-timeout recycle is the cost of the pattern.
-
----
-
-## Pre-deploy hardening ✅
-
-Audit findings from the SQS cutover. All shipped.
-
-### Blockers (silent data loss or cost leakage) ✅
-
-- [x] **Projector clears `pending_feedback` and `delivery_ids` on `TASK.READY` from `iterating`.** `advance_task_state` now appends `SET pending_feedback = :empty_list REMOVE delivery_ids` for the iteration-complete branch via the new `apply_task_ready_clauses` helper.
-- [x] **Projector accumulates iteration feedback when state can't advance.** `apply_task_state_transition` calls a new `accumulate_iteration_in_place` when `TASK.ITERATION_REQUESTED` arrives in `iterating` / `implementer_running` — the conditional update appends feedback + delivery_id without changing state.
-- [x] **`dispatch_advisors` race-protected.** New `GuardedAdvance` action gates the `pr_open → pending_approval` transition; only the winning router runs `on_success` and fires reviewer + tester. `InvokeAgent.advance_*` made optional so the gated invokes fire unconditionally. Verified by `lambdas/state_router/tests/test_executor.py`.
-
-### Correctness gap ✅
-
-- [x] **Dashboard terminal detection reads `current_state`, not `status`.** `services/dashboard/src/dashboard/repos.py` exposes `TERMINAL_STATES` (derived from `common.state.TERMINAL_RUN_STATES`) and a new `is_run_terminal(run_id)` helper; SSE stream and `delete_run` use the state-machine cursor. `RunSummary` carries `current_state` for templates. Cancelled and rejection-induced terminal runs now close the stream, are deletable, and render the terminal badge.
-
-### Cleanup ✅
-
-- [x] **Deleted unused Lambda source** (`lambdas/eval_aggregator`, `lambdas/comment_classifier`, `lambdas/pr_telemetry`) and the now-orphaned `common.eval` module + tests. `pyproject.toml` `known-first-party` and `pricing.py` comment trimmed.
-- [x] **Removed never-emitted event types** `TASK.ITERATION_STARTED`, `TASK.ITERATION_COMMITTED`, `TASK.MAX_ITERATIONS_REACHED`, `ISSUE.ASK_POSTED` (and the `IterationTriggerKind` literal that fed them) from `common.events`, `terraform/modules/messaging/locals.tf`, `terraform/shared/schemas/`, and tests.
-- [x] **Removed `hitl_enabled` from `common.settings`** + corresponding test assertions.
-- [x] **Removed `approvals:write` Cognito scope** from `terraform/modules/auth/locals.tf`.
-- [x] **Refreshed stale docstrings** in `agents/{architect,critic,triage}/app.py` and `terraform/modules/pipeline/locals.tf` so they describe the SQS-beacon orchestration. Removed the dead `local.runtime_arns` (replaced by `state_router_runtime_arns`).
-
-### Out of scope for this round
-
-- Stuck-run detector schedule. Risk: a beacon loss leaves a run stuck silently. Add a CloudWatch alarm on `non_terminal_runs_with_stale_last_event > 0` until the schedule is built.
-- Reviewer/Tester parallelism (currently sequential via `dispatch_advisors`).
-- Per-run cost cap.
-- Auto-merge for TWO-WAY PRs.
+- ⬜ **CI logs in validator dispatch payload.** New `repo_helper.get_workflow_run_logs(repo, pr_number)` op fetches the failing job's log tail (head + tail, capped ~8 KB). `lambdas/state_router/src/state_router/payload.py` calls it when emitting `VALIDATORS.DISPATCHED` if checks are red, and threads `ci_failure_excerpt` + `ci_red: bool` into `ReviewerInput` / `TesterInput` / `CodeCriticInput`.
+- ⬜ **Write `r{N}-mention.md` and `r{N}-checks.md` to S3.** The webhook handler at `services/dashboard/src/dashboard/routes/webhooks.py` writes the comment body when emitting `IMPL.ITERATION_REQUESTED` and the log excerpt when emitting `CHECKS.FAILED`. Closes the gap where the implementer's `fetch_revision_inputs` reads these keys but nobody writes them.
 
 ---
 
 ## Deferred (no concrete trigger yet)
 
-- **Implementer judgement — partial matches read as "done".** Observed example: an existing `/healthz` handler in `pages.py` returning HTMLResponse satisfied the implementer that the spec was already implemented, even though the spec asked for a separate `routes/healthz.py` returning `JSONResponse({"status": "ok"})`. Likely a prompt tweak in `agents/implementer/src/implementer/prompts.py` — "a route already existing isn't proof the spec is satisfied; confirm response shape + module path against the design".
+- **Plan-stage critic revisited.** Removed for now — the Reviewer's per-assumption check covers the same failure mode post-implementation. Revisit if we observe ≥2 runs where the Reviewer rebuts a load-bearing assumption that the Implementer already wasted a pass on.
+- **Implementer judgement — partial matches read as "done".** Observed example: an existing `/healthz` handler in `pages.py` returning HTMLResponse satisfied the implementer that the plan was already implemented, even though the plan asked for a separate `routes/healthz.py` returning `JSONResponse({"status": "ok"})`. Likely a prompt tweak in `agents/implementer/src/implementer/prompts.py` — "a route already existing isn't proof the plan is satisfied; confirm response shape + module path against the design".
+- **Stuck-run detector.** Risk: a beacon loss leaves a run stuck silently. CloudWatch alarm on `non_terminal_runs_with_stale_last_event > 0` until a scheduled detector is built.
 - Switch AgentCore Runtime to VPC mode.
 - Migrate to AgentCore Harness when GA.
 - A2A protocol for cross-team or third-agent invocation.
@@ -88,7 +52,8 @@ Audit findings from the SQS cutover. All shipped.
 - Playwright E2E tests for the dashboard.
 - Custom domain for the dashboard.
 - Tighten alarm thresholds against real dev traffic.
-- Post a "spec approved — kicking off T-NNN" comment on the merged spec PR when ``SPEC.APPROVED`` fires. Today the only feedback after merging the spec PR is the eventual implementation PR appearing; a comment closes the loop on the spec PR timeline. Likely lives next to the existing `react_to_*` comment helpers in `services/dashboard/src/dashboard/routes/webhooks.py:handle_pull_request`.
+- Per-run cost cap.
+- Auto-merge for impl PRs that pass all validators + all required Checks (currently humans gate every merge).
 
 ---
 

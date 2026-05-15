@@ -6,9 +6,8 @@ The implementer needs to:
     requestor's user OAuth token (commits attribute to the user) or the
     App's installation token (commits attribute to ``ai-dlc[bot]``),
   * clone the target repo into ``/workspace/repo`` using that token,
-  * fetch the architect's ``plan.md`` and the critic's ``critique.md``
-    from S3 into ``/workspace/spec/`` via the per-agent gateway's
-    ``artifact_tool`` target,
+  * fetch the architect's ``plan.md`` from S3 into ``/workspace/spec/``
+    via the per-agent gateway's ``artifact_tool`` target,
   * configure local git author from the resolved identity,
   * create the run's single impl branch ``aidlc/impl/{run_id}``,
   * let Claude edit, commit, push, and (post-agent) open one PR via the
@@ -189,42 +188,33 @@ def configure_git_author(session: RepoSession) -> None:
     run_git("config", "user.email", session.author_email)
 
 
-def fetch_plan_and_critique(
+def fetch_plan(
     mcp_client: MCPClient,
     *,
     plan_s3_key: str | None,
-    critique_s3_key: str | None,
 ) -> None:
-    """Download the plan + critique markdown bodies via the gateway into ``/workspace/spec/``.
+    """Download the architect's plan.md via the gateway into ``/workspace/spec/``.
 
-    Best-effort: a missing artifact is logged but does not raise — the
-    implementer can still proceed when only one of the artifacts is
-    present (e.g., a re-run before the critic finished).
+    Best-effort: a missing artifact is logged but does not raise.
     """
+    if not plan_s3_key:
+        return
     target = spec_path()
     target.mkdir(parents=True, exist_ok=True)
-    for name, key in (("plan", plan_s3_key), ("critique", critique_s3_key)):
-        if not key:
-            continue
-        try:
-            envelope = call_artifact_tool(
-                mcp_client,
-                op="get_artifact",
-                key=key,
-            )
-            body = str((envelope.get("result") or {}).get("content") or "")
-        except Exception as exc:
-            logger.warning(
-                "fetch_plan_and_critique missed object",
-                name=name,
-                key=key,
-                error=str(exc),
-            )
-            continue
-        if not body:
-            logger.warning("fetch_plan_and_critique got empty body", name=name, key=key)
-            continue
-        (target / f"{name}.md").write_text(body, encoding="utf-8")
+    try:
+        envelope = call_artifact_tool(
+            mcp_client,
+            op="get_artifact",
+            key=plan_s3_key,
+        )
+        body = str(envelope.get("result", {}).get("content", ""))
+    except Exception as exc:
+        logger.warning("fetch_plan missed object", key=plan_s3_key, error=str(exc))
+        return
+    if not body:
+        logger.warning("fetch_plan got empty body", key=plan_s3_key)
+        return
+    (target / "plan.md").write_text(body, encoding="utf-8")
 
 
 def impl_branch_name(run_id: str) -> str:

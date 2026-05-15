@@ -135,9 +135,16 @@ def decide_after_design(
 
 
 def decide_after_pr_open(events: Sequence[EnvelopeLike]) -> Action:
-    """React to the latest post-PR signal (iteration request, CI failure, validation)."""
+    """React to the latest post-PR signal.
+
+    Auto-dispatches validators when the impl PR first opens or after the
+    implementer pushes a revision. Auto-dispatches the implementer in
+    revision mode when CI fails or a human ``@aidlc-bot`` mention asks
+    for changes. ``VALIDATION.REQUESTED`` is the manual nudge path —
+    same target as the IMPL_PR.OPENED / REVISION.READY branch.
+    """
     last = events[-1]
-    if last.type == "IMPL.ITERATION_REQUESTED":
+    if last.type in ("IMPL.ITERATION_REQUESTED", "CHECKS.FAILED"):
         return invoke_unless_dispatched(
             events,
             "implementer",
@@ -145,15 +152,7 @@ def decide_after_pr_open(events: Sequence[EnvelopeLike]) -> Action:
             revision_number=current_revision_number(events) + 1,
             trigger_event_id=last.event_id,
         )
-    if last.type == "CHECKS.FAILED":
-        return invoke_unless_dispatched(
-            events,
-            "implementer",
-            mode="revision",
-            revision_number=current_revision_number(events) + 1,
-            trigger_event_id=last.event_id,
-        )
-    if last.type == "VALIDATION.REQUESTED":
+    if last.type in ("IMPL_PR.OPENED", "REVISION.READY", "VALIDATION.REQUESTED"):
         return invoke_unless_dispatched(
             events,
             "validators",

@@ -151,7 +151,6 @@ def test_handler_invokes_runtime_for_run_cancel(monkeypatch: pytest.MonkeyPatch)
     [
         "ISSUE.TRIAGED",
         "DESIGN.READY",
-        "CRITIQUE.READY",
         "REVIEW.READY",
         "CHECKS.PASSED",
         "CHECKS.FAILED",

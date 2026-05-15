@@ -15,7 +15,6 @@ The platform follows a single-PR-per-issue SDLC pipeline:
   REQUEST.RECEIVED
     → ISSUE.TRIAGED       (Triage classifies a tagged GitHub issue)
     → DESIGN.READY        (Architect writes plan.md to S3)
-    → CRITIQUE.READY      (Critic adversarially reviews the plan — advisory)
     → IMPL_PR.OPENED      (Implementer opens the single impl PR)
     → REVIEW.READY        (Reviewer code-reviews the PR — gating)
     → TEST_REPORT.READY   (Tester flags test gaps — advisory)
@@ -53,7 +52,6 @@ EventType = Literal[
     # Agent results
     "ISSUE.TRIAGED",
     "DESIGN.READY",
-    "CRITIQUE.READY",
     "IMPL_PR.OPENED",
     "REVIEW.READY",
     "TEST_REPORT.READY",
@@ -174,29 +172,12 @@ class DesignReady(UsagePayload):
     The plan is a single markdown document at ``s3://artifacts/runs/{run_id}/plan.md``
     structured like a Claude Code plan-mode plan: Context, Assumptions,
     Approach, Files-to-modify, Reuse, Implementation-steps, Verification,
-    Out-of-scope. The Critic reads this next; advances run to ``designed``.
+    Out-of-scope. Advances run to ``designed``; the state-router
+    dispatches the implementer next.
     """
 
     project_slug: str
     plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
-    summary: Annotated[str, Field(max_length=2048)]
-    session_id: str
-
-
-class CritiqueReady(UsagePayload):
-    """Critic agent produced an adversarial review of the architect's plan — advisory.
-
-    The critique is rendered to ``s3://artifacts/runs/{run_id}/critique.md``;
-    the event payload references it via :attr:`critique_s3_key`. This event
-    does not gate the pipeline — its findings inform the implementer.
-    """
-
-    project_slug: str
-    critique_s3_key: str
-    issue_count: Annotated[int, Field(ge=0)]
-    high_severity_count: Annotated[int, Field(ge=0)] = 0
-    medium_severity_count: Annotated[int, Field(ge=0)] = 0
-    low_severity_count: Annotated[int, Field(ge=0)] = 0
     summary: Annotated[str, Field(max_length=2048)]
     session_id: str
 
@@ -516,7 +497,6 @@ type AnyPayload = (
     RequestReceived
     | IssueTriaged
     | DesignReady
-    | CritiqueReady
     | ImplPrOpened
     | ImplIterationRequested
     | ValidationRequested

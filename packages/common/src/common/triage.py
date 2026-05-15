@@ -4,7 +4,7 @@ The Triage agent reads a tagged GitHub issue (assigned to the bot user)
 and decides what the system should do next. Five terminal actions:
 
   * ``proceed`` — route into the single-PR-per-issue pipeline
-    (architect → critic → implementer → reviewer / tester / code-critic).
+    (architect → implementer → reviewer / tester / code-critic).
   * ``research`` — branch to the Proposer, which reads external URLs in
     the issue body and synthesises findings as a comment back on the
     issue. Optionally opens a PR proposing prompt / MEMORY.md edits.

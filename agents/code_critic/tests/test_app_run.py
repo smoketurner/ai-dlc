@@ -14,10 +14,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from code_critic.critique import Critique, Issue
-from code_critic.tools import critique_s3_key
 
 from code_critic import app
+from code_critic.critique import Critique, Issue
+from code_critic.tools import critique_s3_key
 from common.runtime import CodeCriticInput
 
 

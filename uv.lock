@@ -9,7 +9,6 @@ members = [
     "artifact-tool",
     "code-critic",
     "common",
-    "critic",
     "dashboard",
     "entry-adapter",
     "event-projector",
@@ -626,33 +625,6 @@ requires-dist = [
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.12.1" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "uuid-utils", specifier = "==0.14.1" },
-]
-
-[[package]]
-name = "critic"
-version = "0.0.0"
-source = { editable = "agents/critic" }
-dependencies = [
-    { name = "aws-opentelemetry-distro" },
-    { name = "bedrock-agentcore" },
-    { name = "boto3" },
-    { name = "common" },
-    { name = "playwright" },
-    { name = "pydantic" },
-    { name = "strands-agents" },
-    { name = "structlog" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aws-opentelemetry-distro", specifier = "==0.17.0" },
-    { name = "bedrock-agentcore", specifier = "==1.9.0" },
-    { name = "boto3", specifier = "==1.43.6" },
-    { name = "common", editable = "packages/common" },
-    { name = "playwright", specifier = "==1.59.0" },
-    { name = "pydantic", specifier = "==2.13.4" },
-    { name = "strands-agents", specifier = "==1.38.0" },
-    { name = "structlog", specifier = "==25.5.0" },
 ]
 
 [[package]]

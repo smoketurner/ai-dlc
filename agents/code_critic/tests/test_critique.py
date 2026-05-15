@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
+
 from code_critic.critique import (
     Critique,
     Issue,
     render_critique,
     severity_counts,
 )
-from pydantic import ValidationError
 
 
 def make_critique(*, with_issues: bool = True) -> Critique:

@@ -12,14 +12,11 @@ The pipeline is single-PR-per-issue:
   * The **Architect** receives an :class:`ArchitectInput` (intent +
     optional triggering comment) and returns an :class:`ArchitectResult`
     (plan_s3_key + summary). Plan is a single markdown document.
-  * The **Critic** receives a :class:`CriticInput` (plan_s3_key + intent)
-    and returns a :class:`CriticResult` (critique_s3_key + severity counts).
-    Advisory only.
   * The **Implementer** is invoked once in ``mode=implementation`` and
-    receives an :class:`ImplementerInput` (plan_s3_key + critique_s3_key
-    + source issue refs), returning an :class:`ImplementerResult`
-    (pr_url + diff_summary). On reviewer/CI/mention feedback it runs
-    again in ``mode=revision``.
+    receives an :class:`ImplementerInput` (plan_s3_key + source issue
+    refs), returning an :class:`ImplementerResult` (pr_url +
+    diff_summary). On reviewer/CI/mention feedback it runs again in
+    ``mode=revision``.
   * **Reviewer**, **Tester**, **Code-Critic** run in parallel against
     the impl PR. Code-Critic specifically reviews the implementation
     against the **original GitHub issue**, so its input includes the
@@ -95,7 +92,7 @@ class ArchitectInput(_Frozen):
     source_issue_url: (
         Annotated[
             str,
-            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+            Field(min_length=1, max_length=512),
         ]
         | None
     ) = None
@@ -109,45 +106,6 @@ class ArchitectResult(_UsageMixin):
     plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
     summary: Annotated[str, Field(max_length=2048)]
     proposed_adrs: NoneSafeList[str] = Field(default_factory=list)
-    session_id: str
-
-
-class CriticInput(_Frozen):
-    """Input passed to the Critic's ``/invocations`` endpoint.
-
-    The Critic reads the architect's ``plan.md`` from S3 and emits an
-    adversarial review focusing on missing edge cases, weak assumptions,
-    architectural risk, and gaps in the plan's verification section.
-    """
-
-    project_slug: Annotated[str, Field(min_length=1, max_length=64)]
-    plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)]
-    intent: Annotated[str, Field(min_length=1, max_length=4096)]
-    run_id: str
-    correlation_id: str
-    actor_id: str = "system"
-    requestor_sub: str | None = None
-    target_repo: str | None = None
-    source_issue_url: (
-        Annotated[
-            str,
-            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
-        ]
-        | None
-    ) = None
-    source_issue_title: Annotated[str, Field(max_length=512)] | None = None
-    source_issue_body: Annotated[str, Field(max_length=16384)] | None = None
-
-
-class CriticResult(_UsageMixin):
-    """Result the Critic returns. Becomes the CRITIQUE.READY payload."""
-
-    critique_s3_key: str
-    issue_count: Annotated[int, Field(ge=0)]
-    high_severity_count: Annotated[int, Field(ge=0)] = 0
-    medium_severity_count: Annotated[int, Field(ge=0)] = 0
-    low_severity_count: Annotated[int, Field(ge=0)] = 0
-    summary: Annotated[str, Field(max_length=2048)]
     session_id: str
 
 
@@ -207,9 +165,9 @@ class ImplementerInput(_Frozen):
     The implementer runs in one of two modes:
 
     * ``mode="implementation"`` — first run for a run_id. Reads
-      ``plan_s3_key`` and ``critique_s3_key`` from S3, executes the
-      whole issue on a single branch ``aidlc/impl/{run_id}``, opens
-      the impl PR, emits ``IMPL_PR.OPENED``.
+      ``plan_s3_key`` from S3, executes the whole issue on a single
+      branch ``aidlc/impl/{run_id}``, opens the impl PR, emits
+      ``IMPL_PR.OPENED``.
     * ``mode="revision"`` — subsequent runs. Reads validator artifacts
       (and any CI failure / human-mention context) from S3, applies
       fixes directly on the impl branch, emits ``REVISION.READY``.
@@ -221,7 +179,6 @@ class ImplementerInput(_Frozen):
     actor_id: str = "system"
     mode: Literal["implementation", "revision"] = "implementation"
     plan_s3_key: Annotated[str, Field(min_length=1, max_length=512)] | None = None
-    critique_s3_key: Annotated[str, Field(min_length=1, max_length=512)] | None = None
     revision_number: Annotated[int, Field(ge=0, le=16)] = 0
     # Set by the state_router on revision dispatches so the implementer
     # can post inline replies + status updates against the existing PR.
@@ -251,7 +208,7 @@ class ImplementerInput(_Frozen):
     source_issue_url: (
         Annotated[
             str,
-            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+            Field(min_length=1, max_length=512),
         ]
         | None
     ) = None
@@ -300,6 +257,12 @@ class ReviewerInput(_Frozen):
     the code-critic. ``revision_number`` is 0 for the first validation
     pass and increments each time the reviewer requests changes and
     the implementer revises.
+
+    The ``source_issue_*`` fields carry the original GitHub issue so
+    the reviewer can adversarially check the architect's load-bearing
+    assumptions against the issue's actual text (the architect can
+    reinterpret an ambiguous requirement and have it slip through —
+    the reviewer's job is to catch that).
     """
 
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
@@ -310,6 +273,15 @@ class ReviewerInput(_Frozen):
     actor_id: str = "system"
     requestor_sub: str | None = None
     revision_number: Annotated[int, Field(ge=0)] = 0
+    source_issue_url: (
+        Annotated[
+            str,
+            Field(min_length=1, max_length=512),
+        ]
+        | None
+    ) = None
+    source_issue_title: Annotated[str, Field(max_length=512)] | None = None
+    source_issue_body: Annotated[str, Field(max_length=16384)] | None = None
 
 
 class ReviewerResult(_UsageMixin):
@@ -372,7 +344,7 @@ class CodeCriticInput(_Frozen):
     source_issue_url: (
         Annotated[
             str,
-            Field(min_length=1, max_length=512, pattern=r"^https://github\.com/.+/issues/\d+$"),
+            Field(min_length=1, max_length=512),
         ]
         | None
     ) = None

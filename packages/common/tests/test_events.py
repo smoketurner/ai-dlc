@@ -9,7 +9,7 @@ import common.events as events_module
 from common.events import (
     ChecksFailed,
     ChecksPassed,
-    CritiqueReady,
+    CodeCritiqueReady,
     DesignReady,
     EventEnvelope,
     ImplIterationRequested,
@@ -157,28 +157,6 @@ def test_design_ready_round_trip() -> None:
     parsed = EventEnvelope[DesignReady].model_validate_json(env.model_dump_json())
     assert parsed.payload.plan_s3_key == "runs/r1/plan.md"
     assert parsed.payload.token_in == 100
-
-
-def test_round_trip_critique_ready() -> None:
-    payload = CritiqueReady(
-        project_slug="demo",
-        critique_s3_key="runs/r1/critique.md",
-        issue_count=3,
-        high_severity_count=1,
-        medium_severity_count=2,
-        summary="Two ambiguous acceptance criteria; one missing failure mode.",
-        session_id="r1-critic",
-    )
-    env = EventEnvelope[CritiqueReady](
-        type="CRITIQUE.READY",
-        run_id=new_run_id(),
-        correlation_id=new_correlation_id(),
-        actor_id="critic",
-        payload=payload,
-    )
-    parsed = EventEnvelope[CritiqueReady].model_validate_json(env.model_dump_json())
-    assert parsed.payload.high_severity_count == 1
-    assert parsed.payload.low_severity_count == 0
 
 
 def test_impl_pr_opened_round_trip() -> None:
@@ -414,8 +392,9 @@ def test_issue_triaged_rejects_workflow_kind() -> None:
 
 def test_negative_severity_rejected() -> None:
     with pytest.raises(ValidationError):
-        CritiqueReady(
+        CodeCritiqueReady(
             project_slug="demo",
+            pr_url="https://github.com/x/y/pull/1",
             critique_s3_key="x",
             issue_count=0,
             high_severity_count=-1,

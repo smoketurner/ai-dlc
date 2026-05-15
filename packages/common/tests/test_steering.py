@@ -96,7 +96,7 @@ def test_contains_file_ref_with_path() -> None:
 
 
 def test_contains_file_ref_with_line_number() -> None:
-    assert validate_contains_file_ref("bug at agents/critic/src/critic/agent.py:42") == []
+    assert validate_contains_file_ref("bug at agents/architect/src/architect/agent.py:42") == []
 
 
 def test_contains_file_ref_missing() -> None:

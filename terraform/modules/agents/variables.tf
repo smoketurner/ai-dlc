@@ -43,12 +43,6 @@ variable "agents" {
       bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
       bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
     }
-    critic = {
-      description               = "Critic agent — adversarially reviews the spec (advisory)."
-      targets                   = ["artifact_tool"]
-      bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
-      bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
-    }
     code_critic = {
       description               = "Code-Critic agent — adversarially reviews the integrated impl PR (advisory)."
       targets                   = ["artifact_tool", "repo_helper"]
@@ -253,9 +247,9 @@ variable "bus_name" {
   description = <<-EOT
     EventBridge platform bus name. Threaded into every agent runtime as
     ``AIDLC_BUS_NAME`` so the agent can emit its completion event
-    (``DESIGN.READY``, ``CRITIQUE.READY``, ``IMPL_PR.OPENED``,
-    ``REVIEW.READY``, ``TEST_REPORT.READY``, ``CODE_CRITIQUE.READY``,
-    ``REVISION.READY``, ``ISSUE.TRIAGED``).
+    (``DESIGN.READY``, ``IMPL_PR.OPENED``, ``REVIEW.READY``,
+    ``TEST_REPORT.READY``, ``CODE_CRITIQUE.READY``, ``REVISION.READY``,
+    ``ISSUE.TRIAGED``).
   EOT
   type        = string
 }

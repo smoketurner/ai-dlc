@@ -75,12 +75,16 @@ metrics = Metrics(namespace="ai-dlc", service="state_router")
 
 
 VALIDATOR_RUNTIMES: tuple[tuple[str, bool], ...] = (
-    ("reviewer", False),
+    ("reviewer", True),
     ("tester", False),
     ("code_critic", True),
 )
-"""(agent_runtime_name, include_issue_context). The Code-Critic gets the
-issue title/body so it can grade the PR against the user's original ask."""
+"""(agent_runtime_name, include_issue_context). The Reviewer gets the
+issue title/body so it can adversarially check the architect's
+load-bearing assumptions against the original issue text. The
+Code-Critic gets the same fields so it can grade the PR against the
+user's original ask. The Tester reviews the diff against the plan and
+doesn't currently need issue context."""
 
 
 def execute(action: Action, events: Sequence[EnvelopeLike]) -> None:

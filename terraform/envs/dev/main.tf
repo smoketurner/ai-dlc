@@ -45,7 +45,6 @@ locals {
   agent_image_tags = {
     architect    = "latest"
     code_critic  = "latest"
-    critic       = "latest"
     implementer  = "latest"
     proposer     = "latest"
     retrospector = "latest"
@@ -120,13 +119,6 @@ module "agents" {
   agents = {
     architect = {
       description               = "Architect agent — writes the spec bundle (requirements + design + tasks)."
-      targets                   = ["artifact_tool"]
-      features                  = ["browser"]
-      bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"
-      bedrock_fallback_model_id = "us.anthropic.claude-sonnet-4-6"
-    }
-    critic = {
-      description               = "Critic agent — adversarially reviews the spec (advisory)."
       targets                   = ["artifact_tool"]
       features                  = ["browser"]
       bedrock_model_id          = "us.anthropic.claude-opus-4-6-v1"

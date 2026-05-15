@@ -14,8 +14,8 @@ ai-dlc is the agentic SDLC platform itself. Nine agents (Architect, Critic, Impl
 - All agents ship as `linux/arm64` container images on AgentCore Runtime.
 - Pin every dependency to an exact version. Pin every GitHub Action to a SHA with a version comment.
 - Replace, don't deprecate: when a new implementation supersedes an old one, remove the old one entirely.
-- **Single-PR-per-issue**: each GitHub issue assigned to the bot produces exactly one impl PR. The Architect's `plan.md` and the Critic's `critique.md` are internal S3 artifacts — not committed to git. The Implementer reads both, executes on one branch (`aidlc/impl/{run_id}`), opens one PR.
-- Markdown everywhere: plan, critique, ADRs, MEMORY.md.
+- **Single-PR-per-issue**: each GitHub issue assigned to the bot produces exactly one impl PR. The Architect's `plan.md` is an internal S3 artifact — not committed to git. The Implementer reads it, executes on one branch (`aidlc/impl/{run_id}`), opens one PR. Reviewer + Tester + Code-Critic then run in parallel against that PR; their markdown outputs land in S3 and as PR comments.
+- Markdown everywhere: plan, validator outputs, ADRs, MEMORY.md.
 - Every Python Lambda depends on `aws-lambda-powertools==3.28.0` and uses its `Logger` / `Tracer` / `Metrics` / `event_source` primitives in place of stdlib `logging`.
 - Prefer `terraform-aws-modules/*/aws` community modules over bespoke wrappers for AWS resources. Bespoke code only where the community module doesn't cover the surface (e.g., project-specific security-group rules, the EventBridge schema registry).
 - In every Terraform module: `data` blocks live in `data.tf`, `locals` in `locals.tf`. Resource files (`lambdas.tf`, `sqs.tf`, etc.) contain only `resource` blocks.
@@ -41,7 +41,9 @@ ai-dlc is the agentic SDLC platform itself. Nine agents (Architect, Critic, Impl
 ## Glossary
 
 - **Plan** — The single markdown document the Architect writes for a run (`s3://artifacts/runs/{run_id}/plan.md`). Sections: Context, Assumptions, Approach, Files, Reuse, Implementation steps, Verification, Out of scope. Internal artifact — not committed to git.
-- **Critique** — The Critic's adversarial review of the plan (`s3://artifacts/runs/{run_id}/critique.md`). Severity-tagged findings (high/medium/low). Advisory — doesn't gate the run.
+- **Review** — The Reviewer's code-review markdown (`s3://artifacts/runs/{run_id}/validation/review-r{N}.md`). Verdict (`approve`/`request_changes`/`comment`) gates the run. Includes per-comment severity counts and `assumption_check` entries that verify each architect assumption against the source issue.
+- **Test report** — The Tester's gap analysis (`s3://artifacts/runs/{run_id}/validation/test_report-r{N}.md`). Advisory. Leads with an `existing_tests` enumeration before listing gaps.
+- **Code-critique** — The Code-Critic's adversarial review of the impl PR against the **original GitHub issue** (`s3://artifacts/runs/{run_id}/validation/critique-r{N}.md`). Severity-tagged findings tagged by lens (`issue→diff`, `user-problem`, `plan-drift`, `edge-case`). Advisory — doesn't gate the run.
 - **Impl PR** — The single GitHub PR opened by the Implementer for a run, off branch `aidlc/impl/{run_id}`. The only PR a human reviews per run.
 - **ADR** — Architectural Decision Record. Cross-cutting decision under `docs/ADRs/`. Surfaced from a plan when a choice has multi-run reach; committed as part of the impl PR.
 - **HITL** — Human-in-the-loop. PR review on the impl PR (one gate). Additionally, humans steer mid-run by `@aidlc-bot` mentions on the impl PR.

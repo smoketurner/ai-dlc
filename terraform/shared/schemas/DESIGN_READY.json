@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-04/schema#",
   "title": "DESIGN.READY",
-  "description": "The architect agent produced a single plan.md (Context, Assumptions, Approach, Files, Reuse, Implementation steps, Verification, Out of scope) and is ready for the critic.",
+  "description": "The architect agent produced a single plan.md (Context, Assumptions, Approach, Files, Reuse, Implementation steps, Verification, Out of scope). The state-router dispatches the implementer next.",
   "type": "object",
   "additionalProperties": false,
   "required": [

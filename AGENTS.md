@@ -5,8 +5,8 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 ## Tech stack
 
 - **Python 3.14** with the Astral toolchain (`uv` workspace, `ruff`, `ty`).
-- **Agents**: Strands Agents (Architect, Critic, Code-Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime. One issue → one impl PR. Architect's `plan.md` + Critic's `critique.md` are internal S3 artifacts (no spec PR).
-- **Models**: Architect / Critic / Code-Critic / Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
+- **Agents**: Strands Agents (Architect, Code-Critic, Reviewer, Tester, Triage, Proposer, Retrospector) and Claude Agent SDK (Implementer), all shipped as `linux/arm64` containers on Bedrock AgentCore Runtime. One issue → one impl PR. Architect's `plan.md` is an internal S3 artifact (no spec PR).
+- **Models**: Architect / Code-Critic / Proposer → Claude Opus 4.6. Implementer / Reviewer → Claude Sonnet 4.6. Tester / Triage / Retrospector / memory consolidation → Claude Haiku 4.5.
 - **Orchestration**: SQS-beacon + DynamoDB-state machine driven by a single `state_router` Lambda. The `event_projector` Lambda is the only writer of run state.
 - **Eventing**: Amazon EventBridge (custom bus + schema registry), DynamoDB streams.
 - **Memory**: AgentCore Memory (semantic + summarization strategies) plus per-project `MEMORY.md` files in the AgentCore Runtime persistent filesystem (snapshotted to S3).
@@ -21,7 +21,6 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 |------|------|
 | `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), gateway-MCP plumbing (`gateway_tools.py`), boto3 helpers (`ddb.py`, `runs.py`), `MEMORY.md` parser + stack-profile S3 reader/writer (`memory_md.py`). |
 | `agents/architect/` | Strands agent — writes a single structured `plan.md` to S3 (Context → Assumptions → Approach → Files → Reuse → Implementation steps → Verification → Out of scope). No PR. |
-| `agents/critic/` | Strands agent — adversarially reviews the plan (advisory; reads `plan.md` from S3, writes `critique.md` to S3). |
 | `agents/code_critic/` | Strands agent — adversarially reviews the impl PR against the **original GitHub issue** (advisory; runs in parallel with reviewer + tester). |
 | `agents/implementer/` | Claude Agent SDK agent — opens the single impl PR for the run (`mode=implementation`); also runs `mode=revision` to apply validator feedback, human `@aidlc-bot` mentions, and failing CI feedback directly onto the impl branch. |
 | `agents/reviewer/` | Strands agent — code-reviews the impl PR. Its verdict gates the run (`approve`/`comment` → wait for green Checks; `request_changes` → revising). |
@@ -70,9 +69,7 @@ stateDiagram-v2
     triage_decided --> cancelled: action=ask / defer / decline
 
     architect_running --> designed: DESIGN.READY
-    designed --> critic_running
-    critic_running --> critiqued: CRITIQUE.READY
-    critiqued --> implementer_running
+    designed --> implementer_running
     implementer_running --> impl_pr_open: IMPL_PR.OPENED
     impl_pr_open --> validation_running: dispatch reviewer + tester + code-critic
     validation_running --> validation_complete: REVIEW.READY

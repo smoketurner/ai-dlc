@@ -7,6 +7,16 @@
 - **Context:** {{ report.summary.context }}
 - **Coverage gap:** {{ report.summary.coverage_gap }}
 - **Risk:** {{ report.summary.risk }}
+{%- if report.existing_tests %}
+
+## Existing tests enumerated
+
+Test functions found in the diff before listing gaps ({{ report.existing_tests | length }} total):
+
+{% for name in report.existing_tests -%}
+- `{{ name }}`
+{% endfor -%}
+{%- endif %}
 {%- if report.gaps %}
 
 ## Gaps

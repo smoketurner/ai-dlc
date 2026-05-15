@@ -9,7 +9,7 @@ Two rules push the loop toward grounded, finite work:
    external research without project context tends to produce proposals
    that conflict with existing conventions.
 
-``get_artifact`` is also capped at 4 (mirror of the Critic / Tester /
+``get_artifact`` is also capped at 4 (mirror of the Reviewer / Tester /
 Code-Critic ceilings) so a stuck loop can't burn budget re-reading
 the same artifact.
 """

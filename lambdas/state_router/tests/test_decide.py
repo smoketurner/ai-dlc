@@ -139,8 +139,13 @@ def test_design_ready_dispatches_implementer() -> None:
     assert action.mode == "implementation"
 
 
-def test_pr_open_no_signal_returns_noop() -> None:
-    """Open PR + nothing else → wait for human."""
+def test_pr_open_auto_dispatches_validators() -> None:
+    """``IMPL_PR.OPENED`` auto-dispatches reviewer + tester + code_critic.
+
+    No human nudge required — the router opens validation as soon as
+    the implementer's PR is on the board. ``VALIDATION.REQUESTED`` is
+    still available as a manual re-trigger.
+    """
     events = [
         request_received(),
         dispatched("triage"),
@@ -150,7 +155,48 @@ def test_pr_open_no_signal_returns_noop() -> None:
         dispatched("implementer"),
         impl_pr_opened(),
     ]
-    assert isinstance(decide(events), Noop)
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "validators"
+    assert action.revision_number == 0
+
+
+def test_revision_ready_auto_dispatches_validators() -> None:
+    """``REVISION.READY`` auto-re-runs validators against the updated diff."""
+    events = [
+        request_received(),
+        dispatched("triage"),
+        issue_triaged(action="proceed"),
+        dispatched("architect"),
+        design_ready(),
+        dispatched("implementer"),
+        impl_pr_opened(),
+        dispatched("validators"),
+        Env(
+            event_type="REVIEW.READY",
+            event_id="evt-rev1",
+            payload={"project_slug": "demo", "verdict": "request_changes"},
+        ),
+        Env(
+            event_type="IMPL.ITERATION_REQUESTED",
+            event_id="evt-it1",
+            payload={"project_slug": "demo", "source": "review_changes_requested"},
+        ),
+        Env(
+            event_type="IMPLEMENTER.DISPATCHED",
+            event_id="evt-impl2",
+            payload={"project_slug": "demo", "revision_number": 1},
+        ),
+        Env(
+            event_type="REVISION.READY",
+            event_id="evt-revready",
+            payload={"project_slug": "demo", "revision_number": 1},
+        ),
+    ]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "validators"
+    assert action.revision_number == 1
 
 
 def test_iteration_request_dispatches_implementer_revision() -> None:

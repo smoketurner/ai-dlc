@@ -21,6 +21,7 @@ from common.validators import NoneSafeList
 
 Severity = Literal["high", "medium", "low"]
 Verdict = Literal["approve", "request_changes", "comment"]
+AssumptionVerdict = Literal["confirmed", "rebutted", "unsupported"]
 
 
 class _Frozen(BaseModel):
@@ -75,12 +76,32 @@ class ReviewComment(_Frozen):
     )
 
 
+class AssumptionCheck(_Frozen):
+    """One adversarial check of an architect's load-bearing assumption.
+
+    The architect's plan lists assumptions in its "Assumptions" section.
+    The reviewer reads each one side-by-side with the source issue body
+    and decides whether the issue actually supports it.
+
+    ``rebutted`` assumptions that materially affect the diff promote the
+    related finding to ``high`` severity — a plan that silently
+    reinterpreted a requirement is a blocking issue.
+    """
+
+    assumption: Annotated[str, Field(min_length=1, max_length=1024)]
+    verdict: AssumptionVerdict
+    citation: Annotated[str, Field(max_length=1024)] = ""
+
+
 class Review(_Frozen):
     """The full code review produced by the Reviewer per impl-PR validation pass."""
 
     run_id: Annotated[str, Field(min_length=1, max_length=64)]
     verdict: Verdict
     summary: ReviewSummary
+    assumption_checks: Annotated[NoneSafeList[AssumptionCheck], Field(max_length=16)] = Field(
+        default_factory=list
+    )
     comments: Annotated[NoneSafeList[ReviewComment], Field(max_length=64)] = Field(
         default_factory=list,
     )

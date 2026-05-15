@@ -14,7 +14,6 @@ import pytest
 AGENTS = (
     "architect",
     "code_critic",
-    "critic",
     "implementer",
     "proposer",
     "reviewer",

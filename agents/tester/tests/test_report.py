@@ -156,3 +156,46 @@ def test_report_is_frozen() -> None:
     report = make_report()
     with pytest.raises(ValidationError):
         report.run_id = "r-2"  # type: ignore[misc]  # frozen=True forbids assignment
+
+
+def test_gap_default_verified_absent_is_true() -> None:
+    gap = Gap(path="x.py", description="y")
+    assert gap.verified_absent is True
+
+
+def test_gap_accepts_verified_absent_false_for_weak_existing_test() -> None:
+    gap = Gap(
+        path="tests/test_x.py",
+        symbol="test_existing",
+        description="Exists but doesn't cover the boundary case.",
+        verified_absent=False,
+    )
+    assert gap.verified_absent is False
+
+
+def test_report_existing_tests_default_empty() -> None:
+    report = make_report(with_findings=False)
+    assert report.existing_tests == []
+
+
+def test_report_carries_existing_tests_list() -> None:
+    report = make_report().model_copy(
+        update={"existing_tests": ["test_one", "test_two", "test_three"]},
+    )
+    assert len(report.existing_tests) == 3
+
+
+def test_render_report_includes_existing_tests_section() -> None:
+    report = make_report().model_copy(
+        update={"existing_tests": ["test_healthz_returns_ok", "test_healthz_returns_schema"]},
+    )
+    out = render_report(report)
+    assert "## Existing tests enumerated" in out
+    assert "2 total" in out
+    assert "`test_healthz_returns_ok`" in out
+    assert "`test_healthz_returns_schema`" in out
+
+
+def test_render_report_skips_existing_tests_section_when_empty() -> None:
+    out = render_report(make_report(with_findings=False))
+    assert "## Existing tests enumerated" not in out

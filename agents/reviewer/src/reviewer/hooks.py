@@ -3,7 +3,8 @@
 Caps ``get_artifact`` at 2 calls per invocation. The Reviewer reads
 the architect's plan at most once (twice if re-reading after a long
 agent loop is justified). The op name matches the gateway-routed
-``artifact_tool`` operation; critic uses the same naming axis.
+``artifact_tool`` operation; the tester and code-critic use the same
+naming axis.
 """
 
 from __future__ import annotations

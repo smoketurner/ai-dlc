@@ -4,10 +4,9 @@ Two flows:
 
 * ``mode="implementation"`` (default for the first dispatch per run):
   clone main, create the impl branch ``aidlc/impl/{run_id}``, download
-  the architect's ``plan.md`` and the critic's ``critique.md`` via the
-  per-agent gateway, run Claude on the work, commit, push, open the
-  unified impl PR via ``repo_helper.open_pr``, and emit
-  ``IMPL_PR.OPENED``.
+  the architect's ``plan.md`` via the per-agent gateway, run Claude on
+  the work, commit, push, open the unified impl PR via
+  ``repo_helper.open_pr``, and emit ``IMPL_PR.OPENED``.
 
 * ``mode="revision"``: clone, check out the existing impl branch,
   fetch the previous validator artifacts + any per-revision feedback
@@ -53,7 +52,7 @@ from implementer.repo_ops import (
     clone_repo,
     commit_changes,
     create_branch,
-    fetch_plan_and_critique,
+    fetch_plan,
     has_uncommitted_changes,
     impl_branch_name,
     invoke_repo_helper,
@@ -95,11 +94,7 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
     create_branch(impl_branch)
 
     with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-        fetch_plan_and_critique(
-            mcp_client,
-            plan_s3_key=payload.plan_s3_key,
-            critique_s3_key=payload.critique_s3_key,
-        )
+        fetch_plan(mcp_client, plan_s3_key=payload.plan_s3_key)
 
         user_prompt = compose_implementation_prompt(payload)
         report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
@@ -161,12 +156,8 @@ async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResu
     checkout_impl_branch(impl_branch)
 
     with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-        if payload.plan_s3_key or payload.critique_s3_key:
-            fetch_plan_and_critique(
-                mcp_client,
-                plan_s3_key=payload.plan_s3_key,
-                critique_s3_key=payload.critique_s3_key,
-            )
+        if payload.plan_s3_key:
+            fetch_plan(mcp_client, plan_s3_key=payload.plan_s3_key)
 
         inputs = fetch_revision_inputs(
             mcp_client,
@@ -234,8 +225,7 @@ def fetch_revision_inputs(
         except Exception:
             inputs[name] = ""
             continue
-        body = (envelope.get("result") or {}).get("content") or ""
-        inputs[name] = str(body)
+        inputs[name] = str(envelope.get("result", {}).get("content", ""))
     return inputs
 
 
@@ -335,15 +325,14 @@ def compose_implementation_prompt(payload: ImplementerInput) -> str:
         parts.append(f"GitHub issue: {payload.source_issue_url}")
     if payload.plan_s3_key:
         parts.append(f"Plan S3 key: {payload.plan_s3_key}")
-    if payload.critique_s3_key:
-        parts.append(f"Critique S3 key: {payload.critique_s3_key}")
     parts += [
         "",
         "Read /workspace/spec/plan.md before you start. Treat its "
         "``Implementation steps`` section as your internal task list "
-        "(use TodoWrite to track them). Address every high-severity "
-        "finding in /workspace/spec/critique.md, or document in your "
-        "`finish` summary why you chose to deviate.",
+        "(use TodoWrite to track them). The plan's ``Assumptions`` "
+        "section lists the architect's load-bearing judgment calls — "
+        "if any feels wrong while implementing, surface it in your "
+        "`finish` summary rather than silently working around it.",
         "",
         "Make the smallest set of edits that addresses the issue. Run "
         "lint/format/type/test before you stop. When done, call ``finish`` "

@@ -22,7 +22,6 @@ def payload() -> ImplementerInput:
         target_repo="owner/name",
         mode="implementation",
         plan_s3_key="runs/01999999-9999-7999-9999-999999999999/plan.md",
-        critique_s3_key="runs/01999999-9999-7999-9999-999999999999/critique.md",
         source_issue_url="https://github.com/owner/name/issues/42",
     )
 
@@ -51,7 +50,7 @@ def install_implementation_mocks(
     calls: dict[str, list[Any]] = {
         "clone_repo": [],
         "create_branch": [],
-        "fetch_plan_and_critique": [],
+        "fetch_plan": [],
         "commit_changes": [],
         "push_branch": [],
         "invoke_repo_helper": [],
@@ -62,7 +61,7 @@ def install_implementation_mocks(
         return "deadbeef"
 
     def fake_fetch(_mcp_client: Any, **kw: Any) -> None:
-        calls["fetch_plan_and_critique"].append(kw)
+        calls["fetch_plan"].append(kw)
 
     def fake_invoke_repo_helper(_mcp_client: Any, **kw: Any) -> dict[str, Any]:
         calls["invoke_repo_helper"].append(kw)
@@ -78,7 +77,7 @@ def install_implementation_mocks(
     monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
     monkeypatch.setattr(client, "clone_repo", calls["clone_repo"].append)
     monkeypatch.setattr(client, "create_branch", calls["create_branch"].append)
-    monkeypatch.setattr(client, "fetch_plan_and_critique", fake_fetch)
+    monkeypatch.setattr(client, "fetch_plan", fake_fetch)
     monkeypatch.setattr(client, "commit_changes", fake_commit_changes)
     monkeypatch.setattr(client, "push_branch", calls["push_branch"].append)
     monkeypatch.setattr(client, "invoke_repo_helper", fake_invoke_repo_helper)
@@ -120,7 +119,7 @@ async def test_execute_implementation_happy_path_opens_pr(
 
     assert result.pr_url == "https://github.com/owner/name/pull/77"
     assert calls["create_branch"] == ["aidlc/impl/01999999-9999-7999-9999-999999999999"]
-    assert calls["fetch_plan_and_critique"][0]["plan_s3_key"] == payload.plan_s3_key
+    assert calls["fetch_plan"][0]["plan_s3_key"] == payload.plan_s3_key
     assert calls["commit_changes"], "agent commit was skipped"
     assert calls["push_branch"] == ["aidlc/impl/01999999-9999-7999-9999-999999999999"]
     opens = [c for c in calls["invoke_repo_helper"] if c["op"] == "open_pr"]
@@ -273,10 +272,10 @@ def test_pr_title_truncates_long_strings() -> None:
     assert len(title) == 200
 
 
-def test_compose_implementation_prompt_mentions_plan_and_critique(
+def test_compose_implementation_prompt_mentions_plan_and_issue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Prompt threads through plan_s3_key + critique_s3_key + issue URL."""
+    """Prompt threads through plan_s3_key + issue URL."""
     monkeypatch.setattr("implementer.client.agent_memory_preamble", lambda **_: "<<MEMORY>>")
     payload = ImplementerInput(
         project_slug="demo",
@@ -285,16 +284,13 @@ def test_compose_implementation_prompt_mentions_plan_and_critique(
         target_repo="owner/repo",
         mode="implementation",
         plan_s3_key="runs/r-1/plan.md",
-        critique_s3_key="runs/r-1/critique.md",
         source_issue_url="https://github.com/owner/repo/issues/3",
     )
     prompt = client.compose_implementation_prompt(payload)
     assert "<<MEMORY>>" in prompt
     assert "runs/r-1/plan.md" in prompt
-    assert "runs/r-1/critique.md" in prompt
     assert "https://github.com/owner/repo/issues/3" in prompt
     assert "/workspace/spec/plan.md" in prompt
-    assert "high-severity finding" in prompt.lower()
 
 
 def test_fetch_revision_inputs_pulls_via_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
