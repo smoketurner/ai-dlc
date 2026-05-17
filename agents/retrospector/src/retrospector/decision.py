@@ -226,9 +226,7 @@ class CaptureDecision(BaseModel):
         ),
     )
     rationale: Annotated[str, Field(min_length=1, max_length=2048)] = Field(
-        description=(
-            "Why this set of bullets (or none). Always populated."
-        ),
+        description=("Why this set of bullets (or none). Always populated."),
     )
 
 

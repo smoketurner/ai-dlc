@@ -149,9 +149,7 @@ def test_preamble_returns_empty_when_no_records_match(
 
 def test_parse_skill_frontmatter_extracts_name_and_description() -> None:
     content = (
-        "---\nname: handle-pagination\n"
-        "description: Use src/api/pagination.ts.\n"
-        "---\n\n## Body\n"
+        "---\nname: handle-pagination\ndescription: Use src/api/pagination.ts.\n---\n\n## Body\n"
     )
     assert parse_skill_frontmatter(content) == (
         "handle-pagination",
@@ -174,9 +172,7 @@ def test_skills_preamble_lists_canonical_folder_skills(tmp_path: Path) -> None:
     pagination = repo / ".aidlc" / "skills" / "handle-pagination"
     pagination.mkdir(parents=True)
     (pagination / "SKILL.md").write_text(
-        "---\nname: handle-pagination\n"
-        "description: Use src/api/pagination.ts.\n"
-        "---\n\n## Body\n",
+        "---\nname: handle-pagination\ndescription: Use src/api/pagination.ts.\n---\n\n## Body\n",
         encoding="utf-8",
     )
 
