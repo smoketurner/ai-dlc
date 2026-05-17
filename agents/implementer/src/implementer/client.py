@@ -32,7 +32,7 @@ from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 from strands.tools.mcp import MCPClient
 
 from common.gateway_tools import gateway_mcp_client
-from common.memory import agent_memory_preamble
+from common.memory import agent_memory_preamble, agent_skills_preamble
 from common.runtime import (
     CiFailureFeedback,
     FeedbackItem,
@@ -238,6 +238,7 @@ def compose_revision_prompt(
     """Compose the user-message prompt for a revision pass."""
     parts = [
         agent_memory_preamble(project_slug=payload.project_slug, query=payload.run_id),
+        agent_skills_preamble(),
         f"Project: {payload.project_slug}",
         f"Run id: {payload.run_id}",
         f"Impl PR: {payload.pr_url}",
@@ -318,6 +319,7 @@ def compose_implementation_prompt(payload: ImplementerInput) -> str:
     """Compose the user message handed to Claude for the first-pass agent run."""
     parts = [
         agent_memory_preamble(project_slug=payload.project_slug, query=payload.run_id),
+        agent_skills_preamble(),
         f"Project: {payload.project_slug}  (repo at /workspace/repo/)",
         f"Run id: {payload.run_id}",
     ]

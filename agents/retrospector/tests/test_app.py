@@ -1,24 +1,39 @@
-"""Tests for retrospector.app — patch logic + PR-opening flow."""
+"""Tests for retrospector.app — capture write, consolidate read+PR+delete."""
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
+from common.agentcore_memory import MemoryEvent, StoredEvent
 from common.runtime import RetrospectorInput
 from retrospector import app as retrospector_app
 from retrospector.app import (
     branch_name,
+    delete_consumed_events,
     fetch_file,
-    open_memory_pr,
-    render_agents_md_patch,
-    render_patch,
+    memory_files_for,
+    open_consolidation_prs,
+    render_events_as_buffer,
     render_pr_body,
-    render_pr_title,
+    render_skill_file,
+    run_capture,
+    run_consolidate,
+    session_id_for,
+    write_bullets,
 )
-from retrospector.decision import RetrospectiveDecision
+from retrospector.decision import (
+    CaptureDecision,
+    ConsolidationPlan,
+    LessonBullet,
+    MemoryAddition,
+    SkillFile,
+)
 
 EXISTING_MEMORY_MD = """\
 # Project Memory
@@ -45,12 +60,17 @@ Project summary.
 """
 
 
+# --- helpers ---------------------------------------------------------------
+
+
 def make_payload(**overrides: Any) -> RetrospectorInput:
     base: dict[str, Any] = {
-        "event_type": "RUN.COMPLETED",
+        "mode": "capture",
+        "event_type": "REVIEW.READY",
         "project_slug": "ai-dlc",
         "target_repo": "smoketurner/ai-dlc",
         "pr_url": "https://github.com/smoketurner/ai-dlc/pull/42",
+        "verdict": "request_changes",
         "run_id": "019e0e69-198d-7263-8bfc-7ea2d077b3a6",
         "correlation_id": "019e0e69-198d-7263-8bfc-7eb9e8ae05df",
     }
@@ -58,123 +78,343 @@ def make_payload(**overrides: Any) -> RetrospectorInput:
     return RetrospectorInput(**base)
 
 
-def make_memory_decision(**overrides: Any) -> RetrospectiveDecision:
+def make_memory_bullet(**overrides: Any) -> LessonBullet:
     base: dict[str, Any] = {
-        "has_lesson": True,
-        "target_file": "MEMORY.md",
+        "destination": "target_repo",
+        "artifact_type": "memory_md",
+        "scope": "MEMORY.md",
         "section": "conventions",
-        "lesson_summary": "Use FastAPI + Jinja2, not React",
-        "memory_md_addition": "- **Frontend stack**: FastAPI + Jinja2 + Alpine.js (CDN).",
-        "rationale": "Reviewer @jplock rejected SPA in PR #42.",
+        "delta": "- Use FastAPI + Jinja2.",
+        "severity": 4,
+        "generalizability": 4,
         "confidence": 0.85,
+        "rationale": "Reviewer rejected SPA in PR #42.",
+        "evidence": ["https://github.com/smoketurner/ai-dlc/pull/42#discussion_r1"],
     }
     base.update(overrides)
-    return RetrospectiveDecision(**base)
+    return LessonBullet(**base)
 
 
-def make_agents_decision(**overrides: Any) -> RetrospectiveDecision:
+def make_skill_bullet(**overrides: Any) -> LessonBullet:
     base: dict[str, Any] = {
-        "has_lesson": True,
-        "target_file": "AGENTS.md",
-        "lesson_summary": "Project context: this is a research repo, not production",
-        "memory_md_addition": (
-            "## Research-only context\n\n"
-            "This repository is intended for academic exploration only. "
-            "Code in this repo will not be deployed to production environments."
-        ),
-        "rationale": "Maintainer noted in PR #42 that this is research-only.",
+        "destination": "target_repo",
+        "artifact_type": "skill_md",
+        "scope": ".aidlc/skills/handle-pagination",
+        "delta": "Use src/api/pagination.ts helper.",
+        "severity": 3,
+        "generalizability": 5,
         "confidence": 0.7,
+        "rationale": "Implementer reinvented pagination twice.",
+        "evidence": ["s3://artifacts/runs/abc/validation/reviewer-r1.md"],
+        "skill_name": "handle-pagination",
+        "skill_description": "Use src/api/pagination.ts when adding new list endpoints.",
+        "skill_body": "## Pagination\n\nUse the cursor-based helper.\n",
     }
     base.update(overrides)
-    return RetrospectiveDecision(**base)
+    return LessonBullet(**base)
 
 
-def test_render_patch_appends_under_named_section_for_memory_md() -> None:
-    decision = make_memory_decision(memory_md_addition="- Use FastAPI + Jinja2.")
-    out = render_patch(existing=EXISTING_MEMORY_MD, decision=decision)
-    conventions_idx = out.index("## Conventions")
-    decisions_idx = out.index("## Decisions")
-    new_bullet_idx = out.index("Use FastAPI + Jinja2")
-    assert conventions_idx < new_bullet_idx < decisions_idx
-    assert "Use Python 3.14" in out  # existing bullet survives
-
-
-def test_render_patch_appends_freeform_for_agents_md() -> None:
-    existing = "# Project Memory\n\nThis project does X.\n"
-    decision = make_agents_decision(
-        memory_md_addition="## New section\n\n- New bullet.",
+def make_stored_event(event_id: str, *, bullet: LessonBullet, when: dt.datetime) -> StoredEvent:
+    text = json.dumps(
+        {
+            "run_id": "019e0e69-198d-7263-8bfc-7ea2d077b3a6",
+            "event_type": "REVIEW.READY",
+            "verdict": "request_changes",
+            "bullet": bullet.model_dump(),
+        },
+        sort_keys=True,
     )
-    out = render_patch(existing=existing, decision=decision)
-    assert out.startswith("# Project Memory")
-    assert "This project does X." in out
-    assert "## New section" in out
-    assert out.index("## New section") > out.index("This project does X.")
+    return StoredEvent(
+        event_id=event_id,
+        actor_id="retrospector",
+        session_id="pending_lessons:target:ai-dlc",
+        timestamp=when,
+        text=text,
+    )
 
 
-def test_render_agents_md_patch_seeds_default_when_empty() -> None:
-    out = render_agents_md_patch(existing="", addition="Some new fact.")
-    assert out.startswith("# Project Memory")
-    assert "Some new fact." in out
+# --- session keying --------------------------------------------------------
 
 
-def test_render_pr_title_caps_at_72_chars() -> None:
-    decision = make_memory_decision(lesson_summary="A" * 200)
-    title = render_pr_title(decision)
-    assert len(title) <= 72
-    assert title.startswith("retrospective: ")
+def test_session_id_for_target_uses_sanitised_slug() -> None:
+    assert session_id_for(destination="target_repo", project_slug="ai-dlc") == (
+        "pending_lessons:target:ai-dlc"
+    )
 
 
-def test_render_pr_body_includes_target_file_and_section() -> None:
-    payload = make_payload(pr_url="https://github.com/o/r/pull/9")
-    decision = make_memory_decision()
-    body = render_pr_body(payload=payload, decision=decision)
-    assert "**Target file:** `MEMORY.md`" in body
-    assert "(section `conventions`)" in body
-    assert "Source PR: https://github.com/o/r/pull/9" in body
+def test_session_id_for_platform_is_fixed() -> None:
+    assert session_id_for(destination="platform", project_slug="ignored") == (
+        "pending_lessons:platform"
+    )
 
 
-def test_render_pr_body_for_agents_md_omits_section() -> None:
-    payload = make_payload(pr_url="https://github.com/o/r/pull/9")
-    decision = make_agents_decision()
-    body = render_pr_body(payload=payload, decision=decision)
-    assert "**Target file:** `AGENTS.md`" in body
-    assert "(section " not in body
+def test_session_id_for_sanitises_unsafe_chars() -> None:
+    """Multiple unsafe chars collapse to a single hyphen — the regex is greedy."""
+    assert session_id_for(destination="target_repo", project_slug="Acme/Project_#1") == (
+        "pending_lessons:target:acme-project-1"
+    )
 
 
-def test_branch_name_is_deterministic_and_safe() -> None:
-    assert branch_name(run_id="019E0E69-198D-7263") == "retrospective/019e0e69-198d-7263"
+# --- capture: write each bullet as one memory event ------------------------
 
 
-def test_fetch_file_returns_content_when_repo_helper_says_exists(
+def test_write_bullets_calls_create_event_per_bullet(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = make_payload()
+    create_mock = MagicMock()
+    monkeypatch.setattr(retrospector_app, "create_event", create_mock)
+    monkeypatch.setattr(retrospector_app, "agentcore_client", MagicMock())
+    monkeypatch.setattr(retrospector_app, "memory_id", lambda: "mem-1")
+
+    counts = write_bullets(
+        bullets=[make_memory_bullet(), make_skill_bullet()],
+        payload=payload,
+    )
+
+    assert counts == {"target_repo": 2}
+    assert create_mock.call_count == 2
+    first_call = create_mock.call_args_list[0]
+    assert first_call.kwargs["memory_id"] == "mem-1"
+    assert first_call.kwargs["actor_id"] == "retrospector"
+    assert first_call.kwargs["session_id"] == "pending_lessons:target:ai-dlc"
+    events: list[MemoryEvent] = first_call.kwargs["events"]
+    assert events[0].role == "TOOL"
+    assert "FastAPI + Jinja2" in events[0].text
+
+
+def test_write_bullets_routes_each_destination_to_its_own_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bullet for ``platform`` ends up in a different session than ``target_repo``."""
+    payload = make_payload()
+    create_mock = MagicMock()
+    monkeypatch.setattr(retrospector_app, "create_event", create_mock)
+    monkeypatch.setattr(retrospector_app, "agentcore_client", MagicMock())
+    monkeypatch.setattr(retrospector_app, "memory_id", lambda: "mem-1")
+
+    counts = write_bullets(
+        bullets=[make_memory_bullet(), make_memory_bullet(destination="platform")],
+        payload=payload,
+    )
+
+    assert counts == {"target_repo": 1, "platform": 1}
+    sessions = {call.kwargs["session_id"] for call in create_mock.call_args_list}
+    assert sessions == {"pending_lessons:target:ai-dlc", "pending_lessons:platform"}
+
+
+def test_run_capture_skips_when_no_bullets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        retrospector_app,
+        "capture",
+        lambda *args, **kwargs: CaptureDecision(rationale="Clean event."),
+    )
+    create_mock = MagicMock()
+    monkeypatch.setattr(retrospector_app, "create_event", create_mock)
+    monkeypatch.setattr(retrospector_app, "agentcore_client", MagicMock())
+    monkeypatch.setattr(retrospector_app, "memory_id", lambda: "mem-1")
+
+    run_capture(MagicMock(), payload=make_payload())
+
+    create_mock.assert_not_called()
+
+
+# --- consolidate: list → run → open PRs → delete shipped+discarded --------
+
+
+def test_render_events_as_buffer_sorts_by_timestamp() -> None:
+    later = dt.datetime(2026, 5, 15, 12, 0, tzinfo=dt.UTC)
+    earlier = dt.datetime(2026, 5, 15, 10, 0, tzinfo=dt.UTC)
+    events = [
+        make_stored_event("evt-later", bullet=make_memory_bullet(), when=later),
+        make_stored_event("evt-earlier", bullet=make_skill_bullet(), when=earlier),
+    ]
+    buffer = render_events_as_buffer(events)
+    assert buffer.index("evt-earlier") < buffer.index("evt-later")
+    assert "FastAPI + Jinja2" in buffer
+    assert "handle-pagination" in buffer
+
+
+def test_delete_consumed_events_swallows_per_event_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One failed delete shouldn't stop the others — best-effort cleanup."""
+    delete_mock = MagicMock(side_effect=[None, RuntimeError("boom"), None])
+    monkeypatch.setattr(retrospector_app, "delete_event", delete_mock)
+    monkeypatch.setattr(retrospector_app, "agentcore_client", MagicMock())
+    monkeypatch.setattr(retrospector_app, "memory_id", lambda: "mem-1")
+
+    removed = delete_consumed_events(
+        session="pending_lessons:platform",
+        event_ids=["evt-1", "evt-2", "evt-3"],
+    )
+
+    assert removed == 2
+    assert delete_mock.call_count == 3
+
+
+def test_run_consolidate_requires_destination() -> None:
+    payload = make_payload(
+        mode="consolidate",
+        event_type="SCHEDULED.LESSONS_CONSOLIDATE",
+        destination=None,
+    )
+    with pytest.raises(ValueError, match="destination"):
+        run_consolidate(MagicMock(), payload=payload, mcp_client=MagicMock())
+
+
+def test_run_consolidate_no_events_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(retrospector_app, "list_events", lambda *args, **kwargs: [])
+    monkeypatch.setattr(retrospector_app, "agentcore_client", MagicMock())
+    monkeypatch.setattr(retrospector_app, "memory_id", lambda: "mem-1")
+    consolidate_mock = MagicMock()
+    monkeypatch.setattr(retrospector_app, "consolidate", consolidate_mock)
+
+    payload = make_payload(
+        mode="consolidate",
+        event_type="SCHEDULED.LESSONS_CONSOLIDATE",
+        destination="target_repo",
+    )
+    run_consolidate(MagicMock(), payload=payload, mcp_client=MagicMock())
+
+    consolidate_mock.assert_not_called()
+
+
+def test_memory_files_for_appends_to_existing_section(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake = MagicMock(
         return_value={
             "ok": True,
-            "result": {
-                "exists": True,
-                "content": "# foo\n",
-                "sha": "abc",
-                "ref": "main",
-            },
+            "result": {"exists": True, "content": EXISTING_MEMORY_MD, "sha": "abc", "ref": "main"},
         },
     )
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
-    mcp_client = MagicMock()
-    out = fetch_file(mcp_client, repo="o/r", path="AGENTS.md")
-    assert out == "# foo\n"
-    assert fake.call_args.args[0] is mcp_client
-    assert fake.call_args.kwargs == {
-        "op": "get_file",
-        "repo": "o/r",
-        "path": "AGENTS.md",
-        "ref": "main",
-    }
+    payload = make_payload()
+    additions = [
+        MemoryAddition(
+            scope="MEMORY.md",
+            section="conventions",
+            addition="- **Frontend stack**: FastAPI + Jinja2.",
+        ),
+    ]
+    files = memory_files_for(MagicMock(), payload=payload, additions=additions)
+    assert len(files) == 1
+    assert files[0]["path"] == "MEMORY.md"
+    assert "Use Python 3.14" in files[0]["content"]  # existing bullet survives
+    assert "Frontend stack" in files[0]["content"]
 
 
-def test_fetch_file_returns_empty_when_file_missing(
+def test_memory_files_for_groups_by_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = MagicMock(
+        return_value={
+            "ok": True,
+            "result": {"exists": False, "content": "", "sha": "", "ref": "main"},
+        },
+    )
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
+    payload = make_payload()
+    additions = [
+        MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Root rule."),
+        MemoryAddition(
+            scope="src/api/MEMORY.md",
+            section="conventions",
+            addition="- API rule.",
+        ),
+    ]
+    files = memory_files_for(MagicMock(), payload=payload, additions=additions)
+    paths = sorted(f["path"] for f in files)
+    assert paths == ["MEMORY.md", "src/api/MEMORY.md"]
+
+
+def test_render_skill_file_emits_frontmatter() -> None:
+    skill = SkillFile(
+        scope=".aidlc/skills/handle-pagination",
+        name="handle-pagination",
+        description="Use src/api/pagination.ts when adding new list endpoints.",
+        body="## Pagination\n\nUse the cursor-based helper.",
+    )
+    out = render_skill_file(skill)
+    assert out.startswith("---\n")
+    assert "name: handle-pagination" in out
+    assert "description: Use src/api/pagination.ts" in out
+    assert "## Pagination" in out
+    assert out.endswith("\n")
+
+
+def test_skill_file_scope_rejects_md_suffix() -> None:
+    """Stray `.md` on scope is a contract violation — the platform appends SKILL.md."""
+    with pytest.raises(ValidationError, match="slug folder path"):
+        SkillFile(
+            scope=".aidlc/skills/handle-pagination.md",
+            name="handle-pagination",
+            description="x",
+            body="y",
+        )
+
+
+def test_open_consolidation_prs_opens_zero_when_plan_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        retrospector_app,
+        "invoke_repo_helper",
+        MagicMock(side_effect=AssertionError("should not be called")),
+    )
+    payload = make_payload(mode="consolidate", destination="target_repo")
+    plan = ConsolidationPlan(rationale="Everything deferred.")
+    pr_urls = open_consolidation_prs(MagicMock(), payload=payload, plan=plan)
+    assert pr_urls == []
+
+
+def test_open_consolidation_prs_opens_two_when_both_artifact_types_ship(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = MagicMock(
+        side_effect=[
+            # memory PR: get_file → create_branch → commit_files → open_pr
+            {"ok": True, "result": {"exists": True, "content": EXISTING_MEMORY_MD, "ref": "main"}},
+            {"ok": True, "result": {"branch": "x"}},
+            {"ok": True, "result": {"commit_sha": "newsha"}},
+            {"ok": True, "result": {"pr_url": "https://x/pr/1"}},
+            # skill PR: create_branch → commit_files → open_pr (no get_file)
+            {"ok": True, "result": {"branch": "y"}},
+            {"ok": True, "result": {"commit_sha": "newsha2"}},
+            {"ok": True, "result": {"pr_url": "https://x/pr/2"}},
+        ],
+    )
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
+    payload = make_payload(mode="consolidate", destination="target_repo")
+    plan = ConsolidationPlan(
+        memory_additions=[
+            MemoryAddition(
+                scope="MEMORY.md",
+                section="conventions",
+                addition="- New rule.",
+            ),
+        ],
+        skill_files=[
+            SkillFile(
+                scope=".aidlc/skills/foo",
+                name="foo",
+                description="Use foo when bar.",
+                body="Body.",
+            ),
+        ],
+        rationale="One of each.",
+    )
+    pr_urls = open_consolidation_prs(MagicMock(), payload=payload, plan=plan)
+    assert pr_urls == ["https://x/pr/1", "https://x/pr/2"]
+
+
+# --- shared helpers --------------------------------------------------------
+
+
+def test_branch_name_is_deterministic_and_scoped_by_destination() -> None:
+    payload = make_payload(mode="consolidate", destination="target_repo")
+    branch = branch_name(payload=payload, kind="memory", timestamp="20260515-090000")
+    assert branch == "retrospective/target_repo/20260515-090000-memory"
+
+
+def test_fetch_file_returns_empty_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = MagicMock(
         return_value={
             "ok": True,
@@ -185,131 +425,20 @@ def test_fetch_file_returns_empty_when_file_missing(
     assert fetch_file(MagicMock(), repo="o/r", path="MISSING.md") == ""
 
 
-def test_open_memory_pr_invokes_repo_helper_chain_for_memory_md(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    payload = make_payload()
-    decision = make_memory_decision()
-    repo_helper_mock = MagicMock(
-        side_effect=[
-            {  # get_file (root MEMORY.md — exists, ends the candidate probe)
-                "ok": True,
-                "result": {
-                    "exists": True,
-                    "content": EXISTING_MEMORY_MD,
-                    "sha": "abc",
-                    "ref": "main",
-                },
-            },
-            {"ok": True, "result": {"branch": "retrospective/x"}},  # create_branch
-            {"ok": True, "result": {"commit_sha": "newsha"}},  # commit_files
-            {"ok": True, "result": {"pr_url": "https://x/pr/9", "pr_number": 9}},  # open_pr
+def test_render_pr_body_quotes_rationale_and_lists_changes() -> None:
+    payload = make_payload(mode="consolidate", destination="platform")
+    plan = ConsolidationPlan(
+        memory_additions=[
+            MemoryAddition(
+                scope="MEMORY.md",
+                section="conventions",
+                addition="- New.",
+            ),
         ],
+        rationale="Two bullets converged.",
     )
-    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    pr_url = open_memory_pr(MagicMock(), payload=payload, decision=decision)
-    assert pr_url == "https://x/pr/9"
-    ops = [call.kwargs["op"] for call in repo_helper_mock.call_args_list]
-    assert ops == ["get_file", "create_branch", "commit_files", "open_pr"]
-    commit_call = repo_helper_mock.call_args_list[2]
-    files = commit_call.kwargs["files"]
-    assert files[0]["path"] == "MEMORY.md"
-    assert "FastAPI + Jinja2 + Alpine.js" in files[0]["content"]
-
-
-def test_open_memory_pr_falls_back_to_docs_memory_md(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When ``MEMORY.md`` is absent at root, write to ``docs/MEMORY.md``."""
-    payload = make_payload()
-    decision = make_memory_decision()
-    repo_helper_mock = MagicMock(
-        side_effect=[
-            {"ok": True, "result": {"exists": False, "content": "", "sha": "", "ref": "main"}},
-            {
-                "ok": True,
-                "result": {
-                    "exists": True,
-                    "content": EXISTING_MEMORY_MD,
-                    "sha": "abc",
-                    "ref": "main",
-                },
-            },
-            {"ok": True, "result": {"branch": "retrospective/x"}},
-            {"ok": True, "result": {"commit_sha": "newsha"}},
-            {"ok": True, "result": {"pr_url": "https://x/pr/9", "pr_number": 9}},
-        ],
-    )
-    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    open_memory_pr(MagicMock(), payload=payload, decision=decision)
-    commit_call = repo_helper_mock.call_args_list[3]
-    files = commit_call.kwargs["files"]
-    assert files[0]["path"] == "docs/MEMORY.md"
-
-
-def test_open_memory_pr_defaults_to_root_when_no_file_exists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No memory file anywhere — seed a new one at the root."""
-    payload = make_payload()
-    decision = make_memory_decision()
-    repo_helper_mock = MagicMock(
-        side_effect=[
-            {"ok": True, "result": {"exists": False, "content": "", "sha": "", "ref": "main"}},
-            {"ok": True, "result": {"exists": False, "content": "", "sha": "", "ref": "main"}},
-            {"ok": True, "result": {"branch": "retrospective/x"}},
-            {"ok": True, "result": {"commit_sha": "newsha"}},
-            {"ok": True, "result": {"pr_url": "https://x/pr/9", "pr_number": 9}},
-        ],
-    )
-    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    open_memory_pr(MagicMock(), payload=payload, decision=decision)
-    commit_call = repo_helper_mock.call_args_list[3]
-    files = commit_call.kwargs["files"]
-    assert files[0]["path"] == "MEMORY.md"
-
-
-def test_open_memory_pr_writes_to_agents_md_when_chosen(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    payload = make_payload()
-    decision = make_agents_decision()
-    repo_helper_mock = MagicMock(
-        side_effect=[
-            {  # get_file
-                "ok": True,
-                "result": {"exists": False, "content": "", "sha": "", "ref": "main"},
-            },
-            {"ok": True, "result": {"branch": "retrospective/x"}},
-            {"ok": True, "result": {"commit_sha": "newsha"}},
-            {"ok": True, "result": {"pr_url": "https://x/pr/9"}},
-        ],
-    )
-    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", repo_helper_mock)
-    pr_url = open_memory_pr(MagicMock(), payload=payload, decision=decision)
-    assert pr_url == "https://x/pr/9"
-    get_file_call = repo_helper_mock.call_args_list[0]
-    assert get_file_call.kwargs == {
-        "op": "get_file",
-        "repo": "smoketurner/ai-dlc",
-        "path": "AGENTS.md",
-        "ref": "main",
-    }
-    commit_call = repo_helper_mock.call_args_list[2]
-    assert commit_call.kwargs["files"][0]["path"] == "AGENTS.md"
-    assert "Research-only context" in commit_call.kwargs["files"][0]["content"]
-
-
-def test_open_memory_pr_raises_when_target_file_missing() -> None:
-    payload = make_payload()
-    decision = RetrospectiveDecision.model_construct(
-        has_lesson=True,
-        target_file=None,
-        section=None,
-        lesson_summary="x",
-        memory_md_addition="y",
-        rationale="z",
-        confidence=0.5,
-    )
-    with pytest.raises(ValueError, match="target_file must be set"):
-        open_memory_pr(MagicMock(), payload=payload, decision=decision)
+    body = render_pr_body(payload=payload, plan=plan, title_kind="memory")
+    assert "**platform**" in body
+    assert "Two bullets converged." in body
+    assert "`MEMORY.md`" in body
+    assert "`conventions`" in body

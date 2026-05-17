@@ -182,13 +182,13 @@ variable "cognito_gateway_m2m_scope" {
 variable "memory_event_expiry_days" {
   description = "Number of days after which AgentCore Memory events expire (7-365)."
   type        = number
-  default     = 60
+  default     = 30
 }
 
 variable "lambda_log_retention_days" {
   description = "CloudWatch Logs retention for the tool Lambdas."
   type        = number
-  default     = 30
+  default     = 5
 }
 
 variable "dashboard_oauth_return_url" {

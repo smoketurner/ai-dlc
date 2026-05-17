@@ -1,0 +1,30 @@
+{{ memory_preamble }}
+Destination: {{ destination }}
+{%- if destination == "target_repo" %}
+Target repo: {{ target_repo }}
+Project: {{ project_slug }}
+{%- else %}
+Platform repo: {{ target_repo }}
+{%- endif %}
+
+You are consolidating the pending-lessons events for this destination. Each event below is one LessonBullet from a past capture-mode invocation, stored in AgentCore Memory.
+
+**Pending events (oldest first):**
+
+```
+{{ buffer_content | trim }}
+```
+
+Steps:
+  1. ``read_memory_md`` (and read any nested ``MEMORY.md`` files in the destination repo via ``repo_helper(op='get_file', ...)``) so you don't propose additions that duplicate existing rules.
+  2. Parse the JSON in each event above. Each block is one LessonBullet, headed by its ``event_id``.
+  3. Dedupe near-duplicates (collapse their evidence into one bullet's evidence list).
+  4. Rank by ``severity * generalizability * confidence``.
+  5. Decide which bullets to ship this batch (≤8 memory_md additions across scopes, ≤4 skill_md files), and which to discard (low score and no recurrence in the buffer). Everything else is deferred automatically.
+  6. For each shipped memory_md bullet, emit one ``MemoryAddition`` (group bullets with the same scope+section into one collapsed addition) AND add the bullet's ``event_id`` to ``shipped_event_ids``.
+  7. For each shipped skill_md bullet, emit one ``SkillFile`` AND add the bullet's ``event_id`` to ``shipped_event_ids``.
+  8. For each discarded bullet, add its ``event_id`` to ``discarded_event_ids``.
+  9. Bullets whose event IDs you put in neither list stay in memory and will surface again in next week's batch — no action needed.
+  10. Explain your choices in ``rationale`` — the platform will quote it in the PR body.
+
+Return a ConsolidationPlan JSON.

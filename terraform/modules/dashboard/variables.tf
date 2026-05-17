@@ -131,7 +131,7 @@ variable "lambda_timeout_seconds" {
 variable "log_retention_days" {
   description = "CloudWatch Logs retention for the Lambda + API Gateway."
   type        = number
-  default     = 30
+  default     = 5
 }
 
 variable "dashboard_workload_name" {

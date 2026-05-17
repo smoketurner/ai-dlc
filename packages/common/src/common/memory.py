@@ -38,6 +38,13 @@ _MEMORY_FILE_NAME = "MEMORY.md"
 _DEFAULT_FS_ROOT = Path("/workspace")
 _MEMORY_S3_KEY = "projects/{project_slug}/memory/MEMORY.md"
 
+# Skill directories the platform recognises (agentskills.io schema).
+# ``.aidlc/skills/`` lives in target repos; ``.claude/skills/`` lives in
+# the ai-dlc repo itself (so the Implementer's Claude Agent SDK loop
+# inherits the platform-level skill library too).
+SKILL_DIRS = (".aidlc/skills", ".claude/skills")
+MIN_FRONTMATTER_LINES = 2
+
 
 @dataclass(frozen=True, slots=True)
 class HybridMemoryConfig:
@@ -189,3 +196,77 @@ def render_memory_preamble(records: list[MemoryRecord]) -> str:
     lines.extend(f"- {r.content.strip()}" for r in records if r.content.strip())
     lines.extend(["", "---", ""])
     return "\n".join(lines)
+
+
+def agent_skills_preamble(*, fs_root: Path = _DEFAULT_FS_ROOT) -> str:
+    """List ``name + description`` for every packaged skill under ``fs_root``.
+
+    Progressive-disclosure pattern (agentskills.io): the preamble shows
+    only enough metadata for the agent to recognise when a skill is
+    relevant; the body is loaded on demand when the agent opens the
+    ``SKILL.md`` file inside the slug folder.
+
+    Walks both ``.aidlc/skills/`` (target-repo skills) and
+    ``.claude/skills/`` (platform-repo skills) for the canonical
+    layout: one ``<slug>/SKILL.md`` per skill. Returns ``""`` when no
+    skill files exist under ``fs_root``. Best-effort — silently skips
+    files whose frontmatter doesn't parse.
+    """
+    repo_root = fs_root / "repo" if (fs_root / "repo").is_dir() else fs_root
+    entries: list[tuple[str, str]] = []
+    for relative in SKILL_DIRS:
+        skill_dir = repo_root / relative
+        if not skill_dir.is_dir():
+            continue
+        for skill_path in sorted(skill_dir.glob("*/SKILL.md")):
+            meta = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+            if meta is None:
+                continue
+            entries.append(meta)
+    return render_skills_preamble(entries)
+
+
+def render_skills_preamble(entries: list[tuple[str, str]]) -> str:
+    """Render the skills index as a Markdown block prepended to agent prompts."""
+    if not entries:
+        return ""
+    lines = [
+        "## Available skills",
+        "",
+        "Skills packaged from prior runs. Each is one focused procedure;",
+        "the body loads on demand when you read the file.",
+        "",
+    ]
+    lines.extend(f"- **{name}**: {description}" for name, description in entries)
+    lines.extend(["", "---", ""])
+    return "\n".join(lines)
+
+
+def parse_skill_frontmatter(content: str) -> tuple[str, str] | None:
+    """Extract ``(name, description)`` from an agentskills.io frontmatter block.
+
+    The block is the YAML-ish header at the top of the file delimited
+    by ``---`` lines. Only ``name`` and ``description`` are required;
+    everything else is ignored. Returns ``None`` when either key is
+    missing or the file has no frontmatter.
+    """
+    if not content.startswith("---"):
+        return None
+    lines = content.splitlines()
+    if len(lines) < MIN_FRONTMATTER_LINES:
+        return None
+    name = ""
+    description = ""
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key == "name":
+            name = value
+        elif key == "description":
+            description = value
+    if not name or not description:
+        return None
+    return name, description

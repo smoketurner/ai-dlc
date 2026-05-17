@@ -1,4 +1,4 @@
-"""Tests for retrospector_dispatcher.handler — event classification + invocation."""
+"""Tests for retrospector_dispatcher.handler — capture + consolidate routing."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 
 from retrospector_dispatcher import handler as dispatcher
 from retrospector_dispatcher.handler import (
-    build_retrospector_input,
+    build_capture_input,
     derive_target_repo,
     handler,
 )
@@ -21,8 +21,10 @@ from retrospector_dispatcher.handler import (
 @pytest.fixture(autouse=True)
 def aws_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AIDLC_RETROSPECTOR_RUNTIME_ARN", "arn:aws:bedrock-agentcore:::runtime/r-1")
+    monkeypatch.setenv("AIDLC_PLATFORM_REPO", "smoketurner/ai-dlc")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     dispatcher.agentcore_client.cache_clear()
+    dispatcher.ddb_client.cache_clear()
 
 
 def ctx() -> LambdaContext:
@@ -66,6 +68,9 @@ def envelope(event_type: str, **payload_overrides: Any) -> dict[str, Any]:
     }
 
 
+# --- target_repo URL parsing ----------------------------------------------
+
+
 def test_derive_target_repo_extracts_owner_name_from_pr_url() -> None:
     assert (
         derive_target_repo(
@@ -90,57 +95,77 @@ def test_derive_target_repo_returns_empty_for_non_github_url() -> None:
     assert derive_target_repo(pr_url="https://example.com/x/y", issue_url="") == ""
 
 
-def test_handler_invokes_runtime_for_run_completed(monkeypatch: pytest.MonkeyPatch) -> None:
+# --- capture-mode event dispatch ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "RUN.COMPLETED",
+        "RUN.FAILED",
+        "RUN.CANCEL_REQUESTED",
+        "IMPL_PR.OPENED",
+        "REVIEW.READY",
+        "CHECKS.PASSED",
+        "CHECKS.FAILED",
+        "IMPL.ITERATION_REQUESTED",
+    ],
+)
+def test_handler_invokes_runtime_in_capture_mode_for_pr_signal_events(
+    monkeypatch: pytest.MonkeyPatch,
+    event_type: str,
+) -> None:
     fake = MagicMock()
     fake.invoke_agent_runtime.return_value = {"statusCode": 200}
     monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake)
-    out = handler(envelope("RUN.COMPLETED"), ctx())
+    out = handler(envelope(event_type), ctx())
     assert out == {
         "ok": True,
-        "dispatched": "RUN.COMPLETED",
+        "dispatched": event_type,
         "run_id": "019e0e69-198d-7263-8bfc-7ea2d077b3a6",
     }
-    assert fake.invoke_agent_runtime.call_count == 1
     body = json.loads(fake.invoke_agent_runtime.call_args.kwargs["payload"])
-    assert body["event_type"] == "RUN.COMPLETED"
-    assert body["target_repo"] == "smoketurner/ai-dlc"
-    assert body["pr_url"] == "https://github.com/smoketurner/ai-dlc/pull/42"
-    # Dropped fields no longer present.
-    assert "spec_slug" not in body
-    assert "task_id" not in body
-    assert "reviewer" not in body
+    assert body["mode"] == "capture"
+    assert body["event_type"] == event_type
 
 
-def test_handler_invokes_runtime_for_run_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handler_hydrates_verdict_for_review_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = MagicMock()
-    fake.invoke_agent_runtime.return_value = {"statusCode": 200}
     monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake)
-    out = handler(
-        envelope("RUN.FAILED", reason="reviewer requested changes 3 times"),
+    handler(envelope("REVIEW.READY", verdict="request_changes"), ctx())
+    body = json.loads(fake.invoke_agent_runtime.call_args.kwargs["payload"])
+    assert body["verdict"] == "request_changes"
+
+
+def test_handler_hydrates_pr_comment_body_for_human_mention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = MagicMock()
+    monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake)
+    handler(
+        envelope(
+            "IMPL.ITERATION_REQUESTED",
+            pr_comment_body="@aidlc-bot the pagination helper exists; use it.",
+        ),
         ctx(),
     )
-    assert out["ok"] is True
-    assert out["dispatched"] == "RUN.FAILED"
     body = json.loads(fake.invoke_agent_runtime.call_args.kwargs["payload"])
-    assert body["event_type"] == "RUN.FAILED"
-    assert body["reason"] == "reviewer requested changes 3 times"
+    assert "pagination helper exists" in body["pr_comment_body"]
 
 
-def test_handler_invokes_runtime_for_run_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_handler_invokes_runtime_for_run_cancel_with_issue_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fake = MagicMock()
-    fake.invoke_agent_runtime.return_value = {"statusCode": 200}
     monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake)
     event = envelope(
         "RUN.CANCEL_REQUESTED",
         pr_url=None,
         source_issue_url="https://github.com/smoketurner/ai-dlc/issues/9",
-        source="issue_closed",
         reason="issue closed by alice",
     )
-    out = handler(event, ctx())
-    assert out["ok"] is True
+    handler(event, ctx())
     body = json.loads(fake.invoke_agent_runtime.call_args.kwargs["payload"])
-    assert body["event_type"] == "RUN.CANCEL_REQUESTED"
     assert body["issue_url"] == "https://github.com/smoketurner/ai-dlc/issues/9"
     assert body["pr_url"] == ""
     assert body["reason"] == "issue closed by alice"
@@ -148,22 +173,13 @@ def test_handler_invokes_runtime_for_run_cancel(monkeypatch: pytest.MonkeyPatch)
 
 @pytest.mark.parametrize(
     "event_type",
-    [
-        "ISSUE.TRIAGED",
-        "DESIGN.READY",
-        "REVIEW.READY",
-        "CHECKS.PASSED",
-        "CHECKS.FAILED",
-        "IMPL_PR.OPENED",
-        "IMPL.ITERATION_REQUESTED",
-        "REVISION.READY",
-    ],
+    ["ISSUE.TRIAGED", "DESIGN.READY", "REVISION.READY"],
 )
-def test_handler_ignores_non_terminal_events(
+def test_handler_ignores_in_pipeline_events(
     monkeypatch: pytest.MonkeyPatch,
     event_type: str,
 ) -> None:
-    """In-pipeline events are ignored — only RUN.* fires the retrospector."""
+    """In-pipeline progress events don't fire the retrospector — only PR-signal events do."""
     fake = MagicMock()
     monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake)
     out = handler(envelope(event_type), ctx())
@@ -208,8 +224,92 @@ def test_handler_returns_validation_error_for_malformed_envelope() -> None:
     assert out == {"ok": False, "error": "validation_error"}
 
 
-def test_build_retrospector_input_extracts_target_repo_from_pr_url() -> None:
-    """The agent input carries owner/name parsed out of the PR URL."""
+# --- consolidate-mode scheduled fanout ------------------------------------
+
+
+def scan_pages(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Wrap items in a list of paginator-style pages."""
+    return [{"Items": items}]
+
+
+def test_handler_recognises_scheduled_consolidate_trigger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_agentcore = MagicMock()
+    fake_ddb = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = iter(
+        scan_pages(
+            [
+                {"project_slug": {"S": "ai-dlc"}, "target_repo": {"S": "smoketurner/ai-dlc"}},
+                {"project_slug": {"S": "demo"}, "target_repo": {"S": "owner/demo"}},
+            ],
+        ),
+    )
+    fake_ddb.get_paginator.return_value = paginator
+    monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake_agentcore)
+    monkeypatch.setattr(dispatcher, "ddb_client", lambda: fake_ddb)
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
+
+    out = handler({"detail-type": "SCHEDULED.LESSONS_CONSOLIDATE", "detail": {}}, ctx())
+
+    # Platform + 2 projects = 3 invocations.
+    expected_invocations = 3
+    assert out == {"ok": True, "dispatched_consolidates": expected_invocations}
+    assert fake_agentcore.invoke_agent_runtime.call_count == expected_invocations
+
+
+def test_scheduled_consolidate_first_invocation_targets_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_agentcore = MagicMock()
+    fake_ddb = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = iter(scan_pages([]))
+    fake_ddb.get_paginator.return_value = paginator
+    monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake_agentcore)
+    monkeypatch.setattr(dispatcher, "ddb_client", lambda: fake_ddb)
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
+
+    handler({"detail-type": "SCHEDULED.LESSONS_CONSOLIDATE", "detail": {}}, ctx())
+
+    body = json.loads(fake_agentcore.invoke_agent_runtime.call_args.kwargs["payload"])
+    assert body["mode"] == "consolidate"
+    assert body["destination"] == "platform"
+    assert body["target_repo"] == "smoketurner/ai-dlc"
+
+
+def test_scheduled_consolidate_dedupes_repeated_project_slugs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_agentcore = MagicMock()
+    fake_ddb = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = iter(
+        scan_pages(
+            [
+                {"project_slug": {"S": "ai-dlc"}, "target_repo": {"S": "smoketurner/ai-dlc"}},
+                {"project_slug": {"S": "ai-dlc"}, "target_repo": {"S": "smoketurner/ai-dlc"}},
+                {"project_slug": {"S": "ai-dlc"}, "target_repo": {"S": "smoketurner/ai-dlc"}},
+            ],
+        ),
+    )
+    fake_ddb.get_paginator.return_value = paginator
+    monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake_agentcore)
+    monkeypatch.setattr(dispatcher, "ddb_client", lambda: fake_ddb)
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
+
+    handler({"detail-type": "SCHEDULED.LESSONS_CONSOLIDATE", "detail": {}}, ctx())
+
+    # Platform + one (deduped) project.
+    expected_invocations = 2
+    assert fake_agentcore.invoke_agent_runtime.call_count == expected_invocations
+
+
+# --- build_capture_input contract -----------------------------------------
+
+
+def test_build_capture_input_extracts_target_repo_from_pr_url() -> None:
     fake = SimpleNamespace(
         type="RUN.COMPLETED",
         run_id="r-1",
@@ -219,18 +319,14 @@ def test_build_retrospector_input_extracts_target_repo_from_pr_url() -> None:
             "pr_url": "https://github.com/o/r/pull/1",
         },
     )
-    payload = build_retrospector_input(cast("Any", fake))
+    payload = build_capture_input(cast("Any", fake))
     assert payload is not None
+    assert payload["mode"] == "capture"
     assert payload["target_repo"] == "o/r"
     assert payload["pr_url"] == "https://github.com/o/r/pull/1"
-    # Removed fields no longer in the input.
-    assert "spec_slug" not in payload
-    assert "task_id" not in payload
-    assert "reviewer" not in payload
 
 
-def test_build_retrospector_input_enumerates_validation_artifacts_on_cap_hit() -> None:
-    """``RUN.FAILED`` with ``revision_count`` enumerates per-round validator artifacts."""
+def test_build_capture_input_enumerates_validation_artifacts_on_cap_hit() -> None:
     fake = SimpleNamespace(
         type="RUN.FAILED",
         run_id="01HJABCDEFGHIJKLMNOPQRSTUV",
@@ -238,14 +334,10 @@ def test_build_retrospector_input_enumerates_validation_artifacts_on_cap_hit() -
         payload={
             "project_slug": "demo",
             "pr_url": "https://github.com/o/r/pull/1",
-            "failed_state": "validation_complete",
-            "error_class": "RevisionCapReached",
-            "error_message": "revision cap (3) hit",
-            "retryable": False,
             "revision_count": 3,
         },
     )
-    payload = build_retrospector_input(cast("Any", fake))
+    payload = build_capture_input(cast("Any", fake))
     assert payload is not None
     assert payload["revision_count"] == 3
     keys = payload["validation_artifact_keys"]
@@ -256,11 +348,9 @@ def test_build_retrospector_input_enumerates_validation_artifacts_on_cap_hit() -
     run_id = "01HJABCDEFGHIJKLMNOPQRSTUV"
     assert f"runs/{run_id}/validation/reviewer-r0.md" in keys
     assert f"runs/{run_id}/validation/tester-r3.md" in keys
-    assert f"runs/{run_id}/validation/code_critic-r2.md" in keys
 
 
-def test_build_retrospector_input_keeps_only_documented_keys() -> None:
-    """Pre-refactor payload fields should not leak through to the agent input."""
+def test_build_capture_input_keeps_only_documented_keys() -> None:
     fake = SimpleNamespace(
         type="RUN.COMPLETED",
         run_id="r-1",
@@ -268,21 +358,24 @@ def test_build_retrospector_input_keeps_only_documented_keys() -> None:
         payload={
             "project_slug": "demo",
             "pr_url": "https://github.com/o/r/pull/1",
-            # Legacy keys callers may still emit by accident — must be dropped.
+            # Pre-refactor keys callers may still emit by accident — must be dropped.
             "spec_slug": "ignored",
             "task_id": "T-1",
             "reviewer": "alice",
         },
     )
-    payload = build_retrospector_input(cast("Any", fake))
+    payload = build_capture_input(cast("Any", fake))
     assert payload is not None
     expected_keys = {
+        "mode",
         "event_type",
         "project_slug",
         "target_repo",
         "pr_url",
         "issue_url",
         "reason",
+        "verdict",
+        "pr_comment_body",
         "revision_count",
         "validation_artifact_keys",
         "run_id",

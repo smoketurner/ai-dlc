@@ -1,0 +1,39 @@
+{{ memory_preamble }}
+Project: {{ project_slug }}
+Target repo: {{ target_repo }}
+Event: {{ event_type }}
+{%- if verdict %}
+Reviewer verdict: {{ verdict }}
+{%- endif %}
+{%- if pr_url %}
+Impl PR: {{ pr_url }}
+{%- endif %}
+{%- if issue_url %}
+Source issue: {{ issue_url }}
+{%- endif %}
+{%- if reason %}
+
+Reason / context (from the platform):
+{{ reason | trim }}
+{%- endif %}
+{%- if pr_comment_body %}
+
+Human `@aidlc-bot` mention (highest-signal — quote this in any bullet's rationale):
+{{ pr_comment_body | trim }}
+{%- endif %}
+{%- if validation_artifact_keys %}
+
+{% if revision_count -%}
+Revision-cap hit (revision_count={{ revision_count }}).{%- else -%}
+Validator artifacts from this event:{%- endif %} Read each one with ``get_artifact(key=...)`` and look for the recurring finding — that's the real lesson:
+{%- for key in validation_artifact_keys %}
+  - {{ key }}
+{%- endfor %}
+{%- endif %}
+
+Steps:
+  1. ``read_memory_md`` for the target repo to see what's already recorded — do not propose duplicates.
+  2. If an impl PR is involved, ``repo_helper(op='get_pr', ...)`` + ``list_pr_comments`` + ``list_pr_review_comments`` to pull the conversation.
+  3. If a source issue is involved, ``repo_helper(op='get_issue', ...)`` + ``list_issue_comments``.
+  4. If validation_artifact_keys are listed above, read each one with ``get_artifact`` and identify the recurring failure pattern.
+  5. Decide whether the event contains one or more reusable lesson bullets. Return a CaptureDecision JSON with zero or more bullets.

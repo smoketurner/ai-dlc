@@ -12,7 +12,7 @@ variable "env" {
 variable "archive_retention_days" {
   description = "Days to retain events in the EventBridge archive."
   type        = number
-  default     = 90
+  default     = 7
 }
 
 variable "state_router_visibility_seconds" {

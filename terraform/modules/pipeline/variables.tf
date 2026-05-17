@@ -12,7 +12,7 @@ variable "env" {
 variable "lambda_log_retention_days" {
   description = "CloudWatch Logs retention for the platform Lambdas."
   type        = number
-  default     = 30
+  default     = 5
 }
 
 variable "bus_name" {

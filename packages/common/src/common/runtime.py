@@ -455,29 +455,49 @@ class ProposerResult(_Frozen):
 class RetrospectorInput(_Frozen):
     """Input passed to the Retrospector's ``/invocations`` endpoint.
 
-    The dispatcher Lambda fires this once per terminal event. The
-    agent reads the closed PR / issue + comments, looks at the
-    project's ``MEMORY.md``, and decides whether the trace contains
-    a reusable lesson worth persisting.
+    The dispatcher Lambda fires this in one of two modes:
+
+    * ``mode="capture"`` — one invocation per PR-signal event
+      (``IMPL_PR.OPENED``, ``REVIEW.READY``, ``CHECKS.PASSED``,
+      ``CHECKS.FAILED``, ``IMPL.ITERATION_REQUESTED``) and per
+      terminal event (``RUN.COMPLETED`` / ``RUN.FAILED`` /
+      ``RUN.CANCEL_REQUESTED``). The agent reads the slice of the
+      run relevant to the event and appends zero or more lesson
+      bullets to the pending-lessons buffer in S3.
+    * ``mode="consolidate"`` — fanned out by a scheduled rule
+      (``SCHEDULED.LESSONS_CONSOLIDATE``) once per destination
+      (``target_repo`` per active project, ``platform`` once). The
+      agent reads the buffer, dedupes, picks the best bullets,
+      opens ≤2 PRs (MEMORY.md + optional SKILL.md), and truncates
+      the buffer of the bullets it shipped.
 
     On a cap-hit failure (``event_type="RUN.FAILED"`` with
     ``revision_count >= 3``), the dispatcher populates
     ``validation_artifact_keys`` with the S3 keys of every validator
     artifact written across the revision rounds so the retrospector
-    can read them and propose prompt / ``MEMORY.md`` updates that
-    would have prevented the failure.
+    can mine the recurring failure pattern for a high-value bullet.
     """
 
+    mode: Literal["capture", "consolidate"] = "capture"
     event_type: Literal[
         "RUN.COMPLETED",
         "RUN.FAILED",
         "RUN.CANCEL_REQUESTED",
+        "IMPL_PR.OPENED",
+        "REVIEW.READY",
+        "CHECKS.PASSED",
+        "CHECKS.FAILED",
+        "IMPL.ITERATION_REQUESTED",
+        "SCHEDULED.LESSONS_CONSOLIDATE",
     ]
     project_slug: Annotated[str, Field(min_length=1, max_length=64)]
     target_repo: Annotated[str, Field(min_length=3, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")]
+    destination: Literal["target_repo", "platform"] | None = None
     pr_url: Annotated[str, Field(max_length=512)] = ""
     issue_url: Annotated[str, Field(max_length=512)] = ""
     reason: Annotated[str, Field(max_length=2048)] = ""
+    verdict: Literal["approve", "comment", "request_changes"] | None = None
+    pr_comment_body: Annotated[str, Field(max_length=8192)] = ""
     revision_count: Annotated[int, Field(ge=0, le=16)] = 0
     validation_artifact_keys: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=512)]],

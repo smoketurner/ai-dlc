@@ -45,6 +45,35 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 `MEMORY.md` carries repository-scoped context (conventions, ADR bullets, constraints) and is reviewed in PRs. AgentCore Memory carries cross-session facts (user preferences, learned signals) and session events (≤60 days). Sync is one-way: MEMORY.md → AgentCore Memory on every successful session via `CreateEvent`. The reverse only happens through agent-proposed PR edits — humans gate writes to MEMORY.md.
 
+### Nested `MEMORY.md`
+
+A target repo may carry per-directory `MEMORY.md` files in addition to the root one (Stripe pattern). The parser stays strict on the six-section schema per file; the loader in `packages/common/src/common/memory_md.py` (`discover_nested_memory_paths` / `load_nested_memory_docs`) walks each changed path's directory chain and unions the relevant `MEMORY.md` files. Use the deepest scope that makes sense — e.g. a TypeScript-only convention lands in `src/web/MEMORY.md`, not the root.
+
+### Skills (`agentskills.io`)
+
+Skills are packaged multi-step procedures discovered or refined by the Retrospector. Each is one folder containing a `SKILL.md` file (the canonical [`agentskills.io`](https://agentskills.io/) layout):
+
+```
+.aidlc/skills/handle-pagination/
+  SKILL.md            ← frontmatter (name + description) + body
+  scripts/            ← optional, not used today
+  references/         ← optional, not used today
+```
+
+- `.aidlc/skills/<slug>/SKILL.md` in target repos.
+- `.claude/skills/<slug>/SKILL.md` in the ai-dlc platform repo.
+
+`SKILL.md` starts with a YAML frontmatter block carrying `name` and `description`; the body holds the procedure. Agents load only the frontmatter at preamble time (progressive disclosure — `common.memory.agent_skills_preamble`), then read the body on demand when the description matches the task. Today the Architect and Implementer (the two agents with local repo checkouts) consume target-repo skills via this path; Reviewer/Tester/Code-Critic and platform-scoped skills are not yet wired (see *Closed-loop learning*).
+
+### Closed-loop learning (Retrospector capture + consolidate)
+
+The Retrospector runs in two modes:
+
+- **Capture** — fires on every PR-signal event (`IMPL_PR.OPENED`, `REVIEW.READY`, `CHECKS.PASSED`, `CHECKS.FAILED`, `IMPL.ITERATION_REQUESTED`, plus the three terminal events). The agent emits zero or more scored bullets; each bullet becomes one short-term event in AgentCore Memory under a stable `(actor_id="retrospector", session_id="pending_lessons:{destination}[:{slug}]")` per destination. No PR is opened.
+- **Consolidate** — fires once a week per destination via the `consolidate_schedule` EventBridge rule (`terraform/modules/improvement/lambdas.tf`). The dispatcher fans out one invocation per destination (`platform` plus each active `project_slug` discovered via a scan of the runs table). The agent reads all pending events, ranks them holistically, opens up to two PRs (one for `MEMORY.md` additions across scopes, one for new `.aidlc/skills/` / `.claude/skills/` files), and lists the `shipped_event_ids` + `discarded_event_ids` so the platform deletes the consumed events. Anything left untouched in memory carries forward to next week's batch.
+
+Each bullet self-classifies its destination: repo-specific lessons (`target_repo`) land in the target repo; agent-friction signals / validator false-positive patterns / missing-tool symptoms (`platform`) land in the ai-dlc repo itself.
+
 ## Request lifecycle
 
 One request → one impl PR. All coordinated through DynamoDB + SQS + EventBridge. The two-Lambda split is load-bearing: `state_router` only reads DDB and triggers side-effects; `event_projector` is the sole writer of `current_state`. This keeps state machine logic in one place and makes every transition observable as an EventBridge event.
@@ -54,7 +83,7 @@ One request → one impl PR. All coordinated through DynamoDB + SQS + EventBridg
 3. **Agent work**: the invoked agent emits a domain event (e.g. `DESIGN.READY`, `IMPL_PR.OPENED`, `REVIEW.READY`) back to EventBridge.
 4. **Projection**: `event_projector` consumes the event, advances `current_state` per `state_transitions.py`, calls AgentCore Memory `CreateEvent`, and enqueues the next SQS beacon if the new state needs dispatch.
 5. **HITL**: GitHub PR review/comment with `@aidlc-bot` mention → webhook → `IMPL.ITERATION_REQUESTED` → projector advances to `revising` → state-router invokes implementer in `mode=revision`. CI workflow runs → webhook aggregates check state → `CHECKS.PASSED` / `CHECKS.FAILED` → projector advances. Humans gate the run by merging the impl PR (`pull_request.closed merged=true` → `RUN.COMPLETED`).
-6. **Terminal events** (`RUN.COMPLETED` / `RUN.FAILED` / `RUN.CANCEL_REQUESTED`) fan out via `retrospector_dispatcher` to the Retrospector agent for the lesson-extraction pass.
+6. **PR-signal events** — every PR-signal event (terminal events plus `IMPL_PR.OPENED` / `REVIEW.READY` / `CHECKS.PASSED` / `CHECKS.FAILED` / `IMPL.ITERATION_REQUESTED`) fans out via `retrospector_dispatcher` to the Retrospector in capture mode for the lesson-extraction pass. A weekly schedule rule fans out consolidate-mode invocations per destination; see *Closed-loop learning* under *Memory model*.
 
 The run-level state cursor (`RunState` in `packages/common/src/common/state.py`) walks one path of this diagram. Exact event→state transitions are encoded in `RUN_TRANSITIONS` (`state_transitions.py`):
 

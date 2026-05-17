@@ -9,7 +9,9 @@ variable "repositories" {
   type        = set(string)
   default = [
     "architect",
+    "code_critic",
     "implementer",
+    "retrospector",
     "reviewer",
     "tester",
     "proposer",
@@ -20,19 +22,28 @@ variable "repositories" {
 variable "agentcore_pull_repositories" {
   description = "Subset of repositories that AgentCore Runtime is allowed to pull."
   type        = set(string)
-  default     = ["architect", "implementer", "reviewer", "tester", "proposer", "triage"]
+  default = [
+    "architect",
+    "code_critic",
+    "implementer",
+    "retrospector",
+    "reviewer",
+    "tester",
+    "proposer",
+    "triage",
+  ]
 }
 
 variable "untagged_image_retention_days" {
   description = "Untagged images expire after this many days."
   type        = number
-  default     = 7
+  default     = 1
 }
 
 variable "tagged_image_retention_count" {
   description = "Keep this many tagged images per repository."
   type        = number
-  default     = 100
+  default     = 5
 }
 
 variable "tags" {

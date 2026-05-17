@@ -12,7 +12,7 @@ variable "env" {
 variable "lambda_log_retention_days" {
   description = "CloudWatch Logs retention for the improvement Lambdas."
   type        = number
-  default     = 30
+  default     = 5
 }
 
 variable "bus_name" {
@@ -72,6 +72,28 @@ variable "retrospector_enabled" {
 variable "common_layer_arn" {
   description = "ARN of the shared Lambda layer carrying the `common` Python package."
   type        = string
+}
+
+variable "platform_repo" {
+  description = <<-EOT
+    ``owner/name`` of the ai-dlc platform repo. Consolidate-mode runs
+    with ``destination=platform`` open their PRs against this repo, so
+    Retrospector-discovered platform-papercut lessons (validator
+    false-positive patterns, missing tools, agent friction) land in
+    the same place the platform's own MEMORY.md / AGENTS.md live.
+  EOT
+  type        = string
+}
+
+variable "consolidate_schedule" {
+  description = <<-EOT
+    EventBridge schedule expression for the weekly consolidate fanout.
+    Defaults to Monday 09:00 UTC. Override per-env if you want a
+    different cadence; setting to ``""`` disables the schedule (capture
+    still fires per event, but no consolidation PRs are opened).
+  EOT
+  type        = string
+  default     = "cron(0 9 ? * MON *)"
 }
 
 variable "tags" {

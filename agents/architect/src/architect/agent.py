@@ -27,7 +27,7 @@ from architect.tools import (
     read_repo_file_tool,
 )
 from common.gateway_tools import gateway_tools
-from common.memory import agent_memory_preamble
+from common.memory import agent_memory_preamble, agent_skills_preamble
 from common.routing import load_system_prompt, pick_variant
 from common.runtime import default_retry_strategy
 
@@ -151,6 +151,7 @@ def compose_message(
     """Compose the user-message prompt handed to the architect."""
     parts = [
         agent_memory_preamble(project_slug=project_slug, query=intent),
+        agent_skills_preamble(),
         f"Project: {project_slug}",
         f"Run id: {run_id}",
     ]

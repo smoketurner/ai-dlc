@@ -178,6 +178,7 @@ data "aws_iam_policy_document" "runtime_inline" {
       "bedrock-agentcore:RetrieveMemoryRecords",
       "bedrock-agentcore:ListEvents",
       "bedrock-agentcore:GetEvent",
+      "bedrock-agentcore:DeleteEvent",
       "bedrock-agentcore:GetMemory",
     ]
     resources = [aws_bedrockagentcore_memory.this.arn]

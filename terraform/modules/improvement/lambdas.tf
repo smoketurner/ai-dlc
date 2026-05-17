@@ -1,10 +1,21 @@
 ################################################################################
-# retrospector_dispatcher Lambda + EventBridge rule on terminal events.
+# retrospector_dispatcher Lambda + EventBridge wiring.
 #
-# Fires the Retrospector AgentCore Runtime once per terminal event
-# (RUN.COMPLETED / RUN.FAILED / RUN.CANCEL_REQUESTED). Provisioned only
-# when the retrospector image tag is set (i.e., the agent's container
-# has been pushed at least once).
+# Two trigger surfaces feed the dispatcher:
+#
+#   * Custom-bus events (this module): every PR-signal event for the
+#     run lifecycle — terminal events plus IMPL_PR.OPENED /
+#     REVIEW.READY / CHECKS.* / IMPL.ITERATION_REQUESTED — dispatches
+#     the Retrospector in capture mode (one event written to AgentCore
+#     Memory per bullet, no PR).
+#   * Default-bus schedule rule: a weekly cron fans out one
+#     consolidate-mode invocation per destination (platform + per
+#     active project_slug). Consolidate reads the destination's
+#     pending events, ranks them, and opens up to two PRs against
+#     MEMORY.md / .aidlc/skills/.
+#
+# Provisioned only when the retrospector image tag is set (i.e., the
+# agent's container has been pushed at least once).
 ################################################################################
 
 module "retrospector_dispatcher" {
@@ -34,6 +45,7 @@ module "retrospector_dispatcher" {
   environment_variables = merge(local.common_aws_env, {
     AIDLC_RETROSPECTOR_RUNTIME_ARN = var.retrospector_runtime_arn
     AIDLC_RUNS_TABLE               = var.runs_table
+    AIDLC_PLATFORM_REPO            = var.platform_repo
     POWERTOOLS_SERVICE_NAME        = "retrospector_dispatcher"
     POWERTOOLS_METRICS_NAMESPACE   = "ai-dlc"
     POWERTOOLS_LOG_LEVEL           = "INFO"
@@ -63,6 +75,15 @@ module "retrospector_dispatcher" {
       actions   = ["dynamodb:GetItem"]
       resources = [var.runs_table_arn]
     }
+    scan_active_projects = {
+      # Consolidate-mode fanout: the dispatcher scans STATE rows for
+      # distinct (project_slug, target_repo) tuples so the schedule
+      # rule's per-destination fanout auto-discovers active projects
+      # instead of requiring a hand-maintained list.
+      effect    = "Allow"
+      actions   = ["dynamodb:Scan"]
+      resources = [var.runs_table_arn]
+    }
   }
 
   tags = merge(var.tags, {
@@ -71,11 +92,11 @@ module "retrospector_dispatcher" {
   })
 }
 
-resource "aws_cloudwatch_event_rule" "terminal_events" {
+resource "aws_cloudwatch_event_rule" "capture_events" {
   count = var.retrospector_enabled ? 1 : 0
 
-  name           = "${local.prefix}-improvement-terminal-events"
-  description    = "Route every terminal SDLC event to the retrospector dispatcher."
+  name           = "${local.prefix}-improvement-capture-events"
+  description    = "Route every PR-signal SDLC event to the retrospector dispatcher (capture mode)."
   event_bus_name = var.bus_name
   event_pattern = jsonencode({
     source = [{ "prefix" : "ai-dlc." }]
@@ -83,29 +104,74 @@ resource "aws_cloudwatch_event_rule" "terminal_events" {
       "RUN.COMPLETED",
       "RUN.FAILED",
       "RUN.CANCEL_REQUESTED",
+      "IMPL_PR.OPENED",
+      "REVIEW.READY",
+      "CHECKS.PASSED",
+      "CHECKS.FAILED",
+      "IMPL.ITERATION_REQUESTED",
     ]
   })
 
   tags = merge(var.tags, {
-    Name      = "${local.prefix}-improvement-terminal-events"
+    Name      = "${local.prefix}-improvement-capture-events"
     Component = "improvement"
   })
 }
 
-resource "aws_cloudwatch_event_target" "retrospector_dispatcher" {
+resource "aws_cloudwatch_event_target" "retrospector_dispatcher_capture" {
   count = var.retrospector_enabled ? 1 : 0
 
-  rule           = aws_cloudwatch_event_rule.terminal_events[0].name
+  rule           = aws_cloudwatch_event_rule.capture_events[0].name
   event_bus_name = var.bus_name
   arn            = module.retrospector_dispatcher[0].lambda_function_arn
 }
 
-resource "aws_lambda_permission" "events_invoke_retrospector_dispatcher" {
+resource "aws_lambda_permission" "events_invoke_retrospector_dispatcher_capture" {
   count = var.retrospector_enabled ? 1 : 0
 
-  statement_id  = "AllowEventBridgeInvokeRetrospectorDispatcher"
+  statement_id  = "AllowEventBridgeInvokeRetrospectorDispatcherCapture"
   action        = "lambda:InvokeFunction"
   function_name = module.retrospector_dispatcher[0].lambda_function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.terminal_events[0].arn
+  source_arn    = aws_cloudwatch_event_rule.capture_events[0].arn
+}
+
+# Default-bus schedule rule — fires the dispatcher in consolidate mode on
+# a weekly cron. The dispatcher fans out per destination + project_slug.
+# Disabled when ``var.consolidate_schedule == ""``.
+resource "aws_cloudwatch_event_rule" "consolidate_schedule" {
+  count = var.retrospector_enabled && var.consolidate_schedule != "" ? 1 : 0
+
+  name                = "${local.prefix}-improvement-consolidate-schedule"
+  description         = "Weekly tick that fans out Retrospector consolidate-mode invocations."
+  schedule_expression = var.consolidate_schedule
+
+  tags = merge(var.tags, {
+    Name      = "${local.prefix}-improvement-consolidate-schedule"
+    Component = "improvement"
+  })
+}
+
+resource "aws_cloudwatch_event_target" "retrospector_dispatcher_consolidate" {
+  count = var.retrospector_enabled && var.consolidate_schedule != "" ? 1 : 0
+
+  rule = aws_cloudwatch_event_rule.consolidate_schedule[0].name
+  arn  = module.retrospector_dispatcher[0].lambda_function_arn
+  # Synthesise the EventBridge envelope shape the dispatcher already
+  # understands so the same handler validates schedule + custom-bus
+  # events with one parser.
+  input = jsonencode({
+    "detail-type" = "SCHEDULED.LESSONS_CONSOLIDATE"
+    detail        = {}
+  })
+}
+
+resource "aws_lambda_permission" "events_invoke_retrospector_dispatcher_consolidate" {
+  count = var.retrospector_enabled && var.consolidate_schedule != "" ? 1 : 0
+
+  statement_id  = "AllowEventBridgeInvokeRetrospectorDispatcherConsolidate"
+  action        = "lambda:InvokeFunction"
+  function_name = module.retrospector_dispatcher[0].lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.consolidate_schedule[0].arn
 }

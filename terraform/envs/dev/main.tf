@@ -272,5 +272,7 @@ module "improvement" {
   retrospector_runtime_arn = lookup(module.agents.runtime_arns, "retrospector", "")
   retrospector_enabled     = contains(keys(local.agent_image_tags), "retrospector")
 
+  platform_repo = "${var.github_owner}/${var.github_repo}"
+
   common_layer_arn = module.common_layer.lambda_layer_arn
 }

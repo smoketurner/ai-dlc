@@ -1,33 +1,52 @@
 """AgentCore Runtime entrypoint for the Retrospector.
 
-Invoked by the dispatcher Lambda on every terminal event
-(``RUN.COMPLETED`` / ``RUN.FAILED`` / ``RUN.CANCEL_REQUESTED``).
-Validates :class:`RetrospectorInput`, dispatches the agent loop on a
-daemon thread (under a copied :mod:`contextvars` context — see
-:func:`common.gateway_tools.fetch_gateway_token`), and returns
-``{"status": "dispatched", ...}``. The daemon asks the agent for a
-:class:`RetrospectiveDecision`; if a lesson is found it opens a PR
-via ``repo_helper`` that appends to either ``MEMORY.md`` (six-section
-schema; root preferred, ``docs/`` fallback) or ``AGENTS.md``
-(free-form append).
+The dispatcher invokes this in one of two modes:
 
-Memory reads use ``repo_helper.get_file`` against ``main`` so the
-repo is the source of truth — no S3 mirror lag, no duplicate bullets
-after rapid retrospective fires. The retrospector is side-channel:
-failures are logged and swallowed; runs never wedge on its absence.
+* ``mode="capture"`` — fired on every PR-signal event (terminal,
+  validator verdict, CI state, ``@aidlc-bot`` mention). The agent
+  emits a :class:`CaptureDecision` containing zero or more
+  :class:`LessonBullet` records; each bullet is written as one
+  short-term event in AgentCore Memory under a stable
+  ``(actor_id, session_id)`` per destination. **No PR is opened.**
+* ``mode="consolidate"`` — fired by a weekly scheduled rule, fanned
+  out one invocation per destination (per active project for
+  ``target_repo``, once for ``platform``). The agent reads every
+  pending event for the destination's ``(actor_id, session_id)``,
+  emits a :class:`ConsolidationPlan` with the patches to ship plus
+  the event IDs to delete; this module opens up to two PRs
+  (MEMORY.md additions, SKILL.md files) via ``repo_helper`` and
+  deletes the shipped + discarded events. Anything left over is
+  deferred automatically — no buffer to re-render.
+
+The dispatcher Lambda invokes synchronously; we hand off to a
+daemon thread so the HTTP response returns immediately. Failures
+are logged and swallowed — the platform never wedges on the
+Retrospector's absence.
 """
 
 from __future__ import annotations
 
 import contextvars
+import datetime as dt
+import json
+import os
 import re
 import threading
-from typing import Any
+from functools import cache
+from typing import TYPE_CHECKING, Any
 
+import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from strands.tools.mcp import MCPClient
 
+from common.agentcore_memory import (
+    MemoryEvent,
+    StoredEvent,
+    create_event,
+    delete_event,
+    list_events,
+)
 from common.gateway_tools import (
     REPO_HELPER,
     call_gateway_tool,
@@ -36,15 +55,23 @@ from common.gateway_tools import (
 )
 from common.memory_md import MemoryDoc, parse, render
 from common.runtime import RetrospectorInput
-from retrospector.agent import build_agent, retrospect
-from retrospector.decision import RetrospectiveDecision
+from retrospector.agent import build_agent, capture, consolidate
+from retrospector.decision import (
+    CaptureDecision,
+    ConsolidationPlan,
+    LessonBullet,
+    MemoryAddition,
+    SkillFile,
+)
+
+if TYPE_CHECKING:
+    from mypy_boto3_bedrock_agentcore.client import BedrockAgentCoreClient
 
 logger = structlog.get_logger()
 app = BedrockAgentCoreApp()
 
-MEMORY_MD_CANDIDATES = ("MEMORY.md", "docs/MEMORY.md")
-AGENTS_MD_PATH = "AGENTS.md"
-RUN_ID_BRANCH_RE = re.compile(r"[^a-z0-9-]+")
+RETROSPECTOR_ACTOR = "retrospector"
+SAFE_SLUG_RE = re.compile(r"[^a-z0-9-]+")
 
 
 @app.entrypoint
@@ -53,88 +80,283 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
     payload = RetrospectorInput.model_validate(event)
     logger.info(
         "retrospector invoked",
+        mode=payload.mode,
         run_id=payload.run_id,
         event_type=payload.event_type,
+        destination=payload.destination,
         target_repo=payload.target_repo,
     )
     task_id = app.add_async_task("retrospector_run", {"run_id": payload.run_id})
     ctx = contextvars.copy_context()
     threading.Thread(
         target=ctx.run,
-        args=(run_retrospective, payload, task_id),
+        args=(dispatch_by_mode, payload, task_id),
         daemon=True,
     ).start()
     return {"status": "dispatched", "run_id": payload.run_id, "task_id": task_id}
 
 
-def run_retrospective(payload: RetrospectorInput, async_task_id: int) -> None:
-    """Body of the retrospective — ask the agent, optionally open a memory-file PR."""
+def dispatch_by_mode(payload: RetrospectorInput, async_task_id: int) -> None:
+    """Build the agent for the right mode and run the corresponding flow."""
     try:
         with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-            agent = build_agent(payload.run_id, mcp_client=mcp_client)
-            decision = retrospect(
-                agent,
-                event_type=payload.event_type,
-                project_slug=payload.project_slug,
-                target_repo=payload.target_repo,
-                pr_url=payload.pr_url or None,
-                issue_url=payload.issue_url or None,
-                reason=payload.reason or None,
-                revision_count=payload.revision_count,
-                validation_artifact_keys=tuple(payload.validation_artifact_keys),
-            )
-            if not decision.has_lesson:
-                logger.info(
-                    "retrospective: no lesson",
-                    run_id=payload.run_id,
-                    event_type=payload.event_type,
-                    rationale=decision.rationale[:200],
-                )
-                return
-            pr_url = open_memory_pr(mcp_client, payload=payload, decision=decision)
-            logger.info(
-                "retrospective: lesson recorded",
-                run_id=payload.run_id,
-                event_type=payload.event_type,
-                target_file=decision.target_file,
-                confidence=decision.confidence,
-                pr_url=pr_url,
-            )
+            agent = build_agent(payload.run_id, mode=payload.mode, mcp_client=mcp_client)
+            if payload.mode == "capture":
+                run_capture(agent, payload=payload)
+            else:
+                run_consolidate(agent, payload=payload, mcp_client=mcp_client)
     except Exception:
-        logger.exception("retrospective failed", run_id=payload.run_id)
+        logger.exception(
+            "retrospective failed",
+            mode=payload.mode,
+            run_id=payload.run_id,
+        )
     finally:
         app.complete_async_task(async_task_id)
 
 
-def open_memory_pr(
+def run_capture(agent: Any, *, payload: RetrospectorInput) -> None:
+    """Ask the agent for lesson bullets and write each as one memory event."""
+    decision = capture(
+        agent,
+        event_type=payload.event_type,  # ty: ignore[invalid-argument-type]
+        project_slug=payload.project_slug,
+        target_repo=payload.target_repo,
+        pr_url=payload.pr_url or None,
+        issue_url=payload.issue_url or None,
+        reason=payload.reason or None,
+        verdict=payload.verdict,
+        pr_comment_body=payload.pr_comment_body or None,
+        revision_count=payload.revision_count,
+        validation_artifact_keys=tuple(payload.validation_artifact_keys),
+    )
+    if not decision.bullets:
+        logger.info(
+            "capture: no bullets",
+            run_id=payload.run_id,
+            event_type=payload.event_type,
+            rationale=decision.rationale[:200],
+        )
+        return
+    counts = write_bullets(bullets=decision.bullets, payload=payload)
+    logger.info(
+        "capture: bullets written",
+        run_id=payload.run_id,
+        event_type=payload.event_type,
+        counts=counts,
+    )
+
+
+def run_consolidate(
+    agent: Any,
+    *,
+    payload: RetrospectorInput,
+    mcp_client: MCPClient,
+) -> None:
+    """List pending events, run the agent, open PRs, delete shipped + discarded."""
+    if payload.destination is None:
+        msg = "consolidate mode requires destination on the input"
+        raise ValueError(msg)
+    session = session_id_for(
+        destination=payload.destination,
+        project_slug=payload.project_slug,
+    )
+    events = list_events(
+        agentcore_client(),
+        memory_id=memory_id(),
+        actor_id=RETROSPECTOR_ACTOR,
+        session_id=session,
+    )
+    if not events:
+        logger.info(
+            "consolidate: no pending events",
+            destination=payload.destination,
+            project_slug=payload.project_slug,
+        )
+        return
+    buffer_content = render_events_as_buffer(events)
+    plan = consolidate(
+        agent,
+        destination=payload.destination,
+        project_slug=payload.project_slug,
+        target_repo=payload.target_repo,
+        buffer_content=buffer_content,
+    )
+    pr_urls = open_consolidation_prs(mcp_client, payload=payload, plan=plan)
+    removed = delete_consumed_events(
+        session=session,
+        event_ids=[*plan.shipped_event_ids, *plan.discarded_event_ids],
+    )
+    logger.info(
+        "consolidate: completed",
+        destination=payload.destination,
+        project_slug=payload.project_slug,
+        pr_urls=pr_urls,
+        memory_count=len(plan.memory_additions),
+        skill_count=len(plan.skill_files),
+        events_removed=removed,
+        events_deferred=len(events) - removed,
+    )
+
+
+def write_bullets(
+    *,
+    bullets: list[LessonBullet],
+    payload: RetrospectorInput,
+) -> dict[str, int]:
+    """Write one short-term event per bullet under its destination's session."""
+    client = agentcore_client()
+    counts: dict[str, int] = {}
+    for bullet in bullets:
+        session = session_id_for(
+            destination=bullet.destination,
+            project_slug=payload.project_slug,
+        )
+        text = json.dumps(
+            {
+                "run_id": payload.run_id,
+                "event_type": payload.event_type,
+                "verdict": payload.verdict,
+                "bullet": bullet.model_dump(),
+            },
+            sort_keys=True,
+        )
+        create_event(
+            client,
+            memory_id=memory_id(),
+            actor_id=RETROSPECTOR_ACTOR,
+            session_id=session,
+            events=[MemoryEvent(role="TOOL", text=text)],
+        )
+        counts[bullet.destination] = counts.get(bullet.destination, 0) + 1
+    return counts
+
+
+def session_id_for(*, destination: str, project_slug: str) -> str:
+    """Return the AgentCore Memory session id for the destination's buffer."""
+    if destination == "platform":
+        return "pending_lessons:platform"
+    safe = SAFE_SLUG_RE.sub("-", project_slug.lower()).strip("-") or "unknown"
+    return f"pending_lessons:target:{safe}"
+
+
+def render_events_as_buffer(events: list[StoredEvent]) -> str:
+    """Render stored events as a Markdown buffer for the consolidate prompt.
+
+    Each entry leads with the event ID (so the agent can reference it in
+    ``shipped_event_ids`` / ``discarded_event_ids``) and includes the
+    capture context + bullet JSON.
+    """
+    blocks: list[str] = []
+    for event in sorted(events, key=lambda evt: evt.timestamp):
+        ts = event.timestamp.isoformat(timespec="seconds")
+        blocks.append(
+            f"## event_id={event.event_id} — {ts}\n\n```json\n{event.text}\n```",
+        )
+    return "\n\n".join(blocks)
+
+
+def delete_consumed_events(*, session: str, event_ids: list[str]) -> int:
+    """Delete every shipped + discarded event; return the count actually deleted."""
+    if not event_ids:
+        return 0
+    client = agentcore_client()
+    removed = 0
+    for event_id in event_ids:
+        try:
+            delete_event(
+                client,
+                memory_id=memory_id(),
+                actor_id=RETROSPECTOR_ACTOR,
+                session_id=session,
+                event_id=event_id,
+            )
+        except Exception:
+            logger.exception("delete_event failed", session=session, event_id=event_id)
+            continue
+        removed += 1
+    return removed
+
+
+def open_consolidation_prs(
     mcp_client: MCPClient,
     *,
     payload: RetrospectorInput,
-    decision: RetrospectiveDecision,
-) -> str:
-    """Append ``decision.memory_md_addition`` to the chosen file and open a PR.
-
-    Reads the current file from ``main`` via the gateway-routed
-    ``repo_helper.get_file`` (the repo is the source of truth — no S3
-    staleness). For ``MEMORY.md`` the body is parsed against the
-    six-section schema and the addition lands under
-    ``decision.section``; for ``AGENTS.md`` the addition is appended
-    verbatim at the end of the file. The result is committed to a
-    fresh branch and a PR is opened against ``main``.
-    """
-    if decision.target_file is None:
-        msg = "decision.target_file must be set when opening a memory-file PR"
-        raise ValueError(msg)
-    branch = branch_name(run_id=payload.run_id)
-    if decision.target_file == "MEMORY.md":
-        path, existing = resolve_memory_path(
+    plan: ConsolidationPlan,
+) -> list[str]:
+    """Open up to two PRs: one for MEMORY.md additions, one for SKILL.md files."""
+    pr_urls: list[str] = []
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
+    if plan.memory_additions:
+        memory_files = memory_files_for(
             mcp_client,
-            repo=payload.target_repo,
-            candidates=MEMORY_MD_CANDIDATES,
+            payload=payload,
+            additions=plan.memory_additions,
         )
-    else:
-        path = AGENTS_MD_PATH
-        existing = fetch_file(mcp_client, repo=payload.target_repo, path=path)
+        pr_urls.append(
+            commit_and_open_pr(
+                mcp_client,
+                payload=payload,
+                plan=plan,
+                branch=branch_name(payload=payload, kind="memory", timestamp=timestamp),
+                files=memory_files,
+                title_kind="memory",
+            ),
+        )
+    if plan.skill_files:
+        skill_files = [
+            {"path": f"{skill.scope}/SKILL.md", "content": render_skill_file(skill)}
+            for skill in plan.skill_files
+        ]
+        pr_urls.append(
+            commit_and_open_pr(
+                mcp_client,
+                payload=payload,
+                plan=plan,
+                branch=branch_name(payload=payload, kind="skills", timestamp=timestamp),
+                files=skill_files,
+                title_kind="skills",
+            ),
+        )
+    return pr_urls
+
+
+def memory_files_for(
+    mcp_client: MCPClient,
+    *,
+    payload: RetrospectorInput,
+    additions: list[MemoryAddition],
+) -> list[dict[str, str]]:
+    """Read each affected MEMORY.md, append per section, return the new file contents."""
+    by_scope: dict[str, list[MemoryAddition]] = {}
+    for addition in additions:
+        by_scope.setdefault(addition.scope, []).append(addition)
+    files: list[dict[str, str]] = []
+    for scope, scope_additions in by_scope.items():
+        existing = fetch_file(mcp_client, repo=payload.target_repo, path=scope)
+        doc = parse(existing) if existing.strip() else MemoryDoc()
+        for addition in scope_additions:
+            doc = doc.with_appended(addition.section, addition.addition.strip())
+        files.append({"path": scope, "content": render(doc)})
+    return files
+
+
+def render_skill_file(skill: SkillFile) -> str:
+    """Render a SkillFile as the agentskills.io-shaped Markdown body."""
+    frontmatter = f"---\nname: {skill.name}\ndescription: {skill.description}\n---\n\n"
+    return frontmatter + skill.body.rstrip() + "\n"
+
+
+def commit_and_open_pr(
+    mcp_client: MCPClient,
+    *,
+    payload: RetrospectorInput,
+    plan: ConsolidationPlan,
+    branch: str,
+    files: list[dict[str, str]],
+    title_kind: str,
+) -> str:
+    """Create the branch, commit ``files`` in one commit, open a PR, return its URL."""
     invoke_repo_helper(
         mcp_client,
         op="create_branch",
@@ -142,17 +364,13 @@ def open_memory_pr(
         branch=branch,
         base="main",
     )
-    new_content = render_patch(
-        existing=existing,
-        decision=decision,
-    )
     invoke_repo_helper(
         mcp_client,
         op="commit_files",
         repo=payload.target_repo,
         branch=branch,
-        message=render_commit_message(decision),
-        files=[{"path": path, "content": new_content}],
+        message=f"retrospective ({title_kind}): batch consolidation",
+        files=files,
     )
     out = invoke_repo_helper(
         mcp_client,
@@ -160,8 +378,8 @@ def open_memory_pr(
         repo=payload.target_repo,
         base="main",
         head=branch,
-        title=render_pr_title(decision),
-        body=render_pr_body(payload=payload, decision=decision),
+        title=f"retrospective ({title_kind}): batch consolidation",
+        body=render_pr_body(payload=payload, plan=plan, title_kind=title_kind),
     )
     pr_url = out.get("result", {}).get("pr_url")
     if not isinstance(pr_url, str):
@@ -170,110 +388,44 @@ def open_memory_pr(
     return pr_url
 
 
-def fetch_file(mcp_client: MCPClient, *, repo: str, path: str) -> str:
-    """Read ``path`` from ``main`` via the gateway-routed ``repo_helper.get_file``.
+def render_pr_body(
+    *,
+    payload: RetrospectorInput,
+    plan: ConsolidationPlan,
+    title_kind: str,
+) -> str:
+    """PR body — quotes the consolidator's rationale and lists what was shipped."""
+    parts = [
+        f"Batch consolidation for **{payload.destination}** "
+        f"({title_kind}). Run by the Retrospector on {dt.datetime.now(dt.UTC).date().isoformat()}.",
+        "",
+        "**Rationale:**",
+        plan.rationale,
+    ]
+    if title_kind == "memory" and plan.memory_additions:
+        parts += ["", "**MEMORY.md additions:**"]
+        for addition in plan.memory_additions:
+            parts.append(f"- `{addition.scope}` → `{addition.section}`")
+    if title_kind == "skills" and plan.skill_files:
+        parts += ["", "**SKILL.md files:**"]
+        for skill in plan.skill_files:
+            parts.append(f"- `{skill.scope}/SKILL.md` — {skill.description}")
+    return "\n".join(parts) + "\n"
 
-    Returns the empty string when the file doesn't exist (e.g., the
-    project hasn't created an ``AGENTS.md`` yet). Callers handle the
-    empty-existing case by seeding a default body.
-    """
+
+def branch_name(*, payload: RetrospectorInput, kind: str, timestamp: str) -> str:
+    """Deterministic branch name per consolidation batch."""
+    dest = payload.destination or "unknown"
+    return f"retrospective/{dest}/{timestamp}-{kind}"
+
+
+def fetch_file(mcp_client: MCPClient, *, repo: str, path: str) -> str:
+    """Read ``path`` from ``main`` via the gateway-routed ``repo_helper.get_file``."""
     out = invoke_repo_helper(mcp_client, op="get_file", repo=repo, path=path, ref="main")
     result = out.get("result") or {}
     if not result.get("exists"):
         return ""
     return str(result.get("content", ""))
-
-
-def resolve_memory_path(
-    mcp_client: MCPClient,
-    *,
-    repo: str,
-    candidates: tuple[str, ...],
-) -> tuple[str, str]:
-    """Probe ``candidates`` in order and return ``(path, existing_body)``.
-
-    Used by :func:`open_memory_pr` to pick the right location for the
-    project's memory file. Preference: first candidate (typically root)
-    when the file exists there; ``docs/`` fallback when only that is
-    present; first candidate again as the default for projects that have
-    no memory file yet (so new repos get the modern root-level layout).
-    """
-    for path in candidates:
-        body = fetch_file(mcp_client, repo=repo, path=path)
-        if body:
-            return path, body
-    return candidates[0], ""
-
-
-def render_patch(*, existing: str, decision: RetrospectiveDecision) -> str:
-    """Produce the new file content for whichever target_file was chosen."""
-    if decision.target_file == "MEMORY.md":
-        if decision.section is None:
-            msg = "MEMORY.md target requires a section"
-            raise ValueError(msg)
-        doc = parse(existing) if existing.strip() else MemoryDoc()
-        return render(doc.with_appended(decision.section, decision.memory_md_addition.strip()))
-    return render_agents_md_patch(existing=existing, addition=decision.memory_md_addition)
-
-
-def render_agents_md_patch(*, existing: str, addition: str) -> str:
-    """Append ``addition`` to ``AGENTS.md`` content (free-form Markdown).
-
-    Adds a blank line between the existing body and the addition so the
-    new content reads as a fresh paragraph / section. When the file
-    is empty (no existing AGENTS.md), seeds it with a minimal title.
-    """
-    body = existing.rstrip("\n")
-    add = addition.strip()
-    if not body:
-        return f"# Project Memory\n\n{add}\n"
-    return f"{body}\n\n{add}\n"
-
-
-def render_commit_message(decision: RetrospectiveDecision) -> str:
-    """Single-line commit message — uses the lesson summary."""
-    summary = decision.lesson_summary.strip().splitlines()[0][:72]
-    return f"retrospective: {summary}"
-
-
-def render_pr_title(decision: RetrospectiveDecision) -> str:
-    """PR title — ≤72 chars, leads with the agent identifier."""
-    summary = decision.lesson_summary.strip().splitlines()[0]
-    title = f"retrospective: {summary}"
-    return title[:72]
-
-
-def render_pr_body(
-    *,
-    payload: RetrospectorInput,
-    decision: RetrospectiveDecision,
-) -> str:
-    """PR body — quotes the agent's rationale and links the source event."""
-    parts = [
-        f"Recorded a lesson from {payload.event_type} on this run.",
-        "",
-        f"**Target file:** `{decision.target_file}`"
-        + (f" (section `{decision.section}`)" if decision.section else ""),
-        "",
-        "**Lesson:**",
-        decision.lesson_summary,
-        "",
-        "**Rationale:**",
-        decision.rationale,
-        "",
-        f"Confidence: {decision.confidence:.2f}",
-    ]
-    if payload.pr_url:
-        parts.extend(["", f"Source PR: {payload.pr_url}"])
-    if payload.issue_url:
-        parts.extend(["", f"Source issue: {payload.issue_url}"])
-    return "\n".join(parts) + "\n"
-
-
-def branch_name(*, run_id: str) -> str:
-    """Deterministic branch name per run — keeps re-fires idempotent on the remote."""
-    safe = RUN_ID_BRANCH_RE.sub("-", run_id.lower())
-    return f"retrospective/{safe}"
 
 
 def invoke_repo_helper(
@@ -282,12 +434,7 @@ def invoke_repo_helper(
     op: str,
     **fields: Any,
 ) -> dict[str, Any]:
-    """Invoke the gateway-routed ``repo_helper`` target and raise on error envelope.
-
-    Returns the full envelope (``{"ok": True, "op": ..., "result":
-    {...}}``) so callers can pull from ``result`` without losing the
-    envelope shape that older tests assert against.
-    """
+    """Invoke the gateway-routed ``repo_helper`` target and raise on error envelope."""
     response = call_gateway_tool(
         mcp_client,
         name=REPO_HELPER,
@@ -300,5 +447,23 @@ def invoke_repo_helper(
     return envelope
 
 
-if __name__ == "__main__":
-    app.run()
+@cache
+def agentcore_client() -> BedrockAgentCoreClient:
+    """Process-cached AgentCore data-plane client (memory ops)."""
+    return boto3.client("bedrock-agentcore")
+
+
+def memory_id() -> str:
+    """AgentCore Memory resource id, supplied at deploy via env var."""
+    return os.environ["AIDLC_MEMORY_ID"]
+
+
+# Re-export the structured-output types so dispatcher and tests can import
+# from this module without reaching across packages.
+__all__ = [
+    "CaptureDecision",
+    "ConsolidationPlan",
+    "LessonBullet",
+    "MemoryAddition",
+    "SkillFile",
+]

@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable
 from functools import cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
 import boto3
@@ -168,6 +170,72 @@ def _validate_section_order(seen: list[Section]) -> None:
             expected=list(_SECTION_ORDER),
             seen=seen,
         )
+
+
+def discover_nested_memory_paths(
+    *,
+    repo_root: Path,
+    changed_paths: Iterable[str],
+) -> list[Path]:
+    """Walk each changed path's directory chain, collecting every ``MEMORY.md``.
+
+    Subtree-scoped ``MEMORY.md`` files apply to changes within their
+    directory tree (Stripe pattern). Given a set of changed files,
+    this returns the chain of relevant ``MEMORY.md`` paths — deepest
+    first, so callers that compose them in order can let the more
+    specific rules read closest to the agent's working context.
+
+    The root ``MEMORY.md`` is included when it exists. Paths above
+    ``repo_root`` are never traversed.
+    """
+    repo_root = repo_root.resolve()
+    found: set[Path] = set()
+    for raw in changed_paths:
+        path = (repo_root / raw).resolve()
+        try:
+            relative_parent = path.parent.relative_to(repo_root)
+        except ValueError:
+            continue
+        current = repo_root
+        for part in (Path(), *_parents_chain(relative_parent)):
+            current = repo_root / part if str(part) != "." else repo_root
+            candidate = current / "MEMORY.md"
+            if candidate.is_file():
+                found.add(candidate)
+    return sorted(found, key=lambda candidate: -len(candidate.parts))
+
+
+def _parents_chain(relative_path: Path) -> tuple[Path, ...]:
+    """Return every ancestor of ``relative_path`` (root → leaf), excluding root."""
+    parts: list[Path] = []
+    current = Path()
+    for piece in relative_path.parts:
+        current = current / piece
+        parts.append(current)
+    return tuple(parts)
+
+
+def load_nested_memory_docs(
+    *,
+    repo_root: Path,
+    changed_paths: Iterable[str],
+) -> dict[str, MemoryDoc]:
+    """Parse every ``MEMORY.md`` returned by :func:`discover_nested_memory_paths`.
+
+    Keys are the file paths relative to ``repo_root`` (e.g.
+    ``"MEMORY.md"``, ``"src/api/MEMORY.md"``). Files that fail to
+    parse raise :class:`MemoryDocParseError` — callers that want
+    best-effort loading should catch it per-file.
+    """
+    repo_root = repo_root.resolve()
+    docs: dict[str, MemoryDoc] = {}
+    for path in discover_nested_memory_paths(
+        repo_root=repo_root,
+        changed_paths=changed_paths,
+    ):
+        relative = path.relative_to(repo_root)
+        docs[str(relative)] = parse(path.read_text(encoding="utf-8"))
+    return docs
 
 
 @cache

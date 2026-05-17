@@ -39,6 +39,22 @@ class MemoryRecord:
     score: float
 
 
+@dataclass(frozen=True, slots=True)
+class StoredEvent:
+    """A short-term event as enumerated by ``ListEvents``.
+
+    ``text`` is the conversational payload's text field — the canonical
+    write path uses :class:`MemoryEvent` which always sets this. Events
+    with a non-conversational payload return an empty ``text``.
+    """
+
+    event_id: str
+    actor_id: str
+    session_id: str
+    timestamp: datetime
+    text: str
+
+
 def create_event(
     client: BedrockAgentCoreClient,
     /,
@@ -121,6 +137,92 @@ def retrieve_memory_records(
         ) from exc
     raw = response.get("memoryRecordSummaries", [])
     return [_parse_record(entry, namespace) for entry in raw]
+
+
+def list_events(
+    client: BedrockAgentCoreClient,
+    /,
+    *,
+    memory_id: str,
+    actor_id: str,
+    session_id: str,
+    max_results: int = 100,
+) -> list[StoredEvent]:
+    """Enumerate every event for ``(actor_id, session_id)`` in the session order.
+
+    Pages through all results until exhausted (or ``max_results`` per page
+    boundary). Used by the Retrospector's consolidate mode to read a
+    destination's pending-lessons buffer; one event per bullet.
+    """
+    paginator = client.get_paginator("list_events")
+    events: list[StoredEvent] = []
+    try:
+        pages = paginator.paginate(
+            memoryId=memory_id,
+            actorId=actor_id,
+            sessionId=session_id,
+            includePayloads=True,
+            PaginationConfig={"PageSize": max_results},
+        )
+        for page in pages:
+            for entry in page.get("events", []):
+                events.append(_parse_event(entry))
+    except (BotoCoreError, ClientError) as exc:
+        raise AgentCoreMemoryError(
+            "list_events failed",
+            memory_id=memory_id,
+            session_id=session_id,
+        ) from exc
+    return events
+
+
+def delete_event(
+    client: BedrockAgentCoreClient,
+    /,
+    *,
+    memory_id: str,
+    actor_id: str,
+    session_id: str,
+    event_id: str,
+) -> None:
+    """Remove a single event from short-term memory."""
+    try:
+        client.delete_event(
+            memoryId=memory_id,
+            actorId=actor_id,
+            sessionId=session_id,
+            eventId=event_id,
+        )
+    except (BotoCoreError, ClientError) as exc:
+        raise AgentCoreMemoryError(
+            "delete_event failed",
+            memory_id=memory_id,
+            session_id=session_id,
+        ) from exc
+
+
+def _parse_event(entry: Mapping[str, Any]) -> StoredEvent:
+    """Coerce a raw SDK event dict into a typed :class:`StoredEvent`."""
+    payload = entry.get("payload") or []
+    text = ""
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        conversational = item.get("conversational")
+        if isinstance(conversational, dict):
+            content = conversational.get("content")
+            if isinstance(content, dict):
+                candidate = content.get("text")
+                if isinstance(candidate, str):
+                    text = candidate
+                    break
+    return StoredEvent(
+        event_id=str(entry.get("eventId", "")),
+        actor_id=str(entry.get("actorId", "")),
+        session_id=str(entry.get("sessionId", "")),
+        timestamp=cast("datetime", entry.get("eventTimestamp") or datetime.now(UTC)),
+        text=text,
+    )
 
 
 def _parse_record(entry: Mapping[str, Any], default_namespace: str) -> MemoryRecord:

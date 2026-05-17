@@ -76,12 +76,22 @@ resource "aws_ecr_repository_policy" "agentcore_pull" {
 }
 
 ################################################################################
-# Repository creation template — auto-creates ${project}/<name> repos on
-# first push with the same config the explicit ``aws_ecr_repository.this``
-# resources above use. Lets a new agent be added via ``var.agents`` alone:
-# push the image, ECR creates the repo with the right mutability + lifecycle
-# + AgentCore pull policy, and the next terraform apply wires up the runtime
-# without a separate ``var.repositories`` edit.
+# Repository creation template — safety net for first-push-before-terraform.
+#
+# ``var.repositories`` is the source of truth: every agent ECR repo should be
+# listed there so it gets an explicit ``aws_ecr_repository`` +
+# ``aws_ecr_lifecycle_policy`` + ``aws_ecr_repository_policy`` managed by
+# terraform. If an image is pushed to ``${project}/<name>`` before the repo
+# is declared, this template auto-creates it with the same mutability,
+# lifecycle, and AgentCore-pull policy so the new repo isn't left in a
+# weaker state than the declared ones.
+#
+# Important: ECR applies a creation template only at repo-create time. It
+# does NOT retroactively reconcile policy on repos that already exist — so
+# bumping ``var.tagged_image_retention_count`` here will not change
+# lifecycle on previously auto-created repos. The fix in that case is to
+# add the repo to ``var.repositories`` and ``terraform import`` it, which
+# brings it under the explicit ``aws_ecr_lifecycle_policy.this`` fan-out.
 ################################################################################
 
 data "aws_iam_policy_document" "ecr_create_on_push_assume" {

@@ -1,29 +1,30 @@
-"""Dispatcher Lambda — invokes the Retrospector for every terminal event.
+"""Dispatcher Lambda — invokes the Retrospector in capture or consolidate mode.
 
-Subscribed to EventBridge for the three run-terminal event types in the
-single-PR-per-issue model:
+Two trigger shapes:
 
-  * ``RUN.COMPLETED`` — the impl PR merged and the run reached ``done``.
-  * ``RUN.FAILED``    — a terminal failure projected the run to ``failed``.
-  * ``RUN.CANCEL_REQUESTED`` — issue closed, bot unassigned, or the
-    impl PR closed without merge. Cancellation projects the run to
-    ``cancelled``.
+* **EventBridge custom-bus events** → capture mode. One invocation per
+  PR-signal event (terminal events plus ``IMPL_PR.OPENED`` /
+  ``REVIEW.READY`` / ``CHECKS.PASSED`` / ``CHECKS.FAILED`` /
+  ``IMPL.ITERATION_REQUESTED``). The Retrospector emits zero or more
+  lesson bullets into AgentCore Memory.
+* **Scheduled rule** → consolidate mode. Fanned out one invocation
+  per destination: the platform destination (the ai-dlc repo
+  itself) plus one ``target_repo`` invocation per distinct active
+  ``project_slug`` discovered via a scan of the runs table. Each
+  invocation reads its destination's pending events, runs the
+  consolidator agent, opens up to two PRs, and deletes the
+  shipped + discarded events.
 
-For each event we extract a normalised ``RetrospectorInput`` and
-asynchronously invoke the Retrospector AgentCore Runtime. The Lambda
-returns immediately; the agent runs as a daemon thread inside its
-container and emits no follow-up event (lessons land as PRs opened
-against ``MEMORY.md``, not as platform events).
-
-Events that don't carry the fields the agent needs (project_slug,
-target_repo, etc.) are logged and dropped — the dispatcher is
-best-effort.
+The dispatcher returns immediately for both shapes; the Retrospector
+runs as a daemon thread inside its AgentCore Runtime container and
+emits no follow-up event.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterator
 from functools import cache
 from typing import TYPE_CHECKING, Any, cast
 
@@ -49,13 +50,21 @@ tracer = Tracer(service="retrospector_dispatcher")
 metrics = Metrics(namespace="ai-dlc", service="retrospector_dispatcher")
 
 
-TERMINAL_EVENT_TYPES = frozenset(
+CAPTURE_EVENT_TYPES = frozenset(
     {
         "RUN.COMPLETED",
         "RUN.FAILED",
         "RUN.CANCEL_REQUESTED",
+        "IMPL_PR.OPENED",
+        "REVIEW.READY",
+        "CHECKS.PASSED",
+        "CHECKS.FAILED",
+        "IMPL.ITERATION_REQUESTED",
     },
 )
+SCHEDULED_CONSOLIDATE_TYPE = "SCHEDULED.LESSONS_CONSOLIDATE"
+PLATFORM_DEST_SLUG = "aidlc-platform"
+MAX_PROJECTS_PER_FANOUT = 100
 
 # A github.com path like "/owner/name/pull/42" splits into 3 parts after
 # the host prefix; we need at least owner + name (the first two).
@@ -70,7 +79,7 @@ def agentcore_client() -> BedrockAgentCoreClient:
 
 @cache
 def ddb_client() -> DynamoDBClient:
-    """Process-cached DynamoDB client (used to look up the run's requester)."""
+    """Process-cached DynamoDB client (used to look up runs + project list)."""
     return boto3.client("dynamodb")
 
 
@@ -79,14 +88,13 @@ def retrospector_runtime_arn() -> str:
     return os.environ["AIDLC_RETROSPECTOR_RUNTIME_ARN"]
 
 
-def lookup_run_requester(run_id: str) -> tuple[str | None, str | None]:
-    """Read the run's STATE row and return ``(requestor_sub, requestor)``.
+def platform_repo() -> str:
+    """``owner/name`` of the ai-dlc platform repo, target for platform-destination PRs."""
+    return os.environ["AIDLC_PLATFORM_REPO"]
 
-    Returns ``(None, None)`` when the row is missing, identity columns
-    are absent, the table env var is unset, or the DDB call raises —
-    the caller falls back to a synthetic ``system:`` identity rather
-    than failing the dispatch (the retrospector is best-effort).
-    """
+
+def lookup_run_requester(run_id: str) -> tuple[str | None, str | None]:
+    """Read the run's STATE row and return ``(requestor_sub, requestor)``."""
     table = os.environ.get("AIDLC_RUNS_TABLE")
     if not table:
         return None, None
@@ -110,7 +118,19 @@ def lookup_run_requester(run_id: str) -> tuple[str | None, str | None]:
 @tracer.capture_lambda_handler
 @metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
-    """Validate the EventBridge event and fire the Retrospector once."""
+    """Route to capture (per event) or consolidate (fanout) based on the trigger."""
+    if is_scheduled_consolidate(event):
+        return handle_scheduled_consolidate()
+    return handle_capture_event(event)
+
+
+def is_scheduled_consolidate(event: dict[str, Any]) -> bool:
+    """Detect the scheduled-consolidate trigger by its ``detail-type``."""
+    return event.get("detail-type") == SCHEDULED_CONSOLIDATE_TYPE
+
+
+def handle_capture_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Validate the EventBridge custom-bus event and invoke the Retrospector once."""
     try:
         envelope = cast(
             "UntypedEnvelope",
@@ -121,11 +141,11 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
         return {"ok": False, "error": "validation_error"}
 
     event_type = envelope.type
-    if event_type not in TERMINAL_EVENT_TYPES:
-        logger.info("ignoring non-terminal event", extra={"type": event_type})
+    if event_type not in CAPTURE_EVENT_TYPES:
+        logger.info("ignoring unsupported event", extra={"type": event_type})
         return {"ok": True, "ignored": event_type}
 
-    payload = build_retrospector_input(envelope)
+    payload = build_capture_input(envelope)
     if payload is None:
         logger.info("event missing fields the retrospector needs", extra={"type": event_type})
         return {"ok": True, "ignored": "missing_fields"}
@@ -137,9 +157,98 @@ def handler(event: dict[str, Any], _context: LambdaContext) -> dict[str, Any]:
         requestor=requestor,
         fallback="system:retrospector",
     )
-    invoke_runtime(payload=payload, run_id=run_id, user_id=user_id)
+    invoke_runtime(payload=payload, session_id=f"retrospector-{run_id}", user_id=user_id)
     metrics.add_metric(name="RetrospectivesDispatched", unit=MetricUnit.Count, value=1)
     return {"ok": True, "dispatched": event_type, "run_id": run_id}
+
+
+def handle_scheduled_consolidate() -> dict[str, Any]:
+    """Fan out one consolidate invocation per destination (platform + per project)."""
+    invocations = list(consolidate_invocations())
+    for inv in invocations:
+        invoke_runtime(
+            payload=inv["payload"],
+            session_id=inv["session_id"],
+            user_id="system:retrospector-consolidate",
+        )
+    metrics.add_metric(
+        name="ConsolidationsDispatched",
+        unit=MetricUnit.Count,
+        value=len(invocations),
+    )
+    return {"ok": True, "dispatched_consolidates": len(invocations)}
+
+
+def consolidate_invocations() -> Iterator[dict[str, Any]]:
+    """Yield one payload per destination — platform first, then each active project."""
+    yield build_consolidate_invocation(
+        destination="platform",
+        project_slug=PLATFORM_DEST_SLUG,
+        target_repo=platform_repo(),
+    )
+    for slug, repo in active_projects():
+        yield build_consolidate_invocation(
+            destination="target_repo",
+            project_slug=slug,
+            target_repo=repo,
+        )
+
+
+def build_consolidate_invocation(
+    *,
+    destination: str,
+    project_slug: str,
+    target_repo: str,
+) -> dict[str, Any]:
+    """Compose the RetrospectorInput payload + session id for one consolidate fanout."""
+    payload = {
+        "mode": "consolidate",
+        "event_type": SCHEDULED_CONSOLIDATE_TYPE,
+        "destination": destination,
+        "project_slug": project_slug,
+        "target_repo": target_repo,
+        "run_id": f"consolidate-{project_slug}",
+        "correlation_id": f"consolidate-{project_slug}",
+        "actor_id": "retrospector_dispatcher",
+    }
+    session_id = f"retrospector-consolidate-{destination}-{project_slug}"
+    return {"payload": payload, "session_id": session_id}
+
+
+def active_projects() -> Iterator[tuple[str, str]]:
+    """Scan the runs table for distinct ``(project_slug, target_repo)`` tuples.
+
+    Caps total emitted at :data:`MAX_PROJECTS_PER_FANOUT`. Skips items
+    that don't carry both fields (e.g., research-mode rows or
+    in-progress entries that haven't projected target_repo yet).
+    """
+    table = os.environ.get("AIDLC_RUNS_TABLE")
+    if not table:
+        return
+    seen: set[tuple[str, str]] = set()
+    paginator = ddb_client().get_paginator("scan")
+    try:
+        pages = paginator.paginate(
+            TableName=table,
+            FilterExpression="sk = :sk",
+            ExpressionAttributeValues={":sk": {"S": "STATE"}},
+            ProjectionExpression="project_slug, target_repo",
+        )
+        for page in pages:
+            for item in page.get("Items", []):
+                slug = item.get("project_slug", {}).get("S")
+                repo = item.get("target_repo", {}).get("S")
+                if not slug or not repo:
+                    continue
+                pair = (slug, repo)
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                yield pair
+                if len(seen) >= MAX_PROJECTS_PER_FANOUT:
+                    return
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("ddb scan failed", extra={"err": str(exc)})
 
 
 def normalise(event: dict[str, Any]) -> dict[str, Any]:
@@ -150,15 +259,19 @@ def normalise(event: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
-def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None:
-    """Translate a platform event envelope into the Retrospector's input shape.
+def build_capture_input(envelope: UntypedEnvelope) -> dict[str, Any] | None:
+    """Translate a platform event envelope into a capture-mode RetrospectorInput.
 
-    Returns ``None`` when the envelope is missing fields the agent
-    needs (target_repo, project_slug, or both PR + issue identifiers).
+    Returns ``None`` when the envelope is missing fields the agent needs
+    (target_repo, project_slug, or both PR + issue identifiers).
+
+    Hydrates ``verdict`` from ``REVIEW.READY`` events and
+    ``pr_comment_body`` from ``IMPL.ITERATION_REQUESTED`` events so the
+    capture-mode prompt sees the highest-signal context for each
+    trigger.
 
     On ``RUN.FAILED`` with ``revision_count > 0`` (cap-hit), enumerates
-    the validator artifact S3 keys across every revision round so the
-    retrospector can read each round's findings.
+    the validator artifact S3 keys across every revision round.
     """
     payload = envelope.payload or {}
     project_slug = payload.get("project_slug")
@@ -174,12 +287,15 @@ def build_retrospector_input(envelope: UntypedEnvelope) -> dict[str, Any] | None
     revision_count = int(payload.get("revision_count") or 0)
     run_id = str(envelope.run_id)
     return {
+        "mode": "capture",
         "event_type": envelope.type,
         "project_slug": project_slug,
         "target_repo": target_repo,
         "pr_url": pr_url,
         "issue_url": issue_url,
         "reason": payload.get("reason") or "",
+        "verdict": payload.get("verdict"),
+        "pr_comment_body": payload.get("pr_comment_body") or payload.get("comment_body") or "",
         "revision_count": revision_count,
         "validation_artifact_keys": validation_artifact_keys(run_id, revision_count),
         "run_id": run_id,
@@ -192,13 +308,7 @@ VALIDATOR_KINDS = ("reviewer", "tester", "code_critic")
 
 
 def validation_artifact_keys(run_id: str, revision_count: int) -> list[str]:
-    """Enumerate S3 keys for every validator artifact across revisions.
-
-    The state-router runs the three validators ``revision_count + 1``
-    times (round 0 against the initial PR, then once after each
-    implementer revision). Each validator writes
-    ``runs/{run_id}/validation/{kind}-r{N}.md`` per round.
-    """
+    """Enumerate S3 keys for every validator artifact across revisions."""
     rounds = range(revision_count + 1)
     return [f"runs/{run_id}/validation/{kind}-r{n}.md" for n in rounds for kind in VALIDATOR_KINDS]
 
@@ -216,24 +326,17 @@ def derive_target_repo(*, pr_url: str, issue_url: str) -> str:
     return f"{parts[0]}/{parts[1]}"
 
 
-def invoke_runtime(*, payload: dict[str, Any], run_id: str, user_id: str) -> None:
-    """Asynchronously invoke the Retrospector AgentCore Runtime.
+def invoke_runtime(*, payload: dict[str, Any], session_id: str, user_id: str) -> None:
+    """Synchronously invoke the Retrospector AgentCore Runtime.
 
-    AgentCore Runtime invocations are synchronous request/response;
-    we keep the Lambda fast by relying on the runtime's internal
-    daemon-thread pattern (the runtime's ``handler`` returns
-    ``{"status": "dispatched"}`` in ~100ms regardless of how long the
-    underlying agent takes).
-
-    ``user_id`` is forwarded as ``runtimeUserId``; see
-    :mod:`common.identity` for the derivation rule. Without it the
-    agent SDK can't bootstrap its workload access token and gateway
-    MCP calls fail closed.
+    The Lambda stays fast because the runtime returns
+    ``{"status": "dispatched"}`` in ~100ms (the agent runs as a daemon
+    thread inside its container).
     """
     body = json.dumps(payload).encode("utf-8")
     agentcore_client().invoke_agent_runtime(
         agentRuntimeArn=retrospector_runtime_arn(),
-        runtimeSessionId=f"retrospector-{run_id}",
+        runtimeSessionId=session_id,
         runtimeUserId=user_id,
         contentType="application/json",
         accept="application/json",

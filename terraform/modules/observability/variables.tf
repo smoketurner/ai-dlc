@@ -18,7 +18,7 @@ variable "alert_emails" {
 variable "log_retention_days" {
   description = "CloudWatch Logs retention for the platform application group."
   type        = number
-  default     = 30
+  default     = 5
 }
 
 variable "daily_token_spend_alarm_usd" {

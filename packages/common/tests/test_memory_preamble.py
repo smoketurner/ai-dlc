@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,7 +12,9 @@ from common.agentcore_memory import MemoryRecord
 from common.errors import AgentCoreMemoryError
 from common.memory import (
     agent_memory_preamble,
+    agent_skills_preamble,
     memory_client,
+    parse_skill_frontmatter,
     render_memory_preamble,
 )
 
@@ -139,3 +142,70 @@ def test_preamble_returns_empty_when_no_records_match(
     )
 
     assert out == ""
+
+
+# --- skills preamble (agentskills.io folder layout) -----------------------
+
+
+def test_parse_skill_frontmatter_extracts_name_and_description() -> None:
+    content = (
+        "---\nname: handle-pagination\n"
+        "description: Use src/api/pagination.ts.\n"
+        "---\n\n## Body\n"
+    )
+    assert parse_skill_frontmatter(content) == (
+        "handle-pagination",
+        "Use src/api/pagination.ts.",
+    )
+
+
+def test_parse_skill_frontmatter_returns_none_without_frontmatter() -> None:
+    assert parse_skill_frontmatter("# Just a heading\n") is None
+
+
+def test_parse_skill_frontmatter_returns_none_when_required_keys_missing() -> None:
+    assert parse_skill_frontmatter("---\nname: foo\n---\n") is None
+    assert parse_skill_frontmatter("---\ndescription: x\n---\n") is None
+
+
+def test_skills_preamble_lists_canonical_folder_skills(tmp_path: Path) -> None:
+    """Walks ``<dir>/<slug>/SKILL.md`` (folder layout) under repo root."""
+    repo = tmp_path / "repo"
+    pagination = repo / ".aidlc" / "skills" / "handle-pagination"
+    pagination.mkdir(parents=True)
+    (pagination / "SKILL.md").write_text(
+        "---\nname: handle-pagination\n"
+        "description: Use src/api/pagination.ts.\n"
+        "---\n\n## Body\n",
+        encoding="utf-8",
+    )
+
+    out = agent_skills_preamble(fs_root=tmp_path)
+
+    assert "## Available skills" in out
+    assert "handle-pagination" in out
+    assert "Use src/api/pagination.ts" in out
+
+
+def test_skills_preamble_returns_empty_when_no_skills(tmp_path: Path) -> None:
+    (tmp_path / "repo").mkdir()
+    assert agent_skills_preamble(fs_root=tmp_path) == ""
+
+
+def test_skills_preamble_silently_skips_unparseable_skill(tmp_path: Path) -> None:
+    """A SKILL.md with no frontmatter is skipped, not crashed on."""
+    repo = tmp_path / "repo"
+    bad = repo / ".aidlc" / "skills" / "broken"
+    bad.mkdir(parents=True)
+    (bad / "SKILL.md").write_text("Just a body, no frontmatter.\n", encoding="utf-8")
+    good = repo / ".aidlc" / "skills" / "good-one"
+    good.mkdir(parents=True)
+    (good / "SKILL.md").write_text(
+        "---\nname: good-one\ndescription: Works.\n---\n\nBody.\n",
+        encoding="utf-8",
+    )
+
+    out = agent_skills_preamble(fs_root=tmp_path)
+
+    assert "good-one" in out
+    assert "broken" not in out

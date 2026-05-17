@@ -1,19 +1,31 @@
-"""Structured output schema for the Retrospector agent.
+"""Structured output schemas for the Retrospector agent.
 
-The agent reads a closed PR or issue + its comments, looks at the
-project's current ``MEMORY.md`` / ``AGENTS.md``, and decides whether
-the trace contains a lesson worth persisting. The
-:class:`RetrospectiveDecision` is the agent's final answer; the
-platform reads ``has_lesson`` to decide whether to open a PR.
+The Retrospector runs in two modes and emits a different schema for
+each:
 
-Two target files are supported:
+* ``capture`` (one invocation per PR-signal event) → :class:`CaptureDecision`
+  with zero or more :class:`LessonBullet` entries appended verbatim to
+  the destination's pending buffer in S3. No PR is opened.
+* ``consolidate`` (fanned out by a weekly scheduled rule, one
+  invocation per destination) → :class:`ConsolidationPlan` with
+  per-scope MEMORY.md additions, optional SKILL.md files, and the
+  buffer contents that didn't make this batch (carried forward to
+  next week).
 
-* ``MEMORY.md`` — strict six-section schema (overview, conventions,
-  decisions, constraints, glossary, notes). The agent must pick a
-  section; the platform parses and appends under that header.
-* ``AGENTS.md`` — free-form Markdown. The agent's addition is
-  appended as a new section / bullet at the end of the file. No
-  section field is consulted.
+Two destinations are supported:
+
+* ``target_repo`` — repo-specific lessons land in the target repo
+  (``MEMORY.md`` per-directory scopes, ``.aidlc/skills/<slug>.md``).
+* ``platform`` — agent-friction / validator-pattern / missing-tool
+  lessons land in the ai-dlc repo (``MEMORY.md`` /  ``AGENTS.md`` /
+  ``.claude/skills/<slug>.md``).
+
+Two artifact types are supported:
+
+* ``memory_md`` — strict six-section schema, picks a section.
+* ``skill_md`` — agentskills.io-style file (``name`` +
+  ``description`` frontmatter; ``body`` is optional, loaded on
+  demand by agents).
 """
 
 from __future__ import annotations
@@ -22,7 +34,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# Mirrors ``common.memory_md.Section`` — duplicated here so the agent's
+# Mirrors ``common.memory_md.Section`` — duplicated so the agent's
 # Pydantic schema doesn't pull a runtime dependency on the parser.
 Section = Literal[
     "overview",
@@ -33,122 +45,301 @@ Section = Literal[
     "notes",
 ]
 
-TargetFile = Literal["MEMORY.md", "AGENTS.md"]
+Destination = Literal["target_repo", "platform"]
+ArtifactType = Literal["memory_md", "skill_md"]
+
+SCORE_MIN = 1
+SCORE_MAX = 5
 
 
-class RetrospectiveDecision(BaseModel):
-    """The retrospector's verdict on one terminal event.
+class LessonBullet(BaseModel):
+    """One scored, scoped lesson candidate emitted in capture mode.
 
-    Either the trace yielded a reusable lesson (``has_lesson=True``)
-    and ``memory_md_addition`` is set with the proposed bullet, or
-    there's nothing worth recording (``has_lesson=False``) and the
-    addition fields are empty.
-
-    The validator enforces the consistency invariant so the platform
-    code can branch cleanly on ``has_lesson`` without re-checking.
+    Appended verbatim to the pending-lessons buffer for its
+    ``destination``. Consolidate mode reads the buffer, ranks bullets
+    holistically, and decides which to ship into a PR.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    has_lesson: bool = Field(
+    destination: Destination = Field(
         description=(
-            "True when the trace yielded a reusable insight worth "
-            "appending to the project's memory files. False when the "
-            "outcome was routine (clean merge with no comments, "
-            "ordinary close, etc.)."
+            "Where this lesson belongs: ``target_repo`` for "
+            "repo-specific conventions, gotchas, and code patterns; "
+            "``platform`` for validator false-positive patterns, "
+            "agent-friction signals, missing-tool symptoms — anything "
+            "that should improve ai-dlc itself rather than the target "
+            "repo."
         ),
     )
-    target_file: TargetFile | None = Field(
-        default=None,
+    artifact_type: ArtifactType = Field(
         description=(
-            "Where to write the addition: ``MEMORY.md`` (structured, "
-            "six-section schema — pick when the lesson fits one of "
-            "those buckets) or ``AGENTS.md`` (free-form, append at "
-            "end — pick when the lesson is project-context that "
-            "doesn't fit MEMORY.md's taxonomy). Required when "
-            "has_lesson is True; must be None when has_lesson is False."
+            "``memory_md`` for a bullet appended under a MEMORY.md "
+            "section. ``skill_md`` for a packaged multi-step "
+            "procedure worth carrying forward as an agent skill "
+            "(agentskills.io-style — name + description "
+            "frontmatter, optional body)."
+        ),
+    )
+    scope: Annotated[str, Field(min_length=1, max_length=256)] = Field(
+        description=(
+            "Path relative to the destination repo root. For "
+            "``memory_md`` this is a ``MEMORY.md`` file location "
+            "(``MEMORY.md``, ``src/api/MEMORY.md``, etc. — pick the "
+            "most specific path that fits). For ``skill_md`` this is "
+            "the skill *folder* (no ``.md`` suffix, no trailing "
+            "slash): ``.aidlc/skills/<slug>`` in target repos, "
+            "``.claude/skills/<slug>`` in the ai-dlc platform repo. "
+            "The platform appends ``/SKILL.md`` when writing."
         ),
     )
     section: Section | None = Field(
         default=None,
         description=(
-            "Which MEMORY.md section the addition belongs under: "
-            "overview / conventions / decisions / constraints / "
-            "glossary / notes. Required when target_file is "
-            "``MEMORY.md``; must be None for ``AGENTS.md`` and when "
-            "has_lesson is False."
+            "MEMORY.md section the bullet belongs under: overview / "
+            "conventions / decisions / constraints / glossary / "
+            "notes. Required when ``artifact_type=memory_md``; must "
+            "be None when ``artifact_type=skill_md``."
         ),
     )
-    lesson_summary: Annotated[str, Field(max_length=200)] = Field(
-        default="",
+    delta: Annotated[str, Field(min_length=1, max_length=400)] = Field(
         description=(
-            "One-sentence summary of the lesson (≤200 chars). Empty when has_lesson is False."
+            "The one-line bullet to add. ≤400 chars. Lead with the "
+            "rule or fact; the rationale goes in ``rationale``, not "
+            "here. For ``skill_md`` this is a one-line summary of "
+            "the skill (the full body goes in ``skill_body``)."
         ),
     )
-    memory_md_addition: Annotated[str, Field(max_length=2048)] = Field(
-        default="",
+    severity: Annotated[int, Field(ge=SCORE_MIN, le=SCORE_MAX)] = Field(
         description=(
-            "The exact text to append under ``section`` in "
-            "``MEMORY.md`` — typically a single bullet, optionally "
-            "with a short Why-line below it. Empty when has_lesson "
-            "is False."
+            "How bad if this lesson is ignored on the next similar "
+            "run, 1-5. 5 = will cause a run failure or wrong output; "
+            "1 = minor stylistic nudge."
+        ),
+    )
+    generalizability: Annotated[int, Field(ge=SCORE_MIN, le=SCORE_MAX)] = Field(
+        description=(
+            "How many future runs will benefit from this lesson, "
+            "1-5. 5 = applies to every run on this repo / every "
+            "agent in the platform; 1 = a one-off specific to this "
+            "PR."
         ),
     )
     confidence: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
-        default=0.0,
         description=(
-            "How confident the agent is that this lesson generalises "
-            "(0.0-1.0). Below 0.5 means treat as speculative; the "
-            "platform may still open the PR but the reviewer will "
-            "scrutinise harder."
+            "How confident the agent is the lesson generalises, "
+            "0.0-1.0. Below 0.5 means treat as speculative."
         ),
     )
-    rationale: Annotated[str, Field(max_length=2048)] = Field(
+    rationale: Annotated[str, Field(min_length=1, max_length=2048)] = Field(
         description=(
-            "Brief explanation of why this is or isn't a lesson — "
-            "always populated, even when has_lesson is False, so the "
-            "PR body can quote the agent's reasoning."
+            "Why this is a lesson. Quote the validator finding, "
+            "reviewer comment, or check log verbatim where useful — "
+            "the consolidate pass uses this when writing the PR body."
+        ),
+    )
+    evidence: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=512)]],
+        Field(max_length=16),
+    ] = Field(
+        default_factory=list,
+        description=(
+            "S3 keys, GitHub URLs, or other pointers a reviewer can "
+            "follow to verify the bullet. Capped at 16 entries."
+        ),
+    )
+    skill_name: Annotated[str, Field(max_length=64)] = Field(
+        default="",
+        description=(
+            "agentskills.io ``name`` frontmatter field — short slug "
+            "matching the filename stem. Required when "
+            "``artifact_type=skill_md``; empty otherwise."
+        ),
+    )
+    skill_description: Annotated[str, Field(max_length=500)] = Field(
+        default="",
+        description=(
+            "agentskills.io ``description`` frontmatter field — one "
+            "sentence (≤500 chars) describing when an agent should "
+            "load this skill. Required when ``artifact_type=skill_md``; "
+            "empty otherwise."
+        ),
+    )
+    skill_body: Annotated[str, Field(max_length=16384)] = Field(
+        default="",
+        description=(
+            "Skill body markdown — the procedure / steps / examples "
+            "an agent reads after it decides to load the skill. "
+            "Required when ``artifact_type=skill_md``; empty otherwise."
         ),
     )
 
     @model_validator(mode="after")
-    def consistent_lesson_fields(self) -> RetrospectiveDecision:
-        """Enforce field consistency between has_lesson / target_file / section."""
-        if self.has_lesson:
-            self._validate_lesson_fields()
+    def consistent_artifact_fields(self) -> LessonBullet:
+        """Enforce the memory_md / skill_md mutual-exclusion contract."""
+        if self.artifact_type == "memory_md":
+            self._validate_memory_md_fields()
         else:
-            self._validate_no_lesson_fields()
+            self._validate_skill_md_fields()
         return self
 
-    def _validate_lesson_fields(self) -> None:
-        """Has-lesson branch: target_file + section + summary + addition required."""
-        if self.target_file is None:
-            msg = "has_lesson=True requires target_file"
+    def _validate_memory_md_fields(self) -> None:
+        if self.section is None:
+            msg = "artifact_type=memory_md requires section"
             raise ValueError(msg)
-        if self.target_file == "MEMORY.md" and self.section is None:
-            msg = "target_file=MEMORY.md requires section"
-            raise ValueError(msg)
-        if self.target_file == "AGENTS.md" and self.section is not None:
-            msg = "target_file=AGENTS.md must not set section (file is free-form)"
-            raise ValueError(msg)
-        if not self.lesson_summary.strip():
-            msg = "has_lesson=True requires a non-empty lesson_summary"
-            raise ValueError(msg)
-        if not self.memory_md_addition.strip():
-            msg = "has_lesson=True requires a non-empty memory_md_addition"
+        if self.skill_name or self.skill_description or self.skill_body:
+            msg = "artifact_type=memory_md must not set skill_* fields"
             raise ValueError(msg)
 
-    def _validate_no_lesson_fields(self) -> None:
-        """No-lesson branch: every populated field is a contradiction."""
-        if self.target_file is not None:
-            msg = "has_lesson=False but target_file is set"
-            raise ValueError(msg)
+    def _validate_skill_md_fields(self) -> None:
         if self.section is not None:
-            msg = "has_lesson=False but section is set"
+            msg = "artifact_type=skill_md must not set section"
             raise ValueError(msg)
-        if self.lesson_summary.strip():
-            msg = "has_lesson=False but lesson_summary is non-empty"
+        if not self.skill_name.strip():
+            msg = "artifact_type=skill_md requires skill_name"
             raise ValueError(msg)
-        if self.memory_md_addition.strip():
-            msg = "has_lesson=False but memory_md_addition is non-empty"
+        if not self.skill_description.strip():
+            msg = "artifact_type=skill_md requires skill_description"
             raise ValueError(msg)
+        if not self.skill_body.strip():
+            msg = "artifact_type=skill_md requires skill_body"
+            raise ValueError(msg)
+
+
+class CaptureDecision(BaseModel):
+    """Output of capture mode — zero or more bullets to append.
+
+    Empty ``bullets`` is the routine case (clean run, no signal worth
+    recording). ``rationale`` is always populated so the dispatcher
+    log shows why the agent did or didn't add anything.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    bullets: Annotated[list[LessonBullet], Field(max_length=8)] = Field(
+        default_factory=list,
+        description=(
+            "Zero or more bullets to append to their destinations' "
+            "buffers. Cap of 8 per invocation — if you find more, "
+            "pick the highest-severity ones; the rest will surface on "
+            "the next similar event."
+        ),
+    )
+    rationale: Annotated[str, Field(min_length=1, max_length=2048)] = Field(
+        description=(
+            "Why this set of bullets (or none). Always populated."
+        ),
+    )
+
+
+class MemoryAddition(BaseModel):
+    """One MEMORY.md addition emitted by consolidate mode."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scope: Annotated[str, Field(min_length=1, max_length=256)] = Field(
+        description="MEMORY.md file path (root or nested per directory).",
+    )
+    section: Section = Field(description="Which section to append under.")
+    addition: Annotated[str, Field(min_length=1, max_length=4096)] = Field(
+        description="Text to append under the section header.",
+    )
+
+
+class SkillFile(BaseModel):
+    """One agentskills.io-format skill emitted by consolidate mode.
+
+    The platform writes the body to ``<scope>/SKILL.md`` so the file
+    layout matches the canonical agentskills.io schema (one slug
+    folder per skill, each containing a literal ``SKILL.md``). Future
+    iterations can add ``scripts/`` / ``references/`` / ``assets/``
+    inside the same folder without breaking the schema.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    scope: Annotated[str, Field(min_length=1, max_length=256)] = Field(
+        description=(
+            "Slug folder path (no trailing slash, no ``SKILL.md`` "
+            "suffix): ``.aidlc/skills/<slug>`` in target repos, "
+            "``.claude/skills/<slug>`` in the platform repo. The "
+            "platform appends ``/SKILL.md`` when writing the file."
+        ),
+    )
+    name: Annotated[str, Field(min_length=1, max_length=64)] = Field(
+        description="agentskills.io frontmatter ``name`` (matches the slug).",
+    )
+    description: Annotated[str, Field(min_length=1, max_length=500)] = Field(
+        description="agentskills.io frontmatter ``description`` (one sentence).",
+    )
+    body: Annotated[str, Field(min_length=1, max_length=16384)] = Field(
+        description="Skill body Markdown — procedure / steps / examples.",
+    )
+
+    @model_validator(mode="after")
+    def scope_is_slug_folder(self) -> SkillFile:
+        """``scope`` must be a folder path, not a file — block stray ``.md`` suffix."""
+        if self.scope.endswith(".md") or self.scope.endswith("/"):
+            msg = (
+                "SkillFile.scope must be a slug folder path (no ``.md`` suffix, "
+                "no trailing slash); the platform appends ``/SKILL.md``."
+            )
+            raise ValueError(msg)
+        return self
+
+
+class ConsolidationPlan(BaseModel):
+    """Output of consolidate mode — patches to open as PRs.
+
+    The agent reads the destination's pending-lessons events (one event
+    per bullet, in AgentCore Memory) and emits the patches it wants to
+    ship plus the event IDs to remove. Bullets whose event IDs appear
+    in ``shipped_event_ids`` or ``discarded_event_ids`` are deleted;
+    everything else is deferred automatically — no buffer to re-render.
+
+    The platform opens one MEMORY.md PR when ``memory_additions`` is
+    non-empty and one SKILL.md PR when ``skill_files`` is non-empty.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    memory_additions: Annotated[list[MemoryAddition], Field(max_length=32)] = Field(
+        default_factory=list,
+        description=(
+            "MEMORY.md additions to ship this batch, grouped per "
+            "scope+section. Multiple additions to the same "
+            "scope+section are collapsed into one section-edit."
+        ),
+    )
+    skill_files: Annotated[list[SkillFile], Field(max_length=8)] = Field(
+        default_factory=list,
+        description="SKILL.md files to create in this batch.",
+    )
+    shipped_event_ids: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=256)]],
+        Field(max_length=64),
+    ] = Field(
+        default_factory=list,
+        description=(
+            "Event IDs of bullets that materialised into "
+            "``memory_additions`` / ``skill_files`` this batch. The "
+            "platform deletes these events after the PR is opened."
+        ),
+    )
+    discarded_event_ids: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=256)]],
+        Field(max_length=128),
+    ] = Field(
+        default_factory=list,
+        description=(
+            "Event IDs of bullets you judged too low-value or noisy "
+            "to keep (score < 4 with no recurrence). The platform "
+            "deletes these events without opening any PR for them."
+        ),
+    )
+    rationale: Annotated[str, Field(min_length=1, max_length=4096)] = Field(
+        description=(
+            "Why this set of patches and these deletions. Used in "
+            "the PR body so reviewers see your reasoning."
+        ),
+    )
