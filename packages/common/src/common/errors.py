@@ -79,3 +79,7 @@ class S3ArtifactError(AidlcError):
 
 class GitOpError(AidlcError):
     """A git or GitHub operation failed."""
+
+
+class EventEmitError(AidlcError):
+    """An EventBridge ``PutEvents`` call rejected one or more entries."""
