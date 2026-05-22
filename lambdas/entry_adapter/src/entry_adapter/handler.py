@@ -31,6 +31,9 @@ from aws_lambda_powertools.utilities.idempotency import (
     IdempotencyConfig,
     idempotent_function,
 )
+from aws_lambda_powertools.utilities.idempotency.exceptions import (
+    IdempotencyAlreadyInProgressError,
+)
 from aws_lambda_powertools.utilities.typing import LambdaContext
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -111,7 +114,19 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         req = RunRequest.model_validate(body)
     except ValidationError as exc:
         return response(400, {"error": "validation_error", "detail": json.loads(exc.json())})
-    accepted = accept_run(request=req.model_dump())
+    try:
+        accepted = accept_run(request=req.model_dump())
+    except IdempotencyAlreadyInProgressError:
+        return response(
+            409,
+            {
+                "error": "in_progress",
+                "detail": (
+                    "A request with this idempotency_key is already being processed; "
+                    "retry with the same key to receive the cached response."
+                ),
+            },
+        )
     return response(202, accepted)
 
 
