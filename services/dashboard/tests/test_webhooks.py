@@ -16,6 +16,9 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from aws_lambda_powertools.utilities.idempotency.exceptions import (
+    IdempotencyAlreadyInProgressError,
+)
 from fastapi import HTTPException
 
 from common.events import EventEnvelope, RequestReceived
@@ -576,6 +579,41 @@ async def test_issue_comment_bot_mention_emits_request_received(
     await post_webhook(event_type="issue_comment", payload=payload)
     assert len(captured_events) == 1
     assert captured_events[0].type == "REQUEST.RECEIVED"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_issue_comment_returns_409(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """Concurrent webhook delivery against an INPROGRESS record → 409, not 500."""
+
+    def raise_in_progress(*, trigger: dict[str, Any]) -> dict[str, Any]:
+        raise IdempotencyAlreadyInProgressError("already running")
+
+    monkeypatch.setattr(
+        "dashboard.routes.webhooks.trigger_request_received",
+        raise_in_progress,
+    )
+    payload = {
+        "action": "created",
+        "comment": {
+            "body": f"@{BOT_LOGIN} please look at this",
+            "user": {"login": "alice", "type": "User"},
+        },
+        "issue": {
+            "html_url": "https://github.com/o/r/issues/9",
+            "title": "x",
+            "number": 9,
+            "user": {"login": "alice"},
+            "labels": [],
+        },
+        "repository": {"full_name": "o/r"},
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        await post_webhook(event_type="issue_comment", payload=payload)
+    assert exc_info.value.status_code == 409
+    assert captured_events == []
 
 
 @pytest.mark.asyncio

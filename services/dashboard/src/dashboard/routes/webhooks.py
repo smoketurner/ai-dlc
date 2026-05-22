@@ -49,6 +49,9 @@ from aws_lambda_powertools.utilities.idempotency import (
     IdempotencyConfig,
     idempotent_function,
 )
+from aws_lambda_powertools.utilities.idempotency.exceptions import (
+    IdempotencyAlreadyInProgressError,
+)
 from fastapi import APIRouter, HTTPException, Request, status
 
 from common import github_app as common_github
@@ -915,13 +918,22 @@ def emit_request_received(
                 "source_issue_url": source_issue_url,
             },
         )
-    return trigger_request_received(
-        trigger={
-            "delivery_id": delivery_id,
-            "payload": payload,
-            "source_issue_url": source_issue_url,
-        },
-    )
+    try:
+        return trigger_request_received(
+            trigger={
+                "delivery_id": delivery_id,
+                "payload": payload,
+                "source_issue_url": source_issue_url,
+            },
+        )
+    except IdempotencyAlreadyInProgressError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A webhook delivery with this id is already being processed; "
+                "GitHub will retry and the cached response will be returned."
+            ),
+        ) from exc
 
 
 def build_issue_context(

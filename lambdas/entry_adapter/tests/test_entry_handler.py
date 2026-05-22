@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -130,3 +132,37 @@ def test_replay_returns_same_run_id() -> None:
     second = submit(body)
     run_id = json.loads(first["body"])["run_id"]
     assert json.loads(second["body"])["run_id"] == run_id
+
+
+def test_concurrent_request_with_in_progress_record_returns_409() -> None:
+    """Concurrent request against an INPROGRESS record → 409, not a Lambda crash."""
+    idempotency_key = "client-concurrent-test-12345678"
+    hash_part = hashlib.md5(  # noqa: S324 — Powertools uses md5 internally
+        json.dumps(idempotency_key, sort_keys=True).encode(),
+    ).hexdigest()
+    ddb_key = f"test-func.entry_adapter.handler.accept_run#{hash_part}"
+    now_ms = int(time.time() * 1000)
+    expires_at = int(time.time()) + 3600
+    in_progress_expiry_ms = now_ms + 300_000
+
+    boto3.client("dynamodb").put_item(
+        TableName=TABLE,
+        Item={
+            "idempotency_key": {"S": ddb_key},
+            "status": {"S": "INPROGRESS"},
+            "expires_at": {"N": str(expires_at)},
+            "in_progress_expiration": {"N": str(in_progress_expiry_ms)},
+        },
+    )
+
+    out = submit(
+        {
+            "project_slug": "demo",
+            "intent": "x",
+            "requestor": "alice",
+            "idempotency_key": idempotency_key,
+        },
+    )
+    assert out["statusCode"] == 409
+    body = json.loads(out["body"])
+    assert body["error"] == "in_progress"
