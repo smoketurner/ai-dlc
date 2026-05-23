@@ -217,14 +217,15 @@ def apply_metadata_projections(
     Always-on (set_if_not_exists): ``project_slug``,
     ``source_issue_url`` + ``gsi1pk`` / ``gsi1sk`` (for issue
     lookup), ``source_issue_title``, ``source_issue_body``,
-    ``requestor``, ``target_repo``, ``intent``. These are all
-    invariant for the lifetime of a run.
+    ``requestor``, ``requestor_sub``, ``target_repo``, ``intent``.
+    These are all invariant for the lifetime of a run.
 
     Per-event: ``pr_url`` + ``gsi_pr`` on ``IMPL_PR.OPENED`` (PR
     lookup index for webhooks).
     """
     set_if_truthy(update, "project_slug", payload.get("project_slug"), if_not_exists=True)
     set_if_truthy(update, "requestor", payload.get("requestor"), if_not_exists=True)
+    set_if_truthy(update, "requestor_sub", payload.get("requestor_sub"), if_not_exists=True)
     set_if_truthy(update, "target_repo", payload.get("target_repo"), if_not_exists=True)
     set_if_truthy(update, "intent", payload.get("intent"), if_not_exists=True)
     source_issue_url = payload.get("source_issue_url")

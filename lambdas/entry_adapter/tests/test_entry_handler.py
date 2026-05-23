@@ -16,6 +16,8 @@ from entry_adapter.handler import handler, persistence
 from moto import mock_aws
 
 from common.event_emit import events_client as events
+from common.ids import new_correlation_id, new_run_id
+from entry_adapter import handler as entry_handler_module
 
 BUS = "ai-dlc-test-bus"
 TABLE = "ai-dlc-test-idempotency"
@@ -60,9 +62,23 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     events.cache_clear()
 
 
-def submit(body: dict[str, Any]) -> dict[str, Any]:
-    """Invoke the handler with an API Gateway proxy event."""
-    return handler({"body": json.dumps(body), "isBase64Encoded": False}, ctx())
+def submit(
+    body: dict[str, Any],
+    *,
+    cognito_sub: str | None = None,
+) -> dict[str, Any]:
+    """Invoke the handler with an API Gateway proxy event.
+
+    When ``cognito_sub`` is supplied the event carries an
+    API-Gateway-v2-shaped JWT authorizer context so the handler can
+    extract the claim.
+    """
+    event: dict[str, Any] = {"body": json.dumps(body), "isBase64Encoded": False}
+    if cognito_sub is not None:
+        event["requestContext"] = {
+            "authorizer": {"jwt": {"claims": {"sub": cognito_sub}}},
+        }
+    return handler(event, ctx())
 
 
 def test_first_submission_returns_202() -> None:
@@ -132,6 +148,58 @@ def test_replay_returns_same_run_id() -> None:
     second = submit(body)
     run_id = json.loads(first["body"])["run_id"]
     assert json.loads(second["body"])["run_id"] == run_id
+
+
+def test_requestor_sub_from_jwt_claims_is_forwarded_to_start_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """API-Gateway JWT-authorizer ``sub`` claim flows through to ``start_run``."""
+    captured: dict[str, Any] = {}
+
+    def fake_start_run(**kwargs: Any) -> tuple[Any, Any]:
+        captured.update(kwargs)
+        return new_run_id(), new_correlation_id()
+
+    monkeypatch.setattr(entry_handler_module, "start_run", fake_start_run)
+
+    out = submit(
+        {
+            "project_slug": "demo",
+            "intent": "x",
+            "requestor": "alice@example.com",
+            "idempotency_key": "client-claim-12345678",
+        },
+        cognito_sub="cognito-user-uuid-1",
+    )
+
+    assert out["statusCode"] == 202
+    assert captured["requestor_sub"] == "cognito-user-uuid-1"
+    assert captured["requestor"] == "alice@example.com"
+
+
+def test_missing_authorizer_context_leaves_requestor_sub_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct invocations without an authorizer context send ``requestor_sub=None``."""
+    captured: dict[str, Any] = {}
+
+    def fake_start_run(**kwargs: Any) -> tuple[Any, Any]:
+        captured.update(kwargs)
+        return new_run_id(), new_correlation_id()
+
+    monkeypatch.setattr(entry_handler_module, "start_run", fake_start_run)
+
+    out = submit(
+        {
+            "project_slug": "demo",
+            "intent": "x",
+            "requestor": "alice",
+            "idempotency_key": "client-noclaim-12345678",
+        },
+    )
+
+    assert out["statusCode"] == 202
+    assert captured["requestor_sub"] is None
 
 
 def test_concurrent_request_with_in_progress_record_returns_409() -> None:

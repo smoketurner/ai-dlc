@@ -83,6 +83,7 @@ def accept_run(*, request: dict[str, Any]) -> dict[str, Any]:
         project_slug=request["project_slug"],
         intent=request["intent"],
         requestor=request["requestor"],
+        requestor_sub=request.get("requestor_sub"),
         target_repo=request.get("target_repo"),
     )
     metrics.add_metric(name="RunsAccepted", unit=MetricUnit.Count, value=1)
@@ -114,8 +115,12 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         req = RunRequest.model_validate(body)
     except ValidationError as exc:
         return response(400, {"error": "validation_error", "detail": json.loads(exc.json())})
+    request_payload = req.model_dump()
+    requestor_sub = extract_requestor_sub(event)
+    if requestor_sub:
+        request_payload["requestor_sub"] = requestor_sub
     try:
-        accepted = accept_run(request=req.model_dump())
+        accepted = accept_run(request=request_payload)
     except IdempotencyAlreadyInProgressError:
         return response(
             409,
@@ -137,3 +142,20 @@ def response(status: int, body: dict[str, Any]) -> dict[str, Any]:
         "headers": {"content-type": "application/json"},
         "body": json.dumps(body),
     }
+
+
+def extract_requestor_sub(event: dict[str, Any]) -> str | None:
+    """Pull the Cognito ``sub`` claim out of the API Gateway authorizer context.
+
+    API Gateway v2 (HTTP API) with a JWT authorizer + payload format 2.0
+    delivers claims at ``requestContext.authorizer.jwt.claims``; REST API v1
+    with a Cognito User Pool authorizer puts them at
+    ``requestContext.authorizer.claims``. Both are checked so the handler
+    remains correct if the API definition is ever flipped between flavors.
+    Returns ``None`` for non-API-Gateway invocations (direct invokes,
+    integration tests) where no authorizer context is present.
+    """
+    authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
+    claims = (authorizer.get("jwt") or {}).get("claims") or authorizer.get("claims") or {}
+    sub = claims.get("sub")
+    return sub if isinstance(sub, str) and sub else None

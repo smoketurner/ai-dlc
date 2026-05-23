@@ -151,6 +151,26 @@ def test_request_received_creates_event_row_and_summary(runs_table: Any) -> None
     assert summary["target_repo"]["S"] == "alice/repo"
 
 
+def test_requestor_sub_is_projected_onto_summary(runs_table: Any) -> None:
+    """``requestor_sub`` from REQUEST.RECEIVED lands on the SUMMARY row."""
+    env = envelope(
+        event_type="REQUEST.RECEIVED",
+        event_id="evt-sub",
+        payload={
+            "project_slug": "demo",
+            "intent": "fix bug",
+            "requestor": "alice@example.com",
+            "requestor_sub": "cognito-user-uuid-1",
+            "target_repo": "alice/repo",
+        },
+    )
+    result = project_event(eb_event(env), ctx())
+    assert result["committed"] is True
+    summary = state_of("run-1", runs_table)
+    assert summary["requestor_sub"]["S"] == "cognito-user-uuid-1"
+    assert summary["requestor"]["S"] == "alice@example.com"
+
+
 def test_design_ready_accumulates_usage_and_advances_status(runs_table: Any) -> None:
     """``DESIGN.READY`` updates the status and adds token/cost totals."""
     project_event(
