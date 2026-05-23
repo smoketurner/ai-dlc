@@ -791,6 +791,73 @@ async def test_check_run_for_unknown_pr_ignored(
 
 
 # ---------------------------------------------------------------------------
+# Webhook redelivery — deterministic event_id per (delivery_id, event_type)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_checks_failed_redelivery_collides_on_event_id(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """A GitHub redelivery of the same Checks failure must emit an identical event_id.
+
+    Reproduces issue #83: the original handler minted a fresh
+    ``event_id`` per delivery, so a redelivered ``CHECKS.FAILED`` looked
+    like a new trigger to the state-router and the dispatch-marker check
+    in ``has_event_after`` could no longer suppress duplicates. With the
+    fix, ``event_id`` is derived from ``(delivery_id, event_type)`` and
+    redeliveries collide on the projector's ``EVENT#{event_id}`` row.
+    """
+    stub_pr_lookup(monkeypatch)
+    stub_check_state(monkeypatch, "failed")
+    payload = _checks_payload("workflow_run")
+    await post_webhook(event_type="workflow_run", payload=payload, delivery_id="dlv-redeliver")
+    await post_webhook(event_type="workflow_run", payload=payload, delivery_id="dlv-redeliver")
+    assert [e.type for e in captured_events] == ["CHECKS.FAILED", "CHECKS.FAILED"]
+    assert captured_events[0].event_id == captured_events[1].event_id
+
+
+@pytest.mark.asyncio
+async def test_distinct_deliveries_produce_distinct_event_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """Two genuinely distinct webhook deliveries must keep distinct event ids."""
+    stub_pr_lookup(monkeypatch)
+    stub_check_state(monkeypatch, "failed")
+    payload = _checks_payload("workflow_run")
+    await post_webhook(event_type="workflow_run", payload=payload, delivery_id="dlv-1")
+    await post_webhook(event_type="workflow_run", payload=payload, delivery_id="dlv-2")
+    assert captured_events[0].event_id != captured_events[1].event_id
+
+
+@pytest.mark.asyncio
+async def test_iteration_redelivery_collides_on_event_id(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """A redelivered ``IMPL.ITERATION_REQUESTED`` collides on event_id too."""
+    stub_pr_lookup(monkeypatch)
+    payload = {
+        "action": "created",
+        "comment": {
+            "body": f"@{BOT_LOGIN} please update tests",
+            "id": 7,
+            "user": {"login": "alice"},
+        },
+        "issue": {"pull_request": {"html_url": "https://github.com/o/r/pull/1"}},
+    }
+    await post_webhook(event_type="issue_comment", payload=payload, delivery_id="dlv-iter")
+    await post_webhook(event_type="issue_comment", payload=payload, delivery_id="dlv-iter")
+    assert [e.type for e in captured_events] == [
+        "IMPL.ITERATION_REQUESTED",
+        "IMPL.ITERATION_REQUESTED",
+    ]
+    assert captured_events[0].event_id == captured_events[1].event_id
+
+
+# ---------------------------------------------------------------------------
 # Unknown event type
 # ---------------------------------------------------------------------------
 

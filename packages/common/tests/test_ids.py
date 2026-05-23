@@ -5,11 +5,16 @@ from __future__ import annotations
 import re
 
 from common.ids import (
+    event_id_for_delivery,
     new_approval_id,
     new_correlation_id,
     new_event_id,
     new_run_id,
     new_session_id,
+)
+
+_UUID5_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
 )
 
 _UUID7_RE = re.compile(
@@ -43,3 +48,29 @@ def test_event_ids_are_chronologically_sortable() -> None:
 def test_distinct_id_kinds_unique() -> None:
     samples = {new_run_id(), new_event_id(), new_correlation_id(), new_approval_id()}
     assert len(samples) == 4
+
+
+def test_event_id_for_delivery_is_uuid5() -> None:
+    eid = event_id_for_delivery(delivery_id="dlv-1", event_type="CHECKS.FAILED")
+    assert _UUID5_RE.match(eid), f"not a UUID5: {eid}"
+
+
+def test_event_id_for_delivery_is_deterministic() -> None:
+    """Same ``(delivery_id, event_type)`` tuple → same event id every time."""
+    a = event_id_for_delivery(delivery_id="dlv-42", event_type="CHECKS.FAILED")
+    b = event_id_for_delivery(delivery_id="dlv-42", event_type="CHECKS.FAILED")
+    assert a == b
+
+
+def test_event_id_for_delivery_distinguishes_event_type() -> None:
+    """One redelivery that fans out to two event types must not collide."""
+    a = event_id_for_delivery(delivery_id="dlv-42", event_type="CHECKS.FAILED")
+    b = event_id_for_delivery(delivery_id="dlv-42", event_type="CHECKS.PASSED")
+    assert a != b
+
+
+def test_event_id_for_delivery_distinguishes_delivery_id() -> None:
+    """Distinct webhook deliveries must produce distinct event ids."""
+    a = event_id_for_delivery(delivery_id="dlv-1", event_type="CHECKS.FAILED")
+    b = event_id_for_delivery(delivery_id="dlv-2", event_type="CHECKS.FAILED")
+    assert a != b

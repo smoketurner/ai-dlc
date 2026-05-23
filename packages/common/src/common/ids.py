@@ -36,6 +36,31 @@ def new_event_id() -> EventId:
     return EventId(_uuid7())
 
 
+# Stable namespace for deriving deterministic webhook event ids. Derived
+# once via ``uuid5(NAMESPACE_DNS, "github-webhook.ai-dlc")``; hard-coding
+# it here freezes the namespace so the same ``(delivery_id, event_type)``
+# tuple maps to the same ``event_id`` forever.
+_WEBHOOK_NAMESPACE = uuid_utils.UUID("c1e3150c-f6f7-5602-b89e-beee463958e7")
+
+
+def event_id_for_delivery(*, delivery_id: str, event_type: str) -> EventId:
+    """Derive a deterministic event id from a GitHub delivery id + event type.
+
+    GitHub redelivers a webhook with the same ``X-GitHub-Delivery`` header
+    on timeout or non-2xx response. Hashing the delivery id (plus the
+    platform event type, so one delivery that fans out to multiple
+    envelopes still produces distinct ids per envelope) into a UUID5
+    means a redelivery hits the same ``EVENT#{event_id}`` row in DDB and
+    the projector's ``condition_not_exists("sk")`` no-ops the duplicate.
+
+    Args:
+        delivery_id: ``X-GitHub-Delivery`` header from the webhook.
+        event_type: The platform event type being emitted (e.g.
+            ``"CHECKS.FAILED"``).
+    """
+    return EventId(str(uuid_utils.uuid5(_WEBHOOK_NAMESPACE, f"{delivery_id}:{event_type}")))
+
+
 def new_session_id(*, agent_name: str, run_id: RunId) -> SessionId:
     """Build a deterministic session id from an agent name and run id.
 
