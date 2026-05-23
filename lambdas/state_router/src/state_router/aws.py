@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import boto3
 from aws_lambda_powertools import Logger, Tracer
 from botocore.config import Config
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from common.trace_context import current_trace_context
 from state_router.config import (
@@ -79,8 +79,10 @@ def dispatch_to_runtime(
 
     Fire-and-forget — the agent's container spawns a daemon thread
     and the frontend returns ``{"status": "dispatched"}`` synchronously.
-    A :class:`ReadTimeoutError` or :class:`ClientError` is a real
-    failure; the executor emits ``RUN.FAILED`` instead of wedging.
+    Any :class:`BotoCoreError` (read/connect timeouts, endpoint
+    resolution, etc.) or :class:`ClientError` is a real failure; the
+    executor emits ``RUN.FAILED`` instead of wedging on a marker that
+    was published before the invoke raised.
     """
     try:
         runtime_client().invoke_agent_runtime(
@@ -93,14 +95,11 @@ def dispatch_to_runtime(
             payload=json.dumps(payload, default=str).encode("utf-8"),
             **current_trace_context(),
         )
-    except ReadTimeoutError:
+    except (BotoCoreError, ClientError) as exc:
         logger.warning(
-            "dispatch read timeout — treating as failure",
-            extra={"runtime_arn": runtime_arn},
+            "dispatch failed",
+            extra={"runtime_arn": runtime_arn, "err": str(exc)},
         )
-        return False
-    except ClientError as exc:
-        logger.warning("dispatch failed", extra={"runtime_arn": runtime_arn, "err": str(exc)})
         return False
     logger.info("dispatched", extra={"runtime_arn": runtime_arn})
     return True
