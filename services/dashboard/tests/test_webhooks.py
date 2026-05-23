@@ -26,6 +26,7 @@ from common.ids import CorrelationId, RunId, new_correlation_id, new_event_id, n
 from common.runs import IssueContext
 from dashboard.routes.webhooks import (
     build_issue_context,
+    lookup_run_by_issue,
     receive_github_webhook,
     verify_signature,
     webhook_secret,
@@ -116,16 +117,16 @@ def captured_events(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]
     return captured
 
 
-def _state_row(
+def _summary_row(
     *,
     project_slug: str = "demo",
     correlation_id: str = "cor-1",
     run_id: str = "run-1",
 ) -> dict[str, Any]:
-    """Build a canned STATE row that ``lookup_pr`` returns for the impl PR."""
+    """Build a canned SUMMARY row that ``lookup_pr`` returns for the impl PR."""
     return {
         "pk": {"S": f"RUN#{run_id}"},
-        "sk": {"S": "STATE"},
+        "sk": {"S": "SUMMARY"},
         "project_slug": {"S": project_slug},
         "correlation_id": {"S": correlation_id},
     }
@@ -138,8 +139,8 @@ def stub_pr_lookup(
     correlation_id: str = "cor-1",
     run_id: str = "run-1",
 ) -> dict[str, Any]:
-    """Replace ``lookup_pr`` so it returns a canned STATE row."""
-    row = _state_row(project_slug=project_slug, correlation_id=correlation_id, run_id=run_id)
+    """Replace ``lookup_pr`` so it returns a canned SUMMARY row."""
+    row = _summary_row(project_slug=project_slug, correlation_id=correlation_id, run_id=run_id)
     monkeypatch.setattr("dashboard.routes.webhooks.lookup_pr", lambda _url: row)
     return row
 
@@ -155,14 +156,9 @@ def stub_run_by_issue(
     run_id: str = "run-1",
     project_slug: str = "demo",
 ) -> None:
-    """Replace ``lookup_run_by_issue`` with a canned STATE row."""
-    state = {
-        "pk": {"S": f"RUN#{run_id}"},
-        "sk": {"S": "STATE"},
-        "project_slug": {"S": project_slug},
-        "correlation_id": {"S": "cor-1"},
-    }
-    monkeypatch.setattr("dashboard.routes.webhooks.lookup_run_by_issue", lambda _url: state)
+    """Replace ``lookup_run_by_issue`` with a canned SUMMARY row."""
+    summary = _summary_row(project_slug=project_slug, run_id=run_id)
+    monkeypatch.setattr("dashboard.routes.webhooks.lookup_run_by_issue", lambda _url: summary)
 
 
 def stub_check_state(monkeypatch: pytest.MonkeyPatch, state: str) -> None:
@@ -217,6 +213,35 @@ def test_verify_signature_rejects_missing_header() -> None:
 def test_verify_signature_rejects_bad_signature() -> None:
     with pytest.raises(HTTPException):
         verify_signature(body=b"x", signature_header="sha256=00")
+
+
+# ---------------------------------------------------------------------------
+# lookup_run_by_issue — single GSI1 query, returns the SUMMARY row directly
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_run_by_issue_returns_first_gsi1_item_without_second_get_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``gsi1`` projects ALL attributes — one query is enough."""
+    summary = _summary_row()
+    fake_ddb = MagicMock()
+    fake_ddb.query.return_value = {"Items": [summary]}
+    monkeypatch.setattr("dashboard.routes.webhooks.ddb", lambda: fake_ddb)
+    result = lookup_run_by_issue("https://github.com/o/r/issues/9")
+    assert result is summary
+    fake_ddb.query.assert_called_once()
+    fake_ddb.get_item.assert_not_called()
+
+
+def test_lookup_run_by_issue_returns_none_when_gsi1_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_ddb = MagicMock()
+    fake_ddb.query.return_value = {"Items": []}
+    monkeypatch.setattr("dashboard.routes.webhooks.ddb", lambda: fake_ddb)
+    assert lookup_run_by_issue("https://github.com/o/r/issues/9") is None
+    fake_ddb.get_item.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

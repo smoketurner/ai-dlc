@@ -15,6 +15,7 @@ from retrospector_dispatcher.handler import (
     build_capture_input,
     derive_target_repo,
     handler,
+    lookup_run_requester,
 )
 
 
@@ -304,6 +305,55 @@ def test_scheduled_consolidate_dedupes_repeated_project_slugs(
     # Platform + one (deduped) project.
     expected_invocations = 2
     assert fake_agentcore.invoke_agent_runtime.call_count == expected_invocations
+
+
+def test_active_projects_scan_filters_on_summary_sk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scan must filter for ``sk=SUMMARY`` — that's where the projector writes."""
+    fake_agentcore = MagicMock()
+    fake_ddb = MagicMock()
+    paginator = MagicMock()
+    paginator.paginate.return_value = iter(scan_pages([]))
+    fake_ddb.get_paginator.return_value = paginator
+    monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake_agentcore)
+    monkeypatch.setattr(dispatcher, "ddb_client", lambda: fake_ddb)
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
+
+    handler({"detail-type": "SCHEDULED.LESSONS_CONSOLIDATE", "detail": {}}, ctx())
+
+    kwargs = paginator.paginate.call_args.kwargs
+    assert kwargs["ExpressionAttributeValues"][":sk"] == {"S": "SUMMARY"}
+
+
+# --- lookup_run_requester — reads SUMMARY, projects only requestor --------
+
+
+def test_lookup_run_requester_reads_summary_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_ddb = MagicMock()
+    fake_ddb.get_item.return_value = {"Item": {"requestor": {"S": "alice"}}}
+    monkeypatch.setattr(dispatcher, "ddb_client", lambda: fake_ddb)
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
+
+    sub, requestor = lookup_run_requester("run-1")
+
+    assert (sub, requestor) == (None, "alice")
+    kwargs = fake_ddb.get_item.call_args.kwargs
+    assert kwargs["Key"] == {"pk": {"S": "RUN#run-1"}, "sk": {"S": "SUMMARY"}}
+    assert kwargs["ProjectionExpression"] == "requestor"
+
+
+def test_lookup_run_requester_returns_none_when_summary_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_ddb = MagicMock()
+    fake_ddb.get_item.return_value = {}
+    monkeypatch.setattr(dispatcher, "ddb_client", lambda: fake_ddb)
+    monkeypatch.setenv("AIDLC_RUNS_TABLE", "test-runs")
+
+    assert lookup_run_requester("run-1") == (None, None)
 
 
 # --- build_capture_input contract -----------------------------------------

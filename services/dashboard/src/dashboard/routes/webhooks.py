@@ -7,7 +7,7 @@ translate the GitHub event into a platform event on the EventBridge
 bus. The state-router and event-projector handle the rest.
 
 PR-derived events resolve the run by querying the runs table's
-``gsi_pr`` index — the state-router writes ``pr_url`` onto the STATE
+``gsi_pr`` index — the projector writes ``pr_url`` onto the SUMMARY
 row once the impl PR is opened. Issue-derived events look up the run
 via the ``gsi1`` index (``ISSUE#{url}``).
 
@@ -143,10 +143,10 @@ async def receive_github_webhook(request: Request) -> dict[str, Any]:
 
 
 def lookup_pr(pr_url: str) -> dict[str, Any] | None:
-    """Resolve a PR URL → the STATE row that owns it (via the ``gsi_pr`` index).
+    """Resolve a PR URL → the SUMMARY row that owns it (via the ``gsi_pr`` index).
 
-    Under the one-PR-per-issue design exactly one STATE row carries the
-    impl PR URL, so this returns at most one row.
+    Under the one-PR-per-issue design exactly one SUMMARY row carries
+    the impl PR URL, so this returns at most one row.
     """
     resp = ddb().query(
         TableName=settings().runs_table,
@@ -160,7 +160,11 @@ def lookup_pr(pr_url: str) -> dict[str, Any] | None:
 
 
 def lookup_run_by_issue(issue_url: str) -> dict[str, Any] | None:
-    """Resolve a GitHub issue URL → STATE row via ``gsi1``."""
+    """Resolve a GitHub issue URL → SUMMARY row via ``gsi1``.
+
+    The ``gsi1`` index projects ``ALL`` attributes, so the GSI query
+    returns the SUMMARY row in full — no second ``get_item`` needed.
+    """
     resp = ddb().query(
         TableName=settings().runs_table,
         IndexName="gsi1",
@@ -169,18 +173,7 @@ def lookup_run_by_issue(issue_url: str) -> dict[str, Any] | None:
         Limit=1,
     )
     items = resp.get("Items") or []
-    if not items:
-        return None
-    pk = items[0]["pk"]["S"]
-    state = (
-        ddb()
-        .get_item(
-            TableName=settings().runs_table,
-            Key={"pk": {"S": pk}, "sk": {"S": "STATE"}},
-        )
-        .get("Item")
-    )
-    return state
+    return items[0] if items else None
 
 
 def attr(item: dict[str, Any] | None, name: str) -> str:
