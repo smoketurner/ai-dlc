@@ -14,8 +14,12 @@ class StubBeforeToolCall:
     cancel_tool: str | None = None
 
 
+GATEWAY_NAME = "artifact-tool___artifact_tool"
+
+
 def call(hook: Any, name: str) -> StubBeforeToolCall:
-    event = StubBeforeToolCall(tool_use={"name": name})
+    """Build a realistic gateway envelope and run ``hook.check``."""
+    event = StubBeforeToolCall(tool_use={"name": GATEWAY_NAME, "input": {"op": name}})
     hook.check(event)
     return event
 

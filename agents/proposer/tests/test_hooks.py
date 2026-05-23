@@ -17,8 +17,22 @@ class StubBeforeToolCall:
     cancel_tool: str | None = None
 
 
+GATEWAY_NAME = "artifact-tool___artifact_tool"
+LOCAL_TOOL_NAMES = frozenset({"browse_url"})
+
+
 def call(hook: Any, name: str) -> StubBeforeToolCall:
-    event = StubBeforeToolCall(tool_use={"name": name})
+    """Build a realistic envelope and run ``hook.check``.
+
+    Local Strands ``@tool`` functions (``browse_url``) keep plain names.
+    Gateway-routed ops (``get_artifact``, ``read_memory_md``) come
+    wrapped in the composite MCP tool name with ``op`` in ``input``.
+    """
+    if name in LOCAL_TOOL_NAMES:
+        tool_use: dict[str, Any] = {"name": name}
+    else:
+        tool_use = {"name": GATEWAY_NAME, "input": {"op": name}}
+    event = StubBeforeToolCall(tool_use=tool_use)
     hook.check(event)
     return event
 

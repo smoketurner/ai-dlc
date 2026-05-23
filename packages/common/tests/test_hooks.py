@@ -10,16 +10,20 @@ from common.hooks import (
     RequireAllPriorCalls,
     RequirePriorCall,
     ToolCallCounter,
+    effective_tool_name,
     validate_no_spec_dump,
 )
+
+GATEWAY_NAME = "artifact-tool___artifact_tool"
 
 
 @dataclass
 class StubBeforeToolCall:
     """Minimal stand-in for ``strands.hooks.BeforeToolCallEvent``.
 
-    Strands' hook helpers only read ``tool_use["name"]`` and write
-    ``cancel_tool``, so a duck-typed dataclass is enough for unit tests.
+    Strands' hook helpers only read ``tool_use["name"]`` /
+    ``tool_use["input"]`` and write ``cancel_tool``, so a duck-typed
+    dataclass is enough for unit tests.
     """
 
     tool_use: dict[str, Any]
@@ -33,14 +37,34 @@ class StubBeforeInvocation:
     agent: object = field(default=None)
 
 
-def call(counter: ToolCallCounter, name: str) -> StubBeforeToolCall:
-    event = StubBeforeToolCall(tool_use={"name": name})
+def _envelope(
+    op_or_name: str,
+    *,
+    gateway: bool,
+    extra_input: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a realistic ``tool_use`` envelope.
+
+    Gateway-routed calls carry the composite MCP tool name with the op
+    in ``input["op"]`` — matches what Strands delivers in production
+    when tools come from ``gateway_tools(mcp_client)``.
+    """
+    if gateway:
+        return {"name": GATEWAY_NAME, "input": {"op": op_or_name, **(extra_input or {})}}
+    tool_use: dict[str, Any] = {"name": op_or_name}
+    if extra_input is not None:
+        tool_use["input"] = extra_input
+    return tool_use
+
+
+def call(counter: ToolCallCounter, name: str, *, gateway: bool = True) -> StubBeforeToolCall:
+    event = StubBeforeToolCall(tool_use=_envelope(name, gateway=gateway, extra_input=None))
     counter.check(event)  # ty: ignore[invalid-argument-type]
     return event
 
 
-def call_required(hook: RequirePriorCall, name: str) -> StubBeforeToolCall:
-    event = StubBeforeToolCall(tool_use={"name": name})
+def call_required(hook: RequirePriorCall, name: str, *, gateway: bool = True) -> StubBeforeToolCall:
+    event = StubBeforeToolCall(tool_use=_envelope(name, gateway=gateway, extra_input=None))
     hook.check(event)  # ty: ignore[invalid-argument-type]
     return event
 
@@ -93,7 +117,7 @@ def test_tool_call_counter_denies_over_limit() -> None:
 def test_tool_call_counter_ignores_unlimited_tools() -> None:
     counter = ToolCallCounter({"read_spec_doc": 1})
     for _ in range(5):
-        event = call(counter, "other_tool")
+        event = call(counter, "other_tool", gateway=False)
         assert event.cancel_tool is None
 
 
@@ -131,12 +155,17 @@ def test_require_prior_call_resets_on_invocation() -> None:
 
 def test_require_prior_call_ignores_unrelated_tools() -> None:
     hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
-    event = call_required(hook, "search_codebase")
+    event = call_required(hook, "search_codebase", gateway=False)
     assert event.cancel_tool is None
 
 
-def call_multi(hook: RequireAllPriorCalls, name: str) -> StubBeforeToolCall:
-    event = StubBeforeToolCall(tool_use={"name": name})
+def call_multi(
+    hook: RequireAllPriorCalls,
+    name: str,
+    *,
+    gateway: bool = True,
+) -> StubBeforeToolCall:
+    event = StubBeforeToolCall(tool_use=_envelope(name, gateway=gateway, extra_input=None))
     hook.check(event)  # ty: ignore[invalid-argument-type]
     return event
 
@@ -192,7 +221,9 @@ def test_require_all_rejects_empty_prerequisites_list() -> None:
 
 def test_input_validator_passes_when_validator_returns_empty_list() -> None:
     hook = InputValidator(tool_names=("put_artifact",), validate=lambda _: [])
-    event = StubBeforeToolCall(tool_use={"name": "put_artifact", "input": {"content": "..."}})
+    event = StubBeforeToolCall(
+        tool_use=_envelope("put_artifact", gateway=True, extra_input={"content": "..."}),
+    )
     hook.check(event)  # ty: ignore[invalid-argument-type]
     assert event.cancel_tool is None
 
@@ -202,7 +233,9 @@ def test_input_validator_cancels_with_problems_joined() -> None:
         return ["missing Context section", "missing Approach section"]
 
     hook = InputValidator(tool_names=("put_artifact",), validate=validate)
-    event = StubBeforeToolCall(tool_use={"name": "put_artifact", "input": {"content": "x"}})
+    event = StubBeforeToolCall(
+        tool_use=_envelope("put_artifact", gateway=True, extra_input={"content": "x"}),
+    )
     hook.check(event)  # ty: ignore[invalid-argument-type]
     assert event.cancel_tool is not None
     assert "missing Context section" in event.cancel_tool
@@ -214,7 +247,9 @@ def test_input_validator_ignores_unmatched_tools() -> None:
         return ["should not be called"]
 
     hook = InputValidator(tool_names=("put_artifact",), validate=validate)
-    event = StubBeforeToolCall(tool_use={"name": "get_artifact", "input": {}})
+    event = StubBeforeToolCall(
+        tool_use=_envelope("get_artifact", gateway=True, extra_input={}),
+    )
     hook.check(event)  # ty: ignore[invalid-argument-type]
     assert event.cancel_tool is None
 
@@ -225,8 +260,8 @@ def test_input_validator_handles_non_dict_input() -> None:
     def validate(_: dict[str, Any]) -> list[str]:
         return ["should not be called"]
 
-    hook = InputValidator(tool_names=("put_artifact",), validate=validate)
-    event = StubBeforeToolCall(tool_use={"name": "put_artifact", "input": "not a dict"})
+    hook = InputValidator(tool_names=("comment_pr",), validate=validate)
+    event = StubBeforeToolCall(tool_use={"name": "comment_pr", "input": "not a dict"})
     hook.check(event)  # ty: ignore[invalid-argument-type]
     assert event.cancel_tool is None
 
@@ -247,3 +282,42 @@ def test_input_validator_supports_multiple_tool_names() -> None:
         event = StubBeforeToolCall(tool_use={"name": tool, "input": {"body": "x"}})
         hook.check(event)  # ty: ignore[invalid-argument-type]
         assert event.cancel_tool is not None
+
+
+def test_effective_tool_name_returns_op_for_gateway_composite() -> None:
+    tool_use = {"name": GATEWAY_NAME, "input": {"op": "put_artifact", "key": "x"}}
+    assert effective_tool_name(tool_use) == "put_artifact"
+
+
+def test_effective_tool_name_falls_back_to_composite_when_op_missing() -> None:
+    tool_use = {"name": GATEWAY_NAME, "input": {"key": "x"}}
+    assert effective_tool_name(tool_use) == GATEWAY_NAME
+
+
+def test_effective_tool_name_falls_back_to_composite_when_op_not_string() -> None:
+    tool_use = {"name": GATEWAY_NAME, "input": {"op": ""}}
+    assert effective_tool_name(tool_use) == GATEWAY_NAME
+
+
+def test_effective_tool_name_falls_back_to_composite_when_input_not_mapping() -> None:
+    tool_use = {"name": GATEWAY_NAME, "input": "not a dict"}
+    assert effective_tool_name(tool_use) == GATEWAY_NAME
+
+
+def test_effective_tool_name_returns_plain_name_for_local_tool() -> None:
+    tool_use = {"name": "browse_url", "input": {"url": "https://example.com"}}
+    assert effective_tool_name(tool_use) == "browse_url"
+
+
+def test_require_all_prior_calls_fires_on_real_gateway_envelope() -> None:
+    """Direct repro of the bug in issue #81 — pre-fix this returned None."""
+    hook = RequireAllPriorCalls(
+        target="put_artifact",
+        prerequisites=["read_memory_md", "read_stack_profile_md"],
+    )
+    event = StubBeforeToolCall(
+        tool_use={"name": GATEWAY_NAME, "input": {"op": "put_artifact"}},
+    )
+    hook.check(event)  # ty: ignore[invalid-argument-type]
+    assert event.cancel_tool is not None
+    assert "read_memory_md" in event.cancel_tool

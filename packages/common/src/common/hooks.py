@@ -23,7 +23,7 @@ concurrently inside one agent invocation.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from threading import Lock
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +36,42 @@ if TYPE_CHECKING:
 
 
 SPEC_LEAK_PATTERN = re.compile(r"(?im)^\s{0,3}#{1,6}\s+(requirements|design|tasks)(?:\.md)?\s*$")
+
+
+def effective_tool_name(tool_use: Mapping[str, Any]) -> str:
+    """Resolve the operation name a hook should key on.
+
+    AgentCore Gateway exposes one composite MCP tool per Lambda target
+    (e.g. ``"artifact-tool___artifact_tool"``); the specific operation
+    (``put_artifact``, ``read_memory_md``, …) rides in
+    ``input["op"]``, not in ``name``. Hooks are configured with
+    operation names, so they need to see the op when the call is
+    gateway-routed.
+
+    The ``"___"`` separator is the documented Gateway naming rule
+    (see :data:`common.gateway_tools.ARTIFACT_TOOL`), so this covers
+    every gateway target without an explicit allow-list. Local Strands
+    ``@tool`` functions (e.g. ``browse_url``) have plain names and fall
+    through unchanged.
+
+    Args:
+        tool_use: The ``event.tool_use`` envelope (a ``Mapping`` with at
+            least ``name`` and optionally ``input``).
+
+    Returns:
+        The op name when the envelope is a gateway composite carrying a
+        non-empty string ``op``; otherwise the raw ``name``.
+    """
+    name = str(tool_use.get("name", ""))
+    if "___" not in name:
+        return name
+    tool_input = tool_use.get("input")
+    if not isinstance(tool_input, Mapping):
+        return name
+    op = tool_input.get("op")
+    if isinstance(op, str) and op:
+        return op
+    return name
 
 
 def validate_no_spec_dump(text: str) -> str | None:
@@ -97,7 +133,7 @@ class ToolCallCounter:
 
     def check(self, event: BeforeToolCallEvent) -> None:
         """Increment the count and cancel the call if the cap is exceeded."""
-        name = str(event.tool_use["name"])
+        name = effective_tool_name(event.tool_use)
         limit = self.limits.get(name)
         if limit is None:
             return
@@ -150,7 +186,7 @@ class RequirePriorCall:
 
     def check(self, event: BeforeToolCallEvent) -> None:
         """Cancel the call if ``target`` runs before ``prerequisite``."""
-        name = str(event.tool_use["name"])
+        name = effective_tool_name(event.tool_use)
         with self.lock:
             already_called = self.prerequisite in self.called
         if name == self.target and not already_called:
@@ -209,7 +245,7 @@ class RequireAllPriorCalls:
 
     def check(self, event: BeforeToolCallEvent) -> None:
         """Cancel the call if any prerequisite is still outstanding."""
-        name = str(event.tool_use["name"])
+        name = effective_tool_name(event.tool_use)
         with self.lock:
             missing = [p for p in self.prerequisites if p not in self.called]
         if name == self.target and missing:
@@ -271,7 +307,7 @@ class InputValidator:
 
     def check(self, event: BeforeToolCallEvent) -> None:
         """Cancel the call when ``validate`` returns any problems."""
-        name = str(event.tool_use["name"])
+        name = effective_tool_name(event.tool_use)
         if name not in self.tool_names:
             return
         tool_input = event.tool_use.get("input", {})

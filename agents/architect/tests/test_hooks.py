@@ -20,8 +20,18 @@ class StubBeforeToolCall:
     cancel_tool: str | None = None
 
 
+GATEWAY_NAME = "artifact-tool___artifact_tool"
+
+
 def call(hook: Any, name: str, tool_input: dict[str, Any] | None = None) -> StubBeforeToolCall:
-    event = StubBeforeToolCall(tool_use={"name": name, "input": tool_input or {}})
+    """Build a realistic gateway envelope and run ``hook.check``.
+
+    All ops the architect gates (``put_artifact``, ``read_memory_md``,
+    ``read_stack_profile_md``) are gateway-routed, so the envelope
+    matches what Strands actually delivers in production.
+    """
+    payload = {"op": name, **(tool_input or {})}
+    event = StubBeforeToolCall(tool_use={"name": GATEWAY_NAME, "input": payload})
     hook.check(event)
     return event
 
