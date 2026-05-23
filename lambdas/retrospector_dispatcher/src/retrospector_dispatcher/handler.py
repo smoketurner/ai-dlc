@@ -94,15 +94,20 @@ def platform_repo() -> str:
 
 
 def lookup_run_requester(run_id: str) -> tuple[str | None, str | None]:
-    """Read the run's STATE row and return ``(requestor_sub, requestor)``."""
+    """Read the run's SUMMARY row and return ``(requestor_sub, requestor)``.
+
+    The projector only writes ``requestor`` onto the SUMMARY row (the
+    Cognito ``sub`` is not currently projected), so ``requestor_sub``
+    always comes back ``None`` from this lookup.
+    """
     table = os.environ.get("AIDLC_RUNS_TABLE")
     if not table:
         return None, None
     try:
         resp = ddb_client().get_item(
             TableName=table,
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            ProjectionExpression="requestor, requestor_sub",
+            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "SUMMARY"}},
+            ProjectionExpression="requestor",
             ConsistentRead=False,
         )
     except (BotoCoreError, ClientError) as exc:
@@ -110,8 +115,7 @@ def lookup_run_requester(run_id: str) -> tuple[str | None, str | None]:
         return None, None
     item = resp.get("Item") or {}
     requestor = item.get("requestor", {}).get("S")
-    requestor_sub = item.get("requestor_sub", {}).get("S")
-    return requestor_sub, requestor
+    return None, requestor
 
 
 @logger.inject_lambda_context(log_event=False)
@@ -231,7 +235,7 @@ def active_projects() -> Iterator[tuple[str, str]]:
         pages = paginator.paginate(
             TableName=table,
             FilterExpression="sk = :sk",
-            ExpressionAttributeValues={":sk": {"S": "STATE"}},
+            ExpressionAttributeValues={":sk": {"S": "SUMMARY"}},
             ProjectionExpression="project_slug, target_repo",
         )
         for page in pages:
