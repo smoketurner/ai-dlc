@@ -7,6 +7,13 @@ projector's job is small and uniform:
   ``attribute_not_exists(sk)`` — this row is the master idempotency
   key. A re-delivered envelope fails the condition and the entire
   transaction rolls back.
+* When the envelope payload carries a ``delivery_id`` (every webhook-
+  originated event), also Put a ``WEBHOOK_DELIVERY#{delivery_id}``
+  guard row in the same transaction. GitHub redelivers webhooks with
+  the same ``X-GitHub-Delivery`` header but the webhook handler mints
+  a fresh ``event_id`` per delivery, so the EVENT row alone would not
+  catch the duplicate. The guard row makes the second delivery's
+  transaction fail atomically.
 * Update the SUMMARY row (``sk=SUMMARY``) with accumulators and
   metadata only — token / cost / duration totals, GSI keys, PR URL.
   No state cursor, no decision logic.
@@ -122,22 +129,62 @@ def project_event(*, envelope: UntypedEnvelope, detail: dict[str, Any]) -> bool:
     """Insert the EVENT row + accumulator update on SUMMARY in one transaction.
 
     Returns ``True`` when the transaction committed, ``False`` on a
-    conditional-check loss (re-delivery via the EVENT row). On
-    ``False`` the caller skips the AgentCore Memory write so memory
-    is also idempotent on event_id.
+    conditional-check loss (re-delivery via either the EVENT row or
+    the ``WEBHOOK_DELIVERY#{delivery_id}`` guard). On ``False`` the
+    caller skips the AgentCore Memory write so memory is also
+    idempotent.
     """
     run_id = str(envelope.run_id)
     event_type = envelope.type or "UNKNOWN"
     transaction = TransactWriteItemsBuilder()
     transaction.put(event_row_item(run_id, event_type, detail))
+    delivery_id = delivery_id_of(detail)
+    if delivery_id:
+        transaction.put(webhook_delivery_row_item(run_id, event_type, delivery_id))
     transaction.update(summary_row_item(run_id, event_type, detail))
     committed = transaction.commit(ddb())
     if not committed:
         logger.info(
             "event already projected (idempotent no-op)",
-            extra={"run_id": run_id, "event_type": event_type},
+            extra={"run_id": run_id, "event_type": event_type, "delivery_id": delivery_id},
         )
     return committed
+
+
+def delivery_id_of(detail: dict[str, Any]) -> str:
+    """Return the payload's ``delivery_id`` (empty string if absent).
+
+    Webhook-originated events (``CHECKS.PASSED`` / ``CHECKS.FAILED`` /
+    ``IMPL.ITERATION_REQUESTED`` / ``VALIDATION.REQUESTED``) carry the
+    GitHub ``X-GitHub-Delivery`` header on the payload. Other events
+    omit the field — the projector treats them with EVENT-row dedupe only.
+    """
+    payload = detail.get("payload") or {}
+    raw = payload.get("delivery_id")
+    return raw if isinstance(raw, str) else ""
+
+
+def webhook_delivery_row_item(
+    run_id: str,
+    event_type: str,
+    delivery_id: str,
+) -> PutBuilder:
+    """Guard row that fails the transaction on a GitHub webhook redelivery.
+
+    Scoped by ``event_type`` so a single delivery that fans out to
+    multiple distinct platform events (none today, defensive) is still
+    free to project each event once.
+    """
+    return PutBuilder(
+        table=runs_table(),
+        item={
+            "pk": f"RUN#{run_id}",
+            "sk": f"WEBHOOK_DELIVERY#{delivery_id}#{event_type}",
+            "run_id": run_id,
+            "delivery_id": delivery_id,
+            "event_type": event_type,
+        },
+    ).condition_not_exists("sk")
 
 
 def event_row_item(
