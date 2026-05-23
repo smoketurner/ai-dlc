@@ -293,3 +293,99 @@ def test_runs_table_env_var_drives_writes(aws_env: None) -> None:
     """Smoke-test that the env-var-driven module config is honoured."""
     del aws_env
     assert os.environ["AIDLC_RUNS_TABLE"] == TABLE
+
+
+# ---------------------------------------------------------------------------
+# Webhook redelivery — WEBHOOK_DELIVERY#{delivery_id} guard
+# ---------------------------------------------------------------------------
+
+
+def _checks_failed_envelope(*, event_id: str, delivery_id: str) -> dict[str, Any]:
+    """Build a ``CHECKS.FAILED`` envelope around a webhook-shape payload."""
+    return envelope(
+        event_type="CHECKS.FAILED",
+        event_id=event_id,
+        payload={
+            "project_slug": "demo",
+            "pr_url": "https://github.com/o/r/pull/1",
+            "head_sha": "deadbee",
+            "delivery_id": delivery_id,
+            "failed_workflow_count": 1,
+            "summary": "ci broke",
+        },
+    )
+
+
+def _webhook_guard_rows(run_id: str, ddb: Any) -> list[dict[str, Any]]:
+    """Read every WEBHOOK_DELIVERY# guard row for ``run_id`` from DDB."""
+    response = ddb.query(
+        TableName=TABLE,
+        KeyConditionExpression="pk = :p AND begins_with(sk, :prefix)",
+        ExpressionAttributeValues={
+            ":p": {"S": f"RUN#{run_id}"},
+            ":prefix": {"S": "WEBHOOK_DELIVERY#"},
+        },
+    )
+    return response.get("Items", [])
+
+
+def test_webhook_redelivery_with_fresh_event_id_is_no_op(runs_table: Any) -> None:
+    """A second delivery with a fresh event_id but same delivery_id no-ops.
+
+    Reproduces issue #83: the webhook handler mints a fresh ``event_id``
+    per delivery, so the EVENT row condition alone would not catch the
+    redelivery. The ``WEBHOOK_DELIVERY#{delivery_id}`` guard row in the
+    transaction is what makes the second projection fail.
+    """
+    first = project_event(
+        eb_event(_checks_failed_envelope(event_id="evt-first", delivery_id="dlv-A")),
+        ctx(),
+    )
+    second = project_event(
+        eb_event(_checks_failed_envelope(event_id="evt-second-fresh", delivery_id="dlv-A")),
+        ctx(),
+    )
+    assert first["committed"] is True
+    assert second["committed"] is False
+    rows = event_rows("run-1", runs_table)
+    assert len(rows) == 1
+    assert rows[0]["sk"]["S"] == "EVENT#evt-first"
+    guard = _webhook_guard_rows("run-1", runs_table)
+    assert len(guard) == 1
+    assert guard[0]["delivery_id"]["S"] == "dlv-A"
+
+
+def test_distinct_deliveries_both_project(runs_table: Any) -> None:
+    """Two genuinely distinct webhook deliveries both project."""
+    first = project_event(
+        eb_event(_checks_failed_envelope(event_id="evt-1", delivery_id="dlv-1")),
+        ctx(),
+    )
+    second = project_event(
+        eb_event(_checks_failed_envelope(event_id="evt-2", delivery_id="dlv-2")),
+        ctx(),
+    )
+    assert first["committed"] is True
+    assert second["committed"] is True
+    assert len(event_rows("run-1", runs_table)) == 2
+    assert len(_webhook_guard_rows("run-1", runs_table)) == 2
+
+
+def test_event_without_delivery_id_writes_no_guard_row(runs_table: Any) -> None:
+    """Non-webhook events skip the guard row and rely on EVENT# dedupe only."""
+    project_event(
+        eb_event(
+            envelope(
+                event_type="DESIGN.READY",
+                event_id="evt-design",
+                payload={
+                    "project_slug": "demo",
+                    "plan_s3_key": "k",
+                    "summary": "s",
+                    "session_id": "s",
+                },
+            ),
+        ),
+        ctx(),
+    )
+    assert _webhook_guard_rows("run-1", runs_table) == []

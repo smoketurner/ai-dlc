@@ -286,10 +286,10 @@ class ImplIterationRequested(Payload):
 
     Carries the mention text or feedback as a free-form string the implementer
     uses as input to its next revision. ``delivery_id`` is the GitHub
-    ``X-GitHub-Delivery`` header; the envelope's ``event_id`` is derived
-    deterministically from it (see ``common.ids.event_id_for_delivery``)
-    so a redelivered webhook collides with the original on the projector's
-    ``EVENT#{event_id}`` idempotency key.
+    ``X-GitHub-Delivery`` header; the projector writes a transactional
+    ``WEBHOOK_DELIVERY#{delivery_id}`` guard row alongside the EVENT row
+    so a redelivered webhook (which carries a fresh ``event_id``) is
+    rolled back atomically and no duplicate side-effects fire.
 
     ``comment_id`` is populated for ``issue_comment_mention`` and
     ``review_comment_mention``; ``review_id`` is populated for

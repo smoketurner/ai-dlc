@@ -69,7 +69,6 @@ from common.github_mentions import has_bot_mention
 from common.ids import (
     CorrelationId,
     RunId,
-    event_id_for_delivery,
     new_event_id,
 )
 from common.runs import IssueContext, start_run
@@ -213,23 +212,10 @@ def envelope_for(
     correlation_id: str,
     actor: str,
     payload: Any,
-    delivery_id: str = "",
 ) -> EventEnvelope[Any]:
-    """Build an envelope around the typed payload.
-
-    When ``delivery_id`` is supplied, the envelope's ``event_id`` is derived
-    deterministically from ``(delivery_id, event_type)`` so a GitHub
-    webhook redelivery collides with the original event on the
-    projector's ``EVENT#{event_id}`` idempotency key. Non-webhook callers
-    leave ``delivery_id`` empty and get a fresh UUID7.
-    """
-    event_id = (
-        event_id_for_delivery(delivery_id=delivery_id, event_type=event_type)
-        if delivery_id
-        else new_event_id()
-    )
+    """Build an envelope around the typed payload."""
     return EventEnvelope(
-        event_id=event_id,
+        event_id=new_event_id(),
         type=event_type,  # ty: ignore[invalid-argument-type]
         run_id=RunId(run_id),
         correlation_id=CorrelationId(correlation_id),
@@ -243,7 +229,7 @@ def envelope_for(
 # ---------------------------------------------------------------------------
 
 
-def handle_pull_request(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
+def handle_pull_request(payload: dict[str, Any], _delivery_id: str) -> dict[str, Any]:
     """``pull_request.closed`` on the impl PR drives run completion or cancel.
 
     Merge → ``RUN.COMPLETED`` (project_slug + pr_url). Close without
@@ -262,14 +248,13 @@ def handle_pull_request(payload: dict[str, Any], delivery_id: str) -> dict[str, 
     merged = bool(pr.get("merged"))
     if merged:
         actor = (pr.get("merged_by") or pr.get("user") or {}).get("login", "unknown")
-        return emit_run_completed(row, pr_url=pr_url, actor=actor, delivery_id=delivery_id)
+        return emit_run_completed(row, pr_url=pr_url, actor=actor)
     actor = (payload.get("sender") or {}).get("login", "unknown")
     return emit_run_cancel(
         row,
         requestor=actor,
         source="pr_closed",
         reason=f"impl PR {pr_url} closed without merge by {actor}",
-        delivery_id=delivery_id,
     )
 
 
@@ -278,7 +263,6 @@ def emit_run_completed(
     *,
     pr_url: str,
     actor: str,
-    delivery_id: str = "",
 ) -> dict[str, Any]:
     """Emit ``RUN.COMPLETED`` so the projector advances ``awaiting_human_merge → done``."""
     emit(
@@ -291,7 +275,6 @@ def emit_run_completed(
                 project_slug=attr(row, "project_slug"),
                 pr_url=pr_url,
             ),
-            delivery_id=delivery_id,
         ),
     )
     return {"ok": True, "decision": "run_completed", "actor": actor}
@@ -656,9 +639,9 @@ def handle_issues(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
     """Branch on action: triage triggers vs cancel."""
     action = payload.get("action")
     if action == "unassigned":
-        return handle_issue_unassigned(payload, delivery_id)
+        return handle_issue_unassigned(payload)
     if action == "closed":
-        return handle_issue_closed(payload, delivery_id)
+        return handle_issue_closed(payload)
     if action in {"opened", "labeled", "assigned"} and issues_action_is_trigger(action, payload):
         issue = payload.get("issue") or {}
         issue_url = issue.get("html_url") or ""
@@ -667,7 +650,7 @@ def handle_issues(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
     return {"ok": True, "ignored": True}
 
 
-def handle_issue_unassigned(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
+def handle_issue_unassigned(payload: dict[str, Any]) -> dict[str, Any]:
     """Bot unassigned from an issue → cancel the in-flight run."""
     bot_login = settings().github_bot_login
     if not bot_login:
@@ -684,11 +667,10 @@ def handle_issue_unassigned(payload: dict[str, Any], delivery_id: str) -> dict[s
         requestor=sender,
         source="issue_unassigned",
         reason=f"bot unassigned from {issue_url} by {sender}",
-        delivery_id=delivery_id,
     )
 
 
-def handle_issue_closed(payload: dict[str, Any], delivery_id: str) -> dict[str, Any]:
+def handle_issue_closed(payload: dict[str, Any]) -> dict[str, Any]:
     """Issue closed → cancel the in-flight run if there is one."""
     issue_url = (payload.get("issue") or {}).get("html_url", "")
     state = lookup_run_by_issue(issue_url) if issue_url else None
@@ -700,7 +682,6 @@ def handle_issue_closed(payload: dict[str, Any], delivery_id: str) -> dict[str, 
         requestor=sender,
         source="issue_closed",
         reason=f"issue {issue_url} closed by {sender}",
-        delivery_id=delivery_id,
     )
 
 
@@ -764,7 +745,6 @@ def emit_impl_iteration(
             correlation_id=correlation_id,
             actor="webhook",
             payload=payload,
-            delivery_id=delivery_id,
         ),
     )
     return {"ok": True, "decision": "iteration_requested", "source": source}
@@ -795,7 +775,6 @@ def emit_validation_request(
             correlation_id=correlation_id,
             actor="webhook",
             payload=payload,
-            delivery_id=delivery_id,
         ),
     )
     return {"ok": True, "decision": "validation_requested"}
@@ -823,7 +802,6 @@ def emit_checks_passed(
                 head_sha=head_sha or "0" * 7,
                 delivery_id=delivery_id,
             ),
-            delivery_id=delivery_id,
         ),
     )
     return {"ok": True, "decision": "checks_passed"}
@@ -855,7 +833,6 @@ def emit_checks_failed(
                 failed_workflow_count=max(failed_workflow_count, 1),
                 summary=summary or "one or more required checks did not succeed",
             ),
-            delivery_id=delivery_id,
         ),
     )
     return {"ok": True, "decision": "checks_failed"}
@@ -867,7 +844,6 @@ def emit_run_cancel(
     requestor: str,
     source: str,
     reason: str | None = None,
-    delivery_id: str = "",
 ) -> dict[str, Any]:
     """Publish a RUN.CANCEL_REQUESTED for the given run STATE row."""
     run_id = run_id_of(state)
@@ -885,7 +861,6 @@ def emit_run_cancel(
             correlation_id=correlation_id,
             actor="webhook",
             payload=payload,
-            delivery_id=delivery_id,
         ),
     )
     return {"ok": True, "cancel_run": run_id}
