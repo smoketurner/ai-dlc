@@ -162,23 +162,21 @@ def app_jwt() -> str:
     return token
 
 
-installation_id_cache: dict[str, int] = {}
-
-
 def installation_id_for_repo(repo: str) -> int:
-    """Fetch (and cache) the App's installation id for ``owner/name``."""
-    cached = installation_id_cache.get(repo)
-    if cached is not None:
-        return cached
+    """Fetch the App's installation id for ``owner/name``.
+
+    Not cached. Only runs when minting a fresh installation token, which
+    is already gated by ``installation_token_cache`` (at most ~once per
+    repo per 50 min per warm container). A persistent id cache would go
+    stale whenever the App is reinstalled (GitHub assigns a new id).
+    """
     response = httpx.get(
         f"{GITHUB_API}/repos/{repo}/installation",
         headers=app_headers(),
         timeout=HTTP_TIMEOUT,
     )
     response.raise_for_status()
-    installation_id = int(response.json()["id"])
-    installation_id_cache[repo] = installation_id
-    return installation_id
+    return int(response.json()["id"])
 
 
 installation_token_cache: dict[str, tuple[str, float]] = {}
