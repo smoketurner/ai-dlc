@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import boto3
 
+from common.errors import EventEmitError
 from common.events import EventEnvelope, Payload
 
 if TYPE_CHECKING:
@@ -47,8 +48,14 @@ def publish[PayloadT: Payload](envelope: EventEnvelope[PayloadT]) -> None:
     Same shape entry_adapter and the SFN PutEvents states produce, so
     downstream consumers (event_projector, EventBridge rules) don't need
     to special-case agent-emitted events.
+
+    ``PutEvents`` can return HTTP 200 while still rejecting individual
+    entries (``FailedEntryCount > 0``), so the response is inspected and
+    :class:`~common.errors.EventEmitError` is raised when any entry failed.
+    Raising lets SQS/Lambda retry the invocation and keeps drops out of
+    the silent-success path that would wedge runs in non-terminal states.
     """
-    events_client().put_events(
+    response = events_client().put_events(
         Entries=[
             {
                 "Source": f"ai-dlc.{envelope.actor_id}",
@@ -58,6 +65,18 @@ def publish[PayloadT: Payload](envelope: EventEnvelope[PayloadT]) -> None:
             },
         ],
     )
+    failed_count = response.get("FailedEntryCount", 0)
+    if failed_count:
+        entry = response.get("Entries", [{}])[0]
+        raise EventEmitError(
+            "EventBridge rejected event entry",
+            type=envelope.type,
+            run_id=str(envelope.run_id),
+            event_id=str(envelope.event_id),
+            failed_entry_count=failed_count,
+            error_code=entry.get("ErrorCode"),
+            error_message=entry.get("ErrorMessage"),
+        )
     logger.info(
         "event published",
         extra={
