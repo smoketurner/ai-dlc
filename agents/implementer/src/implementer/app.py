@@ -20,7 +20,7 @@ from typing import Any
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from common.event_emit import publish
+from common.event_emit import publish, try_publish
 from common.events import EventEnvelope, ImplPrOpened, RevisionReady, RunFailed
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import (
@@ -136,7 +136,11 @@ def emit_impl_pr_opened(payload: ImplementerInput, result: ImplementerResult) ->
 
 
 def publish_run_failed(payload: ImplementerInput, exc: BaseException) -> None:
-    """Emit RUN.FAILED on uncaught exception in the agent body."""
+    """Emit RUN.FAILED on uncaught exception in the agent body.
+
+    Uses :func:`try_publish` so an EventBridge rejection on the fallback emit
+    logs instead of cascading out of the daemon thread.
+    """
     envelope = EventEnvelope[RunFailed](
         event_id=new_event_id(),
         type="RUN.FAILED",
@@ -151,7 +155,7 @@ def publish_run_failed(payload: ImplementerInput, exc: BaseException) -> None:
             retryable=True,
         ),
     )
-    publish(envelope)
+    try_publish(envelope)
 
 
 if __name__ == "__main__":

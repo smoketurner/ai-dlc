@@ -85,3 +85,25 @@ def publish[PayloadT: Payload](envelope: EventEnvelope[PayloadT]) -> None:
             "event_id": str(envelope.event_id),
         },
     )
+
+
+def try_publish[PayloadT: Payload](envelope: EventEnvelope[PayloadT]) -> None:
+    """Publish ``envelope``, logging :class:`EventEmitError` instead of raising.
+
+    Use this from agent exception handlers (the daemon-thread body has no
+    SQS/Lambda redrive — a raised ``EventEmitError`` would propagate out of the
+    thread and wedge the run with only a ``*.DISPATCHED`` marker). Success-path
+    emissions should keep using :func:`publish`, which raises so the
+    state-router's SQS retry path stays load-bearing.
+    """
+    try:
+        publish(envelope)
+    except EventEmitError:
+        logger.exception(
+            "try_publish: event emission failed",
+            extra={
+                "type": envelope.type,
+                "run_id": str(envelope.run_id),
+                "event_id": str(envelope.event_id),
+            },
+        )

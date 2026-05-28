@@ -26,7 +26,7 @@ import boto3
 import structlog
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-from common.event_emit import publish
+from common.event_emit import publish, try_publish
 from common.events import EventEnvelope, IssueTriaged, RunFailed
 from common.ids import CorrelationId, RunId, new_event_id
 from common.runtime import TriageInput, TriageResult
@@ -142,7 +142,11 @@ def publish_issue_triaged(payload: TriageInput, result: TriageResult) -> None:
 
 
 def publish_run_failed(payload: TriageInput, exc: BaseException) -> None:
-    """Emit RUN.FAILED so the projector terminates the run on agent crash."""
+    """Emit RUN.FAILED so the projector terminates the run on agent crash.
+
+    Uses :func:`try_publish` so an EventBridge rejection on the fallback emit
+    logs instead of cascading out of the daemon thread.
+    """
     envelope = EventEnvelope[RunFailed](
         event_id=new_event_id(),
         type="RUN.FAILED",
@@ -157,7 +161,7 @@ def publish_run_failed(payload: TriageInput, exc: BaseException) -> None:
             retryable=True,
         ),
     )
-    publish(envelope)
+    try_publish(envelope)
 
 
 if __name__ == "__main__":

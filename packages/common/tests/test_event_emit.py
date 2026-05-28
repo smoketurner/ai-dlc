@@ -93,3 +93,42 @@ def test_publish_raises_when_entries_missing_error_fields(
         event_emit.publish(_envelope())
     assert excinfo.value.context["error_code"] is None
     assert excinfo.value.context["error_message"] is None
+
+
+def test_try_publish_swallows_event_emit_error(
+    bus: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fallback emit path must not propagate EventEmitError out of the daemon thread."""
+    _install_fake(
+        monkeypatch,
+        {
+            "FailedEntryCount": 1,
+            "Entries": [{"ErrorCode": "ThrottlingException", "ErrorMessage": "Rate exceeded"}],
+        },
+    )
+    event_emit.try_publish(_envelope())
+
+
+def test_try_publish_propagates_non_event_emit_errors(
+    bus: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only EventEmitError is suppressed — other failures still surface."""
+
+    def boom() -> Any:
+        msg = "boto exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(event_emit, "events_client", boom)
+    with pytest.raises(RuntimeError, match="boto exploded"):
+        event_emit.try_publish(_envelope())
+
+
+def test_try_publish_returns_silently_on_success(
+    bus: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_fake(monkeypatch, {"FailedEntryCount": 0, "Entries": [{"EventId": "e-1"}]})
+    event_emit.try_publish(_envelope())
+    assert len(fake.calls) == 1

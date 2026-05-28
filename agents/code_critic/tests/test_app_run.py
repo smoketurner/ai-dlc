@@ -153,6 +153,7 @@ def test_run_code_critic_publishes_run_failed_on_exception(
 
     published: list[Any] = []
     monkeypatch.setattr(app, "publish", published.append)
+    monkeypatch.setattr(app, "try_publish", published.append)
 
     complete = MagicMock()
     monkeypatch.setattr(app.app, "complete_async_task", complete)
