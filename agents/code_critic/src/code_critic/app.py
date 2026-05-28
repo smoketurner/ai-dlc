@@ -24,7 +24,7 @@ from strands.tools.mcp import MCPClient
 from code_critic.agent import build_agent, critique_pr, fallback_model_id, model_id
 from code_critic.critique import Critique, render_critique, severity_counts
 from code_critic.tools import critique_s3_key
-from common.event_emit import publish
+from common.event_emit import publish, try_publish
 from common.events import CodeCritiqueReady, EventEnvelope, RunFailed
 from common.gateway_tools import (
     ARTIFACT_TOOL,
@@ -157,7 +157,11 @@ def publish_code_critique_ready(
 
 
 def publish_run_failed(payload: CodeCriticInput, exc: BaseException) -> None:
-    """Emit RUN.FAILED so the projector terminates the run on agent crash."""
+    """Emit RUN.FAILED so the projector terminates the run on agent crash.
+
+    Uses :func:`try_publish` so an EventBridge rejection on the fallback emit
+    logs instead of cascading out of the daemon thread.
+    """
     envelope = EventEnvelope[RunFailed](
         event_id=new_event_id(),
         type="RUN.FAILED",
@@ -172,7 +176,7 @@ def publish_run_failed(payload: CodeCriticInput, exc: BaseException) -> None:
             retryable=True,
         ),
     )
-    publish(envelope)
+    try_publish(envelope)
 
 
 def upload_critique(

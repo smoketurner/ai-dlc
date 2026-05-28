@@ -22,9 +22,10 @@ from common.runtime import ArchitectInput, ArchitectResult
 
 @pytest.fixture
 def captured(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]:
-    """Capture every envelope passed to common.event_emit.publish."""
+    """Capture every envelope passed to ``publish`` or ``try_publish``."""
     out: list[EventEnvelope[Any]] = []
     monkeypatch.setattr(app, "publish", out.append)
+    monkeypatch.setattr(app, "try_publish", out.append)
     return out
 
 

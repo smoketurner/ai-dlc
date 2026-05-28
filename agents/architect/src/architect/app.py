@@ -27,7 +27,7 @@ from architect.repo_grounding import (
     sync_stack_profile_from_clone,
 )
 from architect.tools import plan_s3_key
-from common.event_emit import publish
+from common.event_emit import publish, try_publish
 from common.events import DesignReady, EventEnvelope, RunFailed
 from common.gateway_tools import (
     ARTIFACT_TOOL,
@@ -183,7 +183,8 @@ def publish_run_failed(payload: ArchitectInput, exc: BaseException) -> None:
     Without this, a thrown exception inside the background thread would
     leave the run wedged in ``architect_running`` with nothing else to
     advance it — the state-router has already reported a successful
-    dispatch.
+    dispatch. Uses :func:`try_publish` so an EventBridge rejection on the
+    fallback emit logs instead of cascading out of the daemon thread.
     """
     envelope = EventEnvelope[RunFailed](
         event_id=new_event_id(),
@@ -199,7 +200,7 @@ def publish_run_failed(payload: ArchitectInput, exc: BaseException) -> None:
             retryable=True,
         ),
     )
-    publish(envelope)
+    try_publish(envelope)
 
 
 if __name__ == "__main__":

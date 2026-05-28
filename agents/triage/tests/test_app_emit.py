@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from common import event_emit
 from common.events import EventEnvelope, IssueTriaged
 from common.runtime import TriageInput, TriageResult
 from triage import app
@@ -48,3 +49,31 @@ def test_publish_issue_triaged_builds_envelope(captured: list[EventEnvelope[Any]
     assert env.payload.target_repo == "owner/repo"
     assert env.payload.action == "proceed"
     assert env.payload.issue_number == 1
+
+
+class RejectingEventsClient:
+    """Stub EventBridge client whose put_events always reports a failed entry."""
+
+    def put_events(self, **_: Any) -> dict[str, Any]:
+        return {
+            "FailedEntryCount": 1,
+            "Entries": [{"ErrorCode": "ThrottlingException", "ErrorMessage": "Rate exceeded"}],
+        }
+
+
+def test_publish_run_failed_does_not_cascade(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If EventBridge rejects RUN.FAILED, the fallback must not propagate (issue #95)."""
+    monkeypatch.setenv("AIDLC_BUS_NAME", "aidlc-bus-test")
+    monkeypatch.setattr(event_emit, "events_client", RejectingEventsClient)
+    payload = TriageInput(
+        project_slug="demo",
+        target_repo="owner/repo",
+        issue_url="https://github.com/owner/repo/issues/1",
+        issue_number=1,
+        issue_title="bug",
+        issue_body="describe",
+        run_id="r-1",
+        correlation_id="c-1",
+    )
+
+    app.publish_run_failed(payload, RuntimeError("simulated agent crash"))
