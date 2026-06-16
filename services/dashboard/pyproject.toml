@@ -16,7 +16,7 @@ dependencies = [
     "markdown-it-py==4.0.0",
     "pydantic==2.13.4",
     "pyjwt[crypto]==2.12.1",
-    "python-multipart==0.0.27",
+    "python-multipart==0.0.31",
     "structlog==25.5.0",
     "uvicorn[standard]==0.46.0",
 ]
