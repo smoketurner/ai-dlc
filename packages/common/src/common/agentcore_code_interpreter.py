@@ -1,8 +1,8 @@
 """Thin wrapper around the AgentCore Code Interpreter SDK.
 
 The official ``bedrock_agentcore.tools.code_interpreter_client.CodeInterpreter``
-already exposes ``execute_code`` / ``execute_command`` / ``upload_file`` /
-``stop`` and parses the streaming response. This module:
+already exposes ``execute_code`` / ``execute_command`` / ``stop`` and parses
+the streaming response. This module:
 
   * narrows the surface to the calls the platform actually uses,
   * converts the streaming response dicts into typed dataclasses, and
@@ -166,31 +166,6 @@ def execute_code(
         is_error=is_error,
         text=content_text,
     )
-
-
-def upload_file(
-    client: CodeInterpreter,
-    /,
-    *,
-    path: str,
-    content: str | bytes,
-    description: str = "",
-) -> None:
-    """Write a file into the sandbox at ``path`` (relative).
-
-    Args:
-        client: SDK instance with an active session.
-        path: Sandbox-relative path (no leading ``/``).
-        content: Text or binary blob; binary is base64-encoded by the SDK.
-        description: Optional semantic description carried as SDK metadata.
-    """
-    try:
-        client.upload_file(path=path, content=content, description=description)
-    except (BotoCoreError, ClientError, ValueError) as exc:
-        raise AgentCoreCodeInterpreterError(
-            "upload_file failed",
-            path=path,
-        ) from exc
 
 
 def parse_invoke_response(response: Mapping[str, Any]) -> tuple[dict[str, Any], str, bool]:
