@@ -118,7 +118,6 @@ class GetPrInput(BaseOp):
     pr_number: int = Field(ge=1)
 
 
-
 class CommentIssueInput(BaseOp):
     """Add a comment to an issue."""
 
@@ -126,7 +125,6 @@ class CommentIssueInput(BaseOp):
     repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
     issue_number: int = Field(ge=1)
     body: str = Field(min_length=1, max_length=65_536)
-
 
 
 class GetIssueInput(BaseOp):
@@ -173,7 +171,6 @@ class CreateIssueInput(BaseOp):
         pattern=r"^https://github\.com/.+$",
     )
     requestor: str | None = Field(default=None, min_length=1, max_length=64)
-
 
 
 class ListIssueCommentsInput(BaseOp):
@@ -408,7 +405,6 @@ def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
     }
 
 
-
 def find_open_pr(
     repo: str,
     *,
@@ -563,7 +559,6 @@ def comment_issue(req: CommentIssueInput, client: httpx.Client) -> dict[str, Any
     }
 
 
-
 def get_issue(req: GetIssueInput, client: httpx.Client) -> dict[str, Any]:
     """Read an issue's title, body, labels, and state."""
     response = client.get(f"/repos/{req.repo}/issues/{req.issue_number}")
@@ -608,7 +603,6 @@ def render_create_issue_body(
     attribution = f" by @{requestor}" if requestor else ""
     backlink = f"> Spawned from {parent_issue_url}{attribution}\n\n"
     return backlink + body
-
 
 
 def list_issue_comments(

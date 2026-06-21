@@ -454,7 +454,6 @@ def test_comment_issue_posts_to_issues_endpoint(
     assert out["result"]["comment_id"] == 999
 
 
-
 def test_get_file_returns_decoded_content(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
@@ -759,7 +758,6 @@ def test_list_issue_comments_passes_since_filter(
     )
     assert out["ok"] is True
     assert captured[0].url.params.get("since") == "2026-05-08T00:00:00Z"
-
 
 
 def test_get_pr_diff_returns_per_file_patches(
