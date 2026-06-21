@@ -8,10 +8,9 @@ from typing import TYPE_CHECKING, cast
 
 import boto3
 import pytest
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 from moto import mock_aws
-
-from boto3.dynamodb.types import TypeDeserializer
 
 from common.ddb import (
     PutBuilder,
