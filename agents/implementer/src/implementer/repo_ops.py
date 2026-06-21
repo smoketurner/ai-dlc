@@ -388,24 +388,3 @@ def post_inline_replies(
                 error=str(exc),
             )
 
-
-def fetch_failed_check_runs(
-    mcp_client: MCPClient,
-    *,
-    repo: str,
-    head_sha: str,
-    requestor_sub: str | None,
-) -> list[dict[str, Any]]:
-    """Return only the failing check runs for ``head_sha`` — for prompt context."""
-    result = invoke_repo_helper(
-        mcp_client,
-        op="list_check_runs",
-        requestor_sub=requestor_sub,
-        repo=repo,
-        ref=head_sha,
-        filter_conclusions=["failure", "timed_out", "cancelled", "action_required", "stale"],
-    )
-    runs = result.get("check_runs", [])
-    if not isinstance(runs, list):
-        return []
-    return [run for run in runs if isinstance(run, dict)]
