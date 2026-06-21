@@ -30,20 +30,6 @@ For each conflict region:
 """
 
 
-RESOLVER_USER_TEMPLATE = """\
-Someone else's work landed on the impl branch and conflicts with yours.
-
-Impl branch: {impl_branch}
-Impl branch tip SHA: {impl_sha}
-Conflicted files:
-{conflicted_files}
-
-Read each file above and produce an Edit that removes every
-`<<<<<<<` / `=======` / `>>>>>>>` marker. When the working tree has no
-markers left, stop.
-"""
-
-
 SYSTEM_PROMPT = """\
 You are the Implementer agent.
 
