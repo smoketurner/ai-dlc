@@ -457,13 +457,3 @@ def memory_id() -> str:
     """AgentCore Memory resource id, supplied at deploy via env var."""
     return os.environ["AIDLC_MEMORY_ID"]
 
-
-# Re-export the structured-output types so dispatcher and tests can import
-# from this module without reaching across packages.
-__all__ = [
-    "CaptureDecision",
-    "ConsolidationPlan",
-    "LessonBullet",
-    "MemoryAddition",
-    "SkillFile",
-]
