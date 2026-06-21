@@ -90,4 +90,3 @@ class Compound:
 
 
 type Action = Noop | InvokeAgent | EmitEvent | Compound
-
