@@ -120,4 +120,3 @@ def build_options(run_id: str, *, finish_sink: FinishSink) -> ClaudeAgentOptions
             "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
         },
     )
-
