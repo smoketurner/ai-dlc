@@ -57,7 +57,6 @@ from common.memory_md import MemoryDoc, parse, render
 from common.runtime import RetrospectorInput
 from retrospector.agent import build_agent, capture, consolidate
 from retrospector.decision import (
-    CaptureDecision,
     ConsolidationPlan,
     LessonBullet,
     MemoryAddition,
