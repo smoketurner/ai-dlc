@@ -118,46 +118,6 @@ class GetPrInput(BaseOp):
     pr_number: int = Field(ge=1)
 
 
-class GetPrHeadShaInput(BaseOp):
-    """Resolve a PR number to its current head commit SHA."""
-
-    op: Literal["get_pr_head_sha"]
-    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
-    pr_number: int = Field(ge=1)
-
-
-class UpdatePrInput(BaseOp):
-    """Update a pull request's title and/or body via PATCH."""
-
-    op: Literal["update_pr"]
-    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
-    pr_number: int = Field(ge=1)
-    title: str | None = Field(default=None, min_length=1, max_length=256)
-    body: str | None = Field(default=None, max_length=65_536)
-
-
-class MergeBranchInput(BaseOp):
-    """Merge ``head`` into ``base`` via GitHub's server-side merge API.
-
-    Returns ``merged=True`` on 201 (merge commit created) or 204
-    (already up to date). On 409 the response carries ``conflict=True``
-    and the caller is expected to resolve via a follow-up commit before
-    retrying.
-
-    When ``delete_head_on_merge=True``, a successful merge is followed
-    by ``DELETE /git/refs/heads/{head}`` so the per-task branch
-    disappears immediately rather than accumulating. Delete failures
-    are logged but don't roll back the merge — the branch can be swept
-    later by an operator.
-    """
-
-    op: Literal["merge_branch"]
-    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
-    base: str = Field(min_length=1, max_length=128)
-    head: str = Field(min_length=1, max_length=128)
-    commit_message: str | None = Field(default=None, max_length=1024)
-    delete_head_on_merge: bool = False
-
 
 class CommentIssueInput(BaseOp):
     """Add a comment to an issue."""
@@ -167,14 +127,6 @@ class CommentIssueInput(BaseOp):
     issue_number: int = Field(ge=1)
     body: str = Field(min_length=1, max_length=65_536)
 
-
-class LabelIssueInput(BaseOp):
-    """Apply labels to an issue (additive — existing labels are preserved)."""
-
-    op: Literal["label_issue"]
-    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
-    issue_number: int = Field(ge=1)
-    labels: list[str] = Field(min_length=1, max_length=16)
 
 
 class GetIssueInput(BaseOp):
@@ -222,15 +174,6 @@ class CreateIssueInput(BaseOp):
     )
     requestor: str | None = Field(default=None, min_length=1, max_length=64)
 
-
-class ListIssuesInput(BaseOp):
-    """List open issues (optionally filtered by labels) for the cron backstop."""
-
-    op: Literal["list_issues"]
-    repo: str = Field(min_length=1, max_length=128, pattern=r"^[\w.-]+/[\w.-]+$")
-    labels: list[str] | None = Field(default=None, max_length=16)
-    state: Literal["open", "closed", "all"] = "open"
-    per_page: int = Field(default=30, ge=1, le=100)
 
 
 class ListIssueCommentsInput(BaseOp):
@@ -361,19 +304,14 @@ class GetCheckStateInput(BaseOp):
 
 DISPATCH: dict[str, type[BaseOp]] = {
     "open_pr": OpenPrInput,
-    "update_pr": UpdatePrInput,
     "comment_pr": CommentPrInput,
     "create_branch": CreateBranchInput,
-    "merge_branch": MergeBranchInput,
     "commit_files": CommitFilesInput,
     "get_pr": GetPrInput,
-    "get_pr_head_sha": GetPrHeadShaInput,
     "get_file": GetFileInput,
     "comment_issue": CommentIssueInput,
-    "label_issue": LabelIssueInput,
     "get_issue": GetIssueInput,
     "create_issue": CreateIssueInput,
-    "list_issues": ListIssuesInput,
     "list_issue_comments": ListIssueCommentsInput,
     "get_pr_diff": GetPrDiffInput,
     "get_pr_archive_url": GetPrArchiveUrlInput,
@@ -446,9 +384,7 @@ def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
 
     On 422 "A pull request already exists for ..." the open PR is
     looked up via ``GET /pulls?head={owner}:{head}&state=open`` and
-    its number + URL are returned. The existing PR's title/body are
-    left untouched — callers wanting to refresh metadata use
-    ``update_pr``.
+    its number + URL are returned.
     """
     response = client.post(
         f"/repos/{req.repo}/pulls",
@@ -471,103 +407,6 @@ def open_pr(req: OpenPrInput, client: httpx.Client) -> dict[str, Any]:
         "state": body["state"],
     }
 
-
-def update_pr(req: UpdatePrInput, client: httpx.Client) -> dict[str, Any]:
-    """PATCH a PR's title / body. No-op when neither is provided."""
-    payload: dict[str, Any] = {}
-    if req.title is not None:
-        payload["title"] = req.title
-    if req.body is not None:
-        payload["body"] = req.body
-    if not payload:
-        return {"pr_number": req.pr_number, "updated": False}
-    response = client.patch(
-        f"/repos/{req.repo}/pulls/{req.pr_number}",
-        json=payload,
-    )
-    response.raise_for_status()
-    body = response.json()
-    return {
-        "pr_number": body["number"],
-        "pr_url": body["html_url"],
-        "state": body["state"],
-        "updated": True,
-    }
-
-
-def get_pr_head_sha(req: GetPrHeadShaInput, client: httpx.Client) -> dict[str, Any]:
-    """Return only the head SHA + state for a PR — cheap polling primitive."""
-    response = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
-    response.raise_for_status()
-    body = response.json()
-    return {
-        "pr_number": body["number"],
-        "head_sha": body["head"]["sha"],
-        "state": body["state"],
-        "merged": body.get("merged", False),
-    }
-
-
-def merge_branch(req: MergeBranchInput, client: httpx.Client) -> dict[str, Any]:
-    """Merge ``head`` into ``base`` via ``POST /repos/{repo}/merges``.
-
-    The GitHub merges API performs a server-side three-way merge:
-
-    * 201 — merge commit created. Returns ``merged=True`` + the new SHA.
-    * 204 — nothing to merge (already up to date). Returns ``merged=True``,
-      ``already_merged=True``.
-    * 409 — merge conflict. Returns ``conflict=True`` so the caller can
-      run the conflict-resolution flow without seeing this as an error.
-    * 404 — base/head missing. Returns ``not_found=True``.
-
-    When the caller passes ``delete_head_on_merge=True`` and the merge
-    succeeds, the head ref is deleted in a follow-up call. A delete
-    failure is logged but doesn't fail the op — the merge already
-    committed and the orphan ref can be cleaned up later.
-    """
-    payload: dict[str, Any] = {"base": req.base, "head": req.head}
-    if req.commit_message:
-        payload["commit_message"] = req.commit_message
-    response = client.post(f"/repos/{req.repo}/merges", json=payload)
-    if response.status_code == httpx.codes.CREATED:
-        body = response.json()
-        head_deleted = (
-            delete_branch_ref(req.repo, req.head, client) if req.delete_head_on_merge else False
-        )
-        return {
-            "merged": True,
-            "already_merged": False,
-            "merge_commit_sha": body.get("sha", ""),
-            "head_deleted": head_deleted,
-        }
-    if response.status_code == httpx.codes.NO_CONTENT:
-        head_deleted = (
-            delete_branch_ref(req.repo, req.head, client) if req.delete_head_on_merge else False
-        )
-        return {
-            "merged": True,
-            "already_merged": True,
-            "merge_commit_sha": "",
-            "head_deleted": head_deleted,
-        }
-    if response.status_code == httpx.codes.CONFLICT:
-        return {"merged": False, "conflict": True}
-    if response.status_code == httpx.codes.NOT_FOUND:
-        return {"merged": False, "not_found": True}
-    response.raise_for_status()
-    return {"merged": False}
-
-
-def delete_branch_ref(repo: str, branch: str, client: httpx.Client) -> bool:
-    """Best-effort ``DELETE /git/refs/heads/{branch}``. ``True`` on success."""
-    response = client.delete(f"/repos/{repo}/git/refs/heads/{branch}")
-    if response.status_code in (httpx.codes.NO_CONTENT, httpx.codes.NOT_FOUND):
-        return response.status_code == httpx.codes.NO_CONTENT
-    logger.warning(
-        "delete_branch_ref failed",
-        extra={"repo": repo, "branch": branch, "status": response.status_code},
-    )
-    return False
 
 
 def find_open_pr(
@@ -724,19 +563,6 @@ def comment_issue(req: CommentIssueInput, client: httpx.Client) -> dict[str, Any
     }
 
 
-def label_issue(req: LabelIssueInput, client: httpx.Client) -> dict[str, Any]:
-    """Add labels to an issue (existing labels are preserved)."""
-    response = client.post(
-        f"/repos/{req.repo}/issues/{req.issue_number}/labels",
-        json={"labels": req.labels},
-    )
-    response.raise_for_status()
-    body = response.json()
-    return {
-        "issue_number": req.issue_number,
-        "labels": [label["name"] for label in body],
-    }
-
 
 def get_issue(req: GetIssueInput, client: httpx.Client) -> dict[str, Any]:
     """Read an issue's title, body, labels, and state."""
@@ -783,30 +609,6 @@ def render_create_issue_body(
     backlink = f"> Spawned from {parent_issue_url}{attribution}\n\n"
     return backlink + body
 
-
-def list_issues(req: ListIssuesInput, client: httpx.Client) -> dict[str, Any]:
-    """List issues on a repo, optionally filtered by labels.
-
-    GitHub's ``/issues`` endpoint mixes PRs and issues; we filter PRs out
-    so callers (like Triage) only see real issues.
-    """
-    params: dict[str, str] = {"state": req.state, "per_page": str(req.per_page)}
-    if req.labels:
-        params["labels"] = ",".join(req.labels)
-    response = client.get(f"/repos/{req.repo}/issues", params=params)
-    response.raise_for_status()
-    items = [item for item in response.json() if "pull_request" not in item]
-    return {
-        "issues": [
-            {
-                "issue_number": item["number"],
-                "issue_url": item["html_url"],
-                "title": item["title"],
-                "labels": [label["name"] for label in item.get("labels", [])],
-            }
-            for item in items
-        ],
-    }
 
 
 def list_issue_comments(
@@ -1225,19 +1027,14 @@ def error(kind: str, detail: object) -> dict[str, Any]:
 OpHandler = Callable[[Any, httpx.Client], dict[str, Any]]
 OP_HANDLERS: dict[type[BaseOp], tuple[str, OpHandler]] = {
     OpenPrInput: ("open_pr", open_pr),
-    UpdatePrInput: ("update_pr", update_pr),
     CommentPrInput: ("comment_pr", comment_pr),
     CreateBranchInput: ("create_branch", create_branch),
-    MergeBranchInput: ("merge_branch", merge_branch),
     CommitFilesInput: ("commit_files", commit_files),
     GetPrInput: ("get_pr", get_pr),
-    GetPrHeadShaInput: ("get_pr_head_sha", get_pr_head_sha),
     GetFileInput: ("get_file", get_file),
     CommentIssueInput: ("comment_issue", comment_issue),
-    LabelIssueInput: ("label_issue", label_issue),
     GetIssueInput: ("get_issue", get_issue),
     CreateIssueInput: ("create_issue", create_issue),
-    ListIssuesInput: ("list_issues", list_issues),
     ListIssueCommentsInput: ("list_issue_comments", list_issue_comments),
     GetPrDiffInput: ("get_pr_diff", get_pr_diff),
     GetPrArchiveUrlInput: ("get_pr_archive_url", get_pr_archive_url),
