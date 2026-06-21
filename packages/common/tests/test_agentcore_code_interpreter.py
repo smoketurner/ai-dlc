@@ -185,4 +185,3 @@ def test_execute_code_wraps_value_error() -> None:
     client.execute_code.side_effect = ValueError("bad language")
     with pytest.raises(AgentCoreCodeInterpreterError):
         execute_code(client, code="x", language="ruby")
-
