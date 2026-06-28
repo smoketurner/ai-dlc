@@ -66,10 +66,6 @@ EventType = Literal[
 
 ReviewVerdict = Literal["approve", "request_changes", "comment"]
 
-CheckConclusion = Literal[
-    "success", "failure", "timed_out", "cancelled", "action_required", "stale"
-]
-
 
 class Payload(BaseModel):
     """Base for typed payloads — frozen, strict, no extra keys."""
@@ -496,30 +492,6 @@ class RunFailed(Payload):
     revision_count: Annotated[int, Field(ge=0, le=16)] = 0
 
 
-type AnyPayload = (
-    RequestReceived
-    | IssueTriaged
-    | DesignReady
-    | ImplPrOpened
-    | ImplIterationRequested
-    | ValidationRequested
-    | TriageDispatched
-    | ArchitectDispatched
-    | ImplementerDispatched
-    | ValidatorsDispatched
-    | ProposerDispatched
-    | ChecksPassed
-    | ChecksFailed
-    | ReviewReady
-    | TestReportReady
-    | CodeCritiqueReady
-    | RevisionReady
-    | RunCompleted
-    | RunFailed
-    | RunCancelRequested
-)
-
-
 class EventEnvelope[PayloadT: Payload](BaseModel):
     """Versioned envelope wrapping a typed payload.
 
@@ -541,29 +513,13 @@ class EventEnvelope[PayloadT: Payload](BaseModel):
     payload: PayloadT
 
 
-class IncomingEnvelope[PayloadT: Payload](EventEnvelope[PayloadT]):
-    """Wire-format variant for parsing incoming EventBridge events.
-
-    Identical fields to :class:`EventEnvelope`, but with ``strict=False`` so
-    Pydantic coerces ISO-8601 datetime strings (the on-the-wire timestamp
-    representation) into :class:`datetime` instances. The strict envelope is
-    used at *emission* — we control the shape and want any drift to fail
-    loud. This permissive sibling is used at *ingestion* by Lambdas that
-    parse events back off the bus.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
-
-
 class UntypedEnvelope(BaseModel):
     """Wire-format variant carrying the envelope fields with an untyped payload.
 
     Use when a Lambda needs the validated envelope metadata (``type``,
     ``run_id``, ``timestamp``, etc.) but operates on payloads structurally
     rather than against a known typed-payload union. Avoids the strict
-    union-discrimination Pydantic does in :class:`IncomingEnvelope` when
-    every payload field would have to satisfy one of the typed payload
-    classes.
+    union-discrimination Pydantic performs against typed payload classes.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=False)
