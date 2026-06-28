@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 import boto3
 import pytest
+from boto3.dynamodb.types import TypeDeserializer
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
@@ -15,7 +16,6 @@ from common.ddb import (
     PutBuilder,
     TransactWriteItemsBuilder,
     UpdateBuilder,
-    deserialize_item,
     is_conditional_check_failed,
 )
 
@@ -250,34 +250,6 @@ def test_add_accepts_float() -> None:
 
 
 # ---------------------------------------------------------------------------
-# deserialize_item round-trip
-# ---------------------------------------------------------------------------
-
-
-def test_deserialize_item_round_trips_scalars() -> None:
-    item = {
-        "name": {"S": "alice"},
-        "age": {"N": "30"},
-        "active": {"BOOL": True},
-    }
-    assert deserialize_item(item) == {"name": "alice", "age": Decimal("30"), "active": True}
-
-
-def test_deserialize_item_round_trips_nested_map() -> None:
-    item = {
-        "feedback": {
-            "M": {
-                "kind": {"S": "ci"},
-                "tags": {"L": [{"S": "build"}, {"S": "test"}]},
-            },
-        },
-    }
-    assert deserialize_item(item) == {
-        "feedback": {"kind": "ci", "tags": ["build", "test"]},
-    }
-
-
-# ---------------------------------------------------------------------------
 # PutBuilder
 # ---------------------------------------------------------------------------
 
@@ -369,7 +341,8 @@ def test_commit_persists_serialised_types(ddb: DynamoDBClient) -> None:
         TableName=TABLE,
         Key={"pk": {"S": "RUN#1"}, "sk": {"S": "STATE"}},
     )["Item"]
-    decoded = deserialize_item(item)
+    _d = TypeDeserializer()
+    decoded = {k: _d.deserialize(v) for k, v in item.items()}
     assert decoded["status"] == "DESIGN.READY"
     assert decoded["cost"] == Decimal("0.25")
     assert decoded["flag"] is True
