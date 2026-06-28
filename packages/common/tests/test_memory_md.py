@@ -13,7 +13,6 @@ from common.errors import MemoryDocParseError
 from common.memory_md import (
     MemoryDoc,
     parse,
-    read_stack_profile,
     render,
     stack_profile_key,
     write_stack_profile,
@@ -154,18 +153,6 @@ def test_stack_profile_key_uses_per_project_namespace() -> None:
     assert stack_profile_key("ai-dlc") == "projects/ai-dlc/stack_profile.json"
 
 
-def test_read_stack_profile_returns_none_when_missing(memory_bucket: None) -> None:
-    del memory_bucket
-    assert read_stack_profile(_PROJECT_SLUG) is None
-
-
-def test_write_then_read_roundtrip(memory_bucket: None) -> None:
-    del memory_bucket
-    assert write_stack_profile(_PROJECT_SLUG, _SAMPLE_PROFILE) is True
-    loaded = read_stack_profile(_PROJECT_SLUG)
-    assert loaded == _SAMPLE_PROFILE
-
-
 def test_write_is_idempotent(memory_bucket: None) -> None:
     """Second write of identical content is skipped (returns False)."""
     del memory_bucket
@@ -178,18 +165,3 @@ def test_write_re_puts_on_content_change(memory_bucket: None) -> None:
     write_stack_profile(_PROJECT_SLUG, _SAMPLE_PROFILE)
     updated = _SAMPLE_PROFILE.model_copy(update={"polyglot": True})
     assert write_stack_profile(_PROJECT_SLUG, updated) is True
-    loaded = read_stack_profile(_PROJECT_SLUG)
-    assert loaded is not None
-    assert loaded.polyglot is True
-
-
-def test_read_stack_profile_returns_none_for_invalid_json(memory_bucket: None) -> None:
-    """An old or hand-edited snapshot that no longer parses → ``None``."""
-    del memory_bucket
-    boto3.client("s3", region_name="us-east-1").put_object(
-        Bucket=_MEMORY_BUCKET,
-        Key=stack_profile_key(_PROJECT_SLUG),
-        Body=b'{"components": [], "unexpected_field": 1}',
-        ContentType="application/json",
-    )
-    assert read_stack_profile(_PROJECT_SLUG) is None
