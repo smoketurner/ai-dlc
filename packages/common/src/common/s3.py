@@ -59,4 +59,3 @@ def get_text(client: S3Client, /, *, bucket: str, key: str) -> str:
     except (BotoCoreError, ClientError) as exc:
         raise S3ArtifactError("get_text failed", bucket=bucket, key=key) from exc
     return raw.decode("utf-8")
-
