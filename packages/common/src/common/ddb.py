@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Self, cast
 
-from boto3.dynamodb.types import TypeDeserializer, TypeSerializer
+from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
 
 if TYPE_CHECKING:
@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from mypy_boto3_dynamodb.type_defs import TransactWriteItemTypeDef
 
 _serializer = TypeSerializer()
-_deserializer = TypeDeserializer()
 
 
 def _normalize(value: Any) -> Any:
@@ -66,15 +65,6 @@ def _normalize(value: Any) -> Any:
 def _serialize(value: Any) -> dict[str, Any]:
     """Serialize a Python value into the DDB wire-format dict."""
     return cast("dict[str, Any]", _serializer.serialize(_normalize(value)))
-
-
-def deserialize_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Round-trip a DDB item dict back into raw Python values.
-
-    Thin wrapper over ``TypeDeserializer`` for symmetry with the
-    builder's serialisation path.
-    """
-    return {k: _deserializer.deserialize(v) for k, v in item.items()}
 
 
 @dataclass

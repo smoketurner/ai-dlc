@@ -90,13 +90,3 @@ class Compound:
 
 
 type Action = Noop | InvokeAgent | EmitEvent | Compound
-
-
-def impl_branch_name(run_id: str) -> str:
-    """Conventional impl branch name (one per run).
-
-    Mirrors :func:`implementer.repo_ops.impl_branch_name`. The
-    implementer opens a single PR off this branch and applies all
-    revisions to it directly.
-    """
-    return f"aidlc/impl/{run_id}"

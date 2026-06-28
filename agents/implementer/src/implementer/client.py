@@ -22,11 +22,8 @@ the container's ``git`` CLI — the agent loop iteratively commits.
 
 from __future__ import annotations
 
-import os
-from functools import cache
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-import boto3
 import structlog
 from claude_agent_sdk import ClaudeSDKClient, ResultMessage
 from strands.tools.mcp import MCPClient
@@ -64,9 +61,6 @@ from implementer.repo_ops import (
     run_git,
     short_diff_summary,
 )
-
-if TYPE_CHECKING:
-    from mypy_boto3_dynamodb.client import DynamoDBClient
 
 logger = structlog.get_logger()
 
@@ -500,45 +494,6 @@ def any_ci_failure_feedback(feedback: list[FeedbackItem] | None) -> bool:
     return any(isinstance(item, CiFailureFeedback) for item in feedback)
 
 
-# ---------------------------------------------------------------------------
-# Cancellation check — read STATE row, return True if cancelled/failed
-# ---------------------------------------------------------------------------
-
-
-@cache
-def ddb_client() -> DynamoDBClient:
-    """Process-cached DDB client (cancellation check)."""
-    return boto3.client("dynamodb")
-
-
-def runs_table_name() -> str | None:
-    """Runs table name, ``None`` when not wired (local dev)."""
-    return os.environ.get("AIDLC_RUNS_TABLE") or None
-
-
-def run_cancelled(run_id: str) -> bool:
-    """``True`` when the run's STATE row is in ``cancelled`` or ``failed``.
-
-    Skips the check when ``AIDLC_RUNS_TABLE`` is unset (local dev /
-    tests). A read failure is treated as not-cancelled — fail-open is
-    safer here than blocking the PR open on a transient DDB error.
-    """
-    table = runs_table_name()
-    if table is None:
-        return False
-    try:
-        response = ddb_client().get_item(
-            TableName=table,
-            Key={"pk": {"S": f"RUN#{run_id}"}, "sk": {"S": "STATE"}},
-            ProjectionExpression="current_state",
-        )
-    except Exception as exc:
-        logger.warning("run_cancelled lookup failed", run_id=run_id, error=str(exc))
-        return False
-    state = (response.get("Item") or {}).get("current_state", {}).get("S", "")
-    return state in {"cancelled", "failed"}
-
-
 # Re-exported so app.py can call run_git directly if needed (kept for
 # future use; not currently wired).
 __all__ = [
@@ -556,6 +511,5 @@ __all__ = [
     "pr_title",
     "render_pr_body",
     "resolve_target_repo",
-    "run_cancelled",
     "run_git",
 ]
