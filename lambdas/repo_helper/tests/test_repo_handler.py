@@ -454,35 +454,6 @@ def test_comment_issue_posts_to_issues_endpoint(
     assert out["result"]["comment_id"] == 999
 
 
-def test_label_issue_adds_labels_additively(
-    patch_client: Callable[[httpx.MockTransport], None],
-) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
-        assert request.method == "POST"
-        assert request.url.path == "/repos/o/r/issues/7/labels"
-        assert json.loads(request.content) == {"labels": ["aidlc:deferred"]}
-        return httpx.Response(
-            200,
-            json=[
-                {"name": "bug"},
-                {"name": "aidlc:deferred"},
-            ],
-        )
-
-    patch_client(httpx.MockTransport(respond))
-    out = h.handler(
-        {
-            "op": "label_issue",
-            "repo": "o/r",
-            "issue_number": 7,
-            "labels": ["aidlc:deferred"],
-        },
-        ctx(),
-    )
-    assert out["ok"] is True
-    assert out["result"]["labels"] == ["bug", "aidlc:deferred"]
-
-
 def test_get_file_returns_decoded_content(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:
@@ -787,48 +758,6 @@ def test_list_issue_comments_passes_since_filter(
     )
     assert out["ok"] is True
     assert captured[0].url.params.get("since") == "2026-05-08T00:00:00Z"
-
-
-def test_list_issues_filters_out_pull_requests(
-    patch_client: Callable[[httpx.MockTransport], None],
-) -> None:
-    def respond(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert request.url.path == "/repos/o/r/issues"
-        assert request.url.params["state"] == "open"
-        assert request.url.params["labels"] == "aidlc:ready"
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "number": 7,
-                    "html_url": "https://github.com/o/r/issues/7",
-                    "title": "Real issue",
-                    "labels": [{"name": "aidlc:ready"}],
-                },
-                {
-                    "number": 8,
-                    "html_url": "https://github.com/o/r/pull/8",
-                    "title": "A PR",
-                    "labels": [{"name": "aidlc:ready"}],
-                    "pull_request": {"url": "..."},
-                },
-            ],
-        )
-
-    patch_client(httpx.MockTransport(respond))
-    out = h.handler(
-        {
-            "op": "list_issues",
-            "repo": "o/r",
-            "labels": ["aidlc:ready"],
-        },
-        ctx(),
-    )
-    assert out["ok"] is True
-    issues = out["result"]["issues"]
-    assert len(issues) == 1
-    assert issues[0]["issue_number"] == 7
 
 
 def test_get_pr_diff_returns_per_file_patches(

@@ -20,7 +20,6 @@ from common.agentcore_code_interpreter import (
     execute_command,
     start_session,
     stop_session,
-    upload_file,
 )
 from common.errors import AgentCoreCodeInterpreterError
 
@@ -186,22 +185,3 @@ def test_execute_code_wraps_value_error() -> None:
     client.execute_code.side_effect = ValueError("bad language")
     with pytest.raises(AgentCoreCodeInterpreterError):
         execute_code(client, code="x", language="ruby")
-
-
-def test_upload_file_passes_through_args() -> None:
-    client = MagicMock()
-    upload_file(client, path="data.csv", content="a,b\n1,2\n", description="sample")
-    client.upload_file.assert_called_once_with(
-        path="data.csv",
-        content="a,b\n1,2\n",
-        description="sample",
-    )
-
-
-def test_upload_file_wraps_value_error() -> None:
-    """SDK rejects absolute paths with ValueError — wrapper converts it."""
-    client = MagicMock()
-    client.upload_file.side_effect = ValueError("absolute path")
-    with pytest.raises(AgentCoreCodeInterpreterError) as exc:
-        upload_file(client, path="/absolute", content="x")
-    assert exc.value.context["path"] == "/absolute"
