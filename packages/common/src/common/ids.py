@@ -37,4 +37,3 @@ def new_event_id() -> EventId:
 def new_correlation_id() -> CorrelationId:
     """Generate a new correlation id (threads through events end-to-end)."""
     return CorrelationId(_uuid7())
-
