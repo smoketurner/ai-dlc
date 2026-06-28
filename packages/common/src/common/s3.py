@@ -12,8 +12,7 @@ or its own module.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -21,7 +20,6 @@ from common.errors import S3ArtifactError
 
 if TYPE_CHECKING:
     from mypy_boto3_s3.client import S3Client
-    from mypy_boto3_s3.type_defs import PaginatorConfigTypeDef
 
 
 def put_text(
@@ -61,28 +59,3 @@ def get_text(client: S3Client, /, *, bucket: str, key: str) -> str:
     except (BotoCoreError, ClientError) as exc:
         raise S3ArtifactError("get_text failed", bucket=bucket, key=key) from exc
     return raw.decode("utf-8")
-
-
-def list_keys(
-    client: S3Client,
-    /,
-    *,
-    bucket: str,
-    prefix: str,
-    page_size: int = 100,
-) -> Iterator[str]:
-    """Yield keys under ``s3://bucket/prefix``.
-
-    Raises:
-        S3ArtifactError: On any boto3 error.
-    """
-    paginator = client.get_paginator("list_objects_v2")
-    pagination = cast("PaginatorConfigTypeDef", {"PageSize": page_size})
-    try:
-        for page in paginator.paginate(Bucket=bucket, Prefix=prefix, PaginationConfig=pagination):
-            for obj in page.get("Contents", []):
-                key = obj.get("Key")
-                if key is not None:
-                    yield key
-    except (BotoCoreError, ClientError) as exc:
-        raise S3ArtifactError("list_keys failed", bucket=bucket, prefix=prefix) from exc
