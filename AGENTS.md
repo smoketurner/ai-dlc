@@ -19,7 +19,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 | Path | Role |
 |------|------|
-| `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), gateway-MCP plumbing (`gateway_tools.py`), boto3 helpers (`ddb.py`, `runs.py`), `MEMORY.md` parser + stack-profile S3 reader/writer (`memory_md.py`). |
+| `packages/common/` | Shared library. Event envelopes (`events.py`, `event_emit.py`), state machine (`state.py`, `state_transitions.py`), routing rules (`routing.py`), AgentCore wrappers (`agentcore_*.py`), gateway-MCP plumbing (`gateway_tools.py`), boto3 helpers (`ddb.py`, `runs.py`), `MEMORY.md` parser + stack-profile S3 writer (`memory_md.py`). |
 | `agents/architect/` | Strands agent — writes a single structured `plan.md` to S3 (Context → Assumptions → Approach → Files → Reuse → Implementation steps → Verification → Out of scope). No PR. |
 | `agents/code_critic/` | Strands agent — adversarially reviews the impl PR against the **original GitHub issue** (advisory; runs in parallel with reviewer + tester). |
 | `agents/implementer/` | Claude Agent SDK agent — opens the single impl PR for the run (`mode=implementation`); also runs `mode=revision` to apply validator feedback, human `@aidlc-bot` mentions, and failing CI feedback directly onto the impl branch. |
@@ -47,7 +47,7 @@ An agentic SDLC platform built on AWS Bedrock AgentCore.
 
 ### Nested `MEMORY.md`
 
-A target repo may carry per-directory `MEMORY.md` files in addition to the root one (Stripe pattern). The parser stays strict on the six-section schema per file; the loader in `packages/common/src/common/memory_md.py` (`discover_nested_memory_paths` / `load_nested_memory_docs`) walks each changed path's directory chain and unions the relevant `MEMORY.md` files. Use the deepest scope that makes sense — e.g. a TypeScript-only convention lands in `src/web/MEMORY.md`, not the root.
+A target repo may carry per-directory `MEMORY.md` files in addition to the root one (Stripe pattern). The parser in `packages/common/src/common/memory_md.py` stays strict on the six-section schema per file. (A nested-`MEMORY.md` loader that walks each changed path's directory chain and unions the relevant `MEMORY.md` files is planned but not currently implemented.) Use the deepest scope that makes sense — e.g. a TypeScript-only convention lands in `src/web/MEMORY.md`, not the root.
 
 ### Skills (`agentskills.io`)
 
