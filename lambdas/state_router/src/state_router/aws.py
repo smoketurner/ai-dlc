@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -61,11 +60,6 @@ def runtime_client() -> Any:
             retries={"max_attempts": 1, "mode": "standard"},
         ),
     )
-
-
-def now_iso() -> str:
-    """Tz-aware UTC ISO timestamp."""
-    return datetime.now(UTC).isoformat()
 
 
 def dispatch_to_runtime(
