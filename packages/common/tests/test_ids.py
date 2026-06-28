@@ -5,11 +5,9 @@ from __future__ import annotations
 import re
 
 from common.ids import (
-    new_approval_id,
     new_correlation_id,
     new_event_id,
     new_run_id,
-    new_session_id,
 )
 
 _UUID7_RE = re.compile(
@@ -27,12 +25,6 @@ def test_event_ids_are_unique() -> None:
     assert len(ids) == 100
 
 
-def test_session_id_is_deterministic_format() -> None:
-    rid = new_run_id()
-    sid = new_session_id(agent_name="architect", run_id=rid)
-    assert sid == f"{rid}-architect"
-
-
 def test_event_ids_are_chronologically_sortable() -> None:
     a = new_event_id()
     b = new_event_id()
@@ -41,5 +33,5 @@ def test_event_ids_are_chronologically_sortable() -> None:
 
 
 def test_distinct_id_kinds_unique() -> None:
-    samples = {new_run_id(), new_event_id(), new_correlation_id(), new_approval_id()}
-    assert len(samples) == 4
+    samples = {new_run_id(), new_event_id(), new_correlation_id()}
+    assert len(samples) == 3
