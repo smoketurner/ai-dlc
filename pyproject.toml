@@ -6,6 +6,7 @@ requires-python = ">=3.14,<3.15"
 
 [tool.uv]
 required-version = ">=0.11"
+constraint-dependencies = ["joserfc>=1.6.7"]
 
 [tool.uv.workspace]
 members = ["packages/*", "agents/*", "lambdas/*", "services/*"]
