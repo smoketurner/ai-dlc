@@ -438,20 +438,6 @@ class ProposerInput(_Frozen):
     actor_id: str = "system"
 
 
-class ProposerResult(_Frozen):
-    """Result the Proposer returns.
-
-    ``proposal_made=False`` indicates the Proposer judged the signals
-    insufficient to warrant a change — no PR opened.
-    """
-
-    proposal_made: bool
-    pr_url: str | None = None
-    target_files: list[str] = []
-    summary: Annotated[str, Field(max_length=2048)]
-    session_id: str
-
-
 class RetrospectorInput(_Frozen):
     """Input passed to the Retrospector's ``/invocations`` endpoint.
 
