@@ -10,7 +10,6 @@ import pytest
 from common.routing import (
     load_system_prompt,
     pick_variant,
-    variant_actor_id,
 )
 
 
@@ -30,11 +29,6 @@ def test_pick_variant_differs_across_agents_within_run() -> None:
     """Different agents in the same run should not always pick the same variant."""
     seen = {pick_variant("run-1", name) for name in ["a1", "a2", "a3", "a4", "a5", "a6"]}
     assert seen == {"a", "b"}
-
-
-def test_variant_actor_id_format() -> None:
-    assert variant_actor_id("architect", "a") == "architect-a"
-    assert variant_actor_id("critic", "b") == "critic-b"
 
 
 def make_prompt_module(qualified_name: str, prompt: str) -> types.ModuleType:
