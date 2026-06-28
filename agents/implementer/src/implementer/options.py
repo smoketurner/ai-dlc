@@ -16,14 +16,11 @@ from implementer.hooks import (
     require_finish_on_stop,
     validate_finish_report,
 )
-from implementer.prompts import RESOLVER_SYSTEM_PROMPT
 
 DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 FALLBACK_MODEL_ID = "us.anthropic.claude-haiku-4-5"
 DEFAULT_BUDGET_USD = 5.0
 DEFAULT_MAX_TURNS = 50
-RESOLVER_BUDGET_USD = 1.0
-RESOLVER_MAX_TURNS = 12
 
 GATEWAY_SERVER_NAME = "gateway"
 
@@ -119,31 +116,6 @@ def build_options(run_id: str, *, finish_sink: FinishSink) -> ClaudeAgentOptions
         },
         env={
             # Claude Code uses Bedrock when this is set.
-            "CLAUDE_CODE_USE_BEDROCK": "1",
-            "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
-        },
-    )
-
-
-def build_resolver_options() -> ClaudeAgentOptions:
-    """Tight ClaudeAgentOptions for the merge-conflict resolver sub-session.
-
-    The resolver edits files only — no Bash, no Write, no MCP servers,
-    no finish tool. The wrapper detects completion by checking the
-    working tree for remaining conflict markers after the session ends.
-    Budget and turn cap are aggressive so a stuck resolver can't burn
-    much before the wrapper aborts the merge.
-    """
-    return ClaudeAgentOptions(
-        model=model_id(),
-        fallback_model=FALLBACK_MODEL_ID,
-        system_prompt=RESOLVER_SYSTEM_PROMPT,
-        cwd=working_dir(),
-        permission_mode="acceptEdits",
-        max_turns=RESOLVER_MAX_TURNS,
-        max_budget_usd=RESOLVER_BUDGET_USD,
-        allowed_tools=["Read", "Edit"],
-        env={
             "CLAUDE_CODE_USE_BEDROCK": "1",
             "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
         },
