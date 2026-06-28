@@ -33,28 +33,12 @@ class AidlcError(Exception):
         return f"{self.message} ({rendered})"
 
 
-class ConfigurationError(AidlcError):
-    """A required setting, env var, or SSM parameter is missing or invalid."""
-
-
 class ValidationError(AidlcError):
     """An input does not match the expected schema or invariant."""
 
 
 class MemoryDocParseError(ValidationError):
     """A ``MEMORY.md`` file is structurally invalid (e.g., unknown headers)."""
-
-
-class IdempotencyConflictError(AidlcError):
-    """A duplicate request was rejected by the idempotency check."""
-
-
-class ApprovalConflictError(AidlcError):
-    """A HITL approval decision violates separation-of-duties or has expired."""
-
-
-class CostLimitExceededError(AidlcError):
-    """The agent run exceeded its per-run cost cap."""
 
 
 class GatewayError(AidlcError):
@@ -75,10 +59,6 @@ class AgentCoreCodeInterpreterError(AidlcError):
 
 class S3ArtifactError(AidlcError):
     """An S3 artifact read or write failed."""
-
-
-class GitOpError(AidlcError):
-    """A git or GitHub operation failed."""
 
 
 class EventEmitError(AidlcError):

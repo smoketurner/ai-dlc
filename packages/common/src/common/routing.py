@@ -44,16 +44,6 @@ def pick_variant(run_id: str, agent_name: str) -> Variant:
     return "b" if digest[0] & 1 else "a"
 
 
-def variant_actor_id(agent_name: str, variant: Variant) -> str:
-    """Build the actor_id telemetry tag for ``(agent_name, variant)``.
-
-    Used as the ``actor_id`` field on event envelopes the agent emits so
-    downstream consumers (event_projector, telemetry) can split metrics
-    by variant.
-    """
-    return f"{agent_name}-{variant}"
-
-
 def load_system_prompt(agent_name: str, variant: Variant) -> str:
     """Resolve the SYSTEM_PROMPT for ``(agent_name, variant)``.
 
