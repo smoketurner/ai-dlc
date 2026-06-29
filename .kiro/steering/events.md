@@ -19,9 +19,8 @@ class EventEnvelope[PayloadT]:
 
 The envelope sits inside the EventBridge `detail` field. The bus's own `source` and `detail-type` are derived from `actor_id` and `type` at publish time. The platform could move off EventBridge without rewriting any model code.
 
-Three envelope variants exist:
+Two envelope variants exist:
 - `EventEnvelope` -- strict, used at emission time
-- `IncomingEnvelope` -- permissive (`strict=False`), used at ingestion to coerce ISO-8601 strings to datetimes
 - `UntypedEnvelope` -- carries envelope metadata with an untyped `dict` payload, used when a Lambda operates on payloads structurally
 
 ## Event Types
