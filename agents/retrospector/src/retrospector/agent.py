@@ -63,12 +63,11 @@ def build_agent(run_id: str, *, mode: Mode, mcp_client: MCPClient) -> Agent:
     ``with gateway_mcp_client() as mcp_client:``) and keeping it open
     for the lifetime of the agent call.
 
-    Variant tag from :func:`common.routing.pick_variant` still flows
-    into the actor_id telemetry, but the Retrospector's prompts
-    (capture vs consolidate) are selected by ``mode`` directly — A/B
-    of either prompt would land via ``prompts_b.py`` in a future PR.
+    The Retrospector's prompts (capture vs consolidate) are selected
+    by ``mode`` directly — A/B of either prompt would land via
+    ``prompts_b.py`` in a future PR.
     """
-    pick_variant(run_id, "retrospector")  # telemetry side-effect via actor_id
+    pick_variant(run_id, "retrospector")
     bedrock_model_id = model_id()
     return Agent(
         model=BedrockModel(

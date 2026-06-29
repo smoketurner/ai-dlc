@@ -85,5 +85,5 @@ Each agent has a `prompts.py` with a `SYSTEM_PROMPT`. To A/B test a prompt rewri
 
 1. Add `prompts_b.py` alongside `prompts.py` with a `SYSTEM_PROMPT` string.
 2. `routing.pick_variant(run_id, agent_name)` deterministically selects `"a"` or `"b"` per run+agent.
-3. The variant tag flows through `actor_id` on every event (e.g., `architect-b`), enabling metric splits.
+3. The variant tag is available in the agent's build context; event `actor_id` values are plain names (e.g., `architect`).
 4. Removing `prompts_b.py` silently falls back to the A variant -- no plumbing changes needed.
