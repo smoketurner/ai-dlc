@@ -1,14 +1,12 @@
-"""Hybrid memory: ``MEMORY.md`` (per-repo) ⊕ AgentCore Memory (cross-session).
+"""AgentCore Memory helpers and skill discovery.
 
-The orchestration layer that both agents call into. ``memory_md`` and
-``agentcore_memory`` are pure adapters; this module composes them with a clear
-contract:
+Provides:
+* AgentCore Memory retrieval and rendering for agent preambles
+* Skill discovery (agentskills.io frontmatter parsing)
 
-* ``MEMORY.md`` is the canonical, human-reviewed, repo-versioned memory.
-* AgentCore Memory holds cross-session semantic facts and session events.
-* Writes into AgentCore Memory happen exclusively from the
-  ``event_projector`` Lambda (which forwards every platform event as a
-  ``CreateEvent``); agents themselves never write to AgentCore Memory.
+``MEMORY.md`` handling lives in ``memory_md.py``. AgentCore Memory writes
+happen exclusively from the ``event_projector`` Lambda; agents read via
+:func:`agent_memory_preamble`.
 
 The agent's persistent filesystem is at ``/workspace`` by default; for local
 runs callers pass ``fs_root=Path.cwd()`` or similar.
