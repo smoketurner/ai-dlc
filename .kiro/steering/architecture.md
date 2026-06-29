@@ -107,7 +107,7 @@ Sync is one-way: `MEMORY.md` content is read into AgentCore Memory on every sess
 
 ### Nested MEMORY.md (Stripe Pattern)
 
-Target repos may carry per-directory `MEMORY.md` files. The loader (`packages/common/src/common/memory_md.py`) walks each changed path's directory chain and unions the relevant files. Use the deepest scope that makes sense (e.g., a TypeScript-only convention in `src/web/MEMORY.md`, not the root).
+Target repos may carry per-directory `MEMORY.md` files. A nested loader that walks each changed path's directory chain and unions the relevant files is planned but not yet implemented. Use the deepest scope that makes sense (e.g., a TypeScript-only convention in `src/web/MEMORY.md`, not the root).
 
 ### Skills System
 
