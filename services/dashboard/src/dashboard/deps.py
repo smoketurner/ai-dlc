@@ -11,9 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb.client import DynamoDBClient
-    from mypy_boto3_events.client import EventBridgeClient
     from mypy_boto3_lambda.client import LambdaClient
-    from mypy_boto3_s3.client import S3Client
 
 
 class Settings(BaseModel):
@@ -84,18 +82,6 @@ def settings() -> Settings:
 def ddb() -> DynamoDBClient:
     """Process-cached DynamoDB client."""
     return boto3.client("dynamodb", region_name=settings().region)
-
-
-@cache
-def events() -> EventBridgeClient:
-    """Process-cached EventBridge client."""
-    return boto3.client("events", region_name=settings().region)
-
-
-@cache
-def s3() -> S3Client:
-    """Process-cached S3 client."""
-    return boto3.client("s3", region_name=settings().region)
 
 
 @cache

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from moto import mock_aws
 
 from dashboard.app import app
-from dashboard.deps import ddb, s3, settings
+from dashboard.deps import ddb, settings
 
 RUNS = "test-runs"
 ARTIFACTS = "test-artifacts"
@@ -25,7 +25,6 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("AIDLC_AUTH", "disabled")
     settings.cache_clear()
     ddb.cache_clear()
-    s3.cache_clear()
     with mock_aws():
         boto3.client("dynamodb", region_name="us-east-1").create_table(
             TableName=RUNS,
@@ -43,7 +42,6 @@ def aws_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         yield
     settings.cache_clear()
     ddb.cache_clear()
-    s3.cache_clear()
 
 
 def seed_state(run_id: str, **extra: object) -> None:
