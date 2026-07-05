@@ -132,9 +132,3 @@ def get_run_status(run_id: str) -> tuple[str | None, str | None]:
     updated_at = item.get("updated_at", {}).get("S") or None
     status = item.get("status", {}).get("S") or None
     return status, updated_at
-
-
-def is_run_terminal(run_id: str) -> bool:
-    """``True`` when the run's latest event is a terminal type."""
-    status, _ = get_run_status(run_id)
-    return status in TERMINAL_STATUSES if status else False
