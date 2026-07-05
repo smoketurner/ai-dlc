@@ -66,9 +66,6 @@ class Guide:
     reason: str
 
 
-type Decision = Allow | Deny | Redirect | Guide
-
-
 # ---- Post-tool judgment ---------------------------------------------------
 
 
