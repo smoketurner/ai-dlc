@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,8 +13,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from dashboard.auth import AuthRedirectError, session_secret
 from dashboard.auth import router as auth_router
 from dashboard.routes import auth_github, events, pages, runs, webhooks
-
-logger = structlog.get_logger()
 
 app = FastAPI(title="ai-dlc dashboard")
 
