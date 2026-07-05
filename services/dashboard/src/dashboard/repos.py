@@ -132,4 +132,3 @@ def get_run_status(run_id: str) -> tuple[str | None, str | None]:
     updated_at = item.get("updated_at", {}).get("S") or None
     status = item.get("status", {}).get("S") or None
     return status, updated_at
-
