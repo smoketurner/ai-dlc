@@ -61,11 +61,6 @@ def is_terminal(status: str | None) -> bool:
     return status in TERMINAL_EVENT_TYPES if status else False
 
 
-def is_active(status: str | None) -> bool:
-    """``True`` when ``status`` maps to an active agent or wait party."""
-    return agent_label(status) is not None
-
-
 def stuck_threshold_seconds(status: str | None) -> int | None:
     """Seconds at the same status before the UI flags the run as stuck."""
     label = agent_label(status)
