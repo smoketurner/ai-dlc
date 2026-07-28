@@ -322,6 +322,74 @@ def test_create_branch_uses_base_sha(
     assert out["result"] == {"branch": "feature/x", "ref": "refs/heads/feature/x", "sha": "abc123"}
 
 
+def branch_transport(
+    *,
+    create_status: int,
+    create_body: dict[str, Any],
+    lookup_status: int,
+    lookup_body: dict[str, Any],
+) -> httpx.MockTransport:
+    """Mock the base-ref GET, the create-ref POST, and the existing-ref GET."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/o/r/git/refs/heads/main":
+            return httpx.Response(200, json={"object": {"sha": "abc123"}})
+        if request.method == "POST":
+            return httpx.Response(create_status, json=create_body)
+        return httpx.Response(lookup_status, json=lookup_body)
+
+    return httpx.MockTransport(respond)
+
+
+def create_branch_op() -> dict[str, Any]:
+    return {"op": "create_branch", "repo": "o/r", "branch": "feature/x", "base": "main"}
+
+
+def test_create_branch_reuses_an_existing_branch_on_422(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """ "Reference already exists" is the idempotent case — return the live ref."""
+    patch_client(
+        branch_transport(
+            create_status=422,
+            create_body={"message": "Reference already exists"},
+            lookup_status=200,
+            lookup_body={"ref": "refs/heads/feature/x", "object": {"sha": "def456"}},
+        ),
+    )
+
+    out = h.handler(create_branch_op(), ctx())
+
+    assert out["ok"] is True
+    assert out["result"] == {
+        "branch": "feature/x",
+        "ref": "refs/heads/feature/x",
+        "sha": "def456",
+        "reused": True,
+    }
+
+
+def test_create_branch_surfaces_the_original_422_when_the_branch_is_absent(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A 422 for a bad ref name must not be reported as a 404 from the lookup."""
+    patch_client(
+        branch_transport(
+            create_status=422,
+            create_body={"message": "Invalid ref name"},
+            lookup_status=404,
+            lookup_body={"message": "Not Found"},
+        ),
+    )
+
+    out = h.handler(create_branch_op(), ctx())
+
+    assert out["ok"] is False
+    detail = out["error"]["detail"]
+    assert detail["status_code"] == 422
+    assert detail["body"] == {"message": "Invalid ref name"}
+
+
 def test_get_pr_returns_state_and_merged(
     patch_client: Callable[[httpx.MockTransport], None],
 ) -> None:

@@ -44,6 +44,7 @@ from common.github_app import (
     installation_token_for_repo,
     user_oauth_token_for_requestor_sub,
 )
+from common.redaction import redact_secrets
 
 logger = structlog.get_logger()
 
@@ -138,9 +139,9 @@ def run_git(*args: str, cwd: Path | None = None) -> str:
         check=False,
     )
     if proc.returncode != 0:
-        msg = (
+        msg = redact_secrets(
             f"git {shell_safe_join(list(args))} failed (exit {proc.returncode}) "
-            f"cwd={cwd or repo_path()} stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            f"cwd={cwd or repo_path()} stdout={proc.stdout!r} stderr={proc.stderr!r}",
         )
         raise RuntimeError(msg)
     return proc.stdout
@@ -164,12 +165,20 @@ def clone_repo(session: RepoSession, *, branch: str = "main") -> None:
         configure_git_author(session)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(  # noqa: S603 - args are well-formed
+    # check=False: CalledProcessError stringifies the whole argv, and ``url``
+    # carries the installation token. Raise a redacted error instead.
+    proc = subprocess.run(  # noqa: S603 - args are well-formed
         [GIT_BIN, "clone", "--filter=blob:none", "--branch", branch, url, str(target)],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        msg = redact_secrets(
+            f"git clone {session.target_repo} branch={branch} failed "
+            f"(exit {proc.returncode}) stderr={proc.stderr!r}",
+        )
+        raise RuntimeError(msg)
     configure_git_author(session)
 
 
@@ -251,6 +260,11 @@ def commit_changes(message: str) -> str:
     """Stage every change in the repo + create a commit. Return the SHA."""
     run_git("add", "-A")
     run_git("commit", "-m", message)
+    return head_sha()
+
+
+def head_sha() -> str:
+    """Current ``HEAD`` commit SHA."""
     return run_git("rev-parse", "HEAD").strip()
 
 
@@ -367,7 +381,15 @@ def post_inline_replies(
     requestor_sub: str | None,
     replies: list[tuple[int, str]],
 ) -> None:
-    """Post a batch of PR-review-thread replies, one repo_helper call per reply."""
+    """Post a batch of PR-review-thread replies, one repo_helper call per reply.
+
+    A reply is best-effort — the revision itself is already pushed, so a
+    failure here must not fail the run. It is logged at ``error`` rather
+    than ``warning`` because the common cause is an id from the wrong
+    namespace (a review id or an issue-comment id is not addressable at
+    ``/pulls/comments/{id}/replies``), which silently drops the agent's
+    response to a human.
+    """
     for comment_id, body in replies:
         try:
             invoke_repo_helper(
@@ -380,8 +402,8 @@ def post_inline_replies(
                 body=body,
             )
         except Exception as exc:
-            logger.warning(
-                "reply_pr_review_comment failed",
+            logger.error(  # noqa: TRY400 - the traceback adds nothing over the envelope
+                "reply_pr_review_comment failed — reply dropped",
                 repo=repo,
                 pr_number=pr_number,
                 comment_id=comment_id,

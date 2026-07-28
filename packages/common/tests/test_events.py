@@ -19,6 +19,7 @@ from common.events import (
     ReviewReady,
     RunCancelRequested,
     RunCompleted,
+    RunFailed,
     TestReportReady,
 )
 from common.ids import new_correlation_id, new_event_id, new_run_id
@@ -440,6 +441,42 @@ def test_run_cancel_requested_rejects_unknown_source() -> None:
                 "source": "telepathy",
             },
         )
+
+
+def run_failed(error_message: str) -> RunFailed:
+    return RunFailed(
+        project_slug="demo",
+        failed_state="implementer_running",
+        error_class="RuntimeError",
+        error_message=error_message,
+        retryable=True,
+    )
+
+
+def test_run_failed_redacts_install_token_from_error_message() -> None:
+    """The projector persists this payload verbatim for the dashboard to render."""
+    payload = run_failed(
+        "git clone https://x-access-token:ghs_supersecret@github.com/o/r.git failed",
+    )
+    assert "ghs_supersecret" not in payload.error_message
+    assert "x-access-token:<redacted>@github.com" in payload.error_message
+
+
+def test_run_failed_redaction_survives_envelope_serialisation() -> None:
+    envelope = EventEnvelope[RunFailed](
+        event_id=new_event_id(),
+        type="RUN.FAILED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="implementer",
+        payload=run_failed("clone https://x-access-token:ghs_leaked@github.com/o/r.git"),
+    )
+    assert "ghs_leaked" not in envelope.model_dump_json()
+
+
+def test_run_failed_leaves_clean_error_message_untouched() -> None:
+    message = "git fetch origin main failed (exit 128)"
+    assert run_failed(message).error_message == message
 
 
 def test_deleted_payloads_not_exported() -> None:

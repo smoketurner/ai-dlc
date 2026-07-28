@@ -14,8 +14,7 @@ the command string.
 
 The ``finish`` tool gets a ``PostToolUse`` matcher (:func:`validate_finish_report`)
 that re-validates the payload against :class:`implementer.finish.FinishReport`
-and runs :func:`common.hooks.validate_no_spec_dump` against the summary so
-Claude retries when it tries to dump the spec into the report.
+so Claude retries when it submits a malformed report.
 
 The :func:`audit_log_writes` ``PostToolUse`` hook appends one JSONL row per
 mutating tool call to ``/workspace/audit.jsonl`` for post-session forensics.
@@ -40,7 +39,6 @@ import structlog
 from claude_agent_sdk.types import HookContext, HookInput, SyncHookJSONOutput
 from pydantic import ValidationError
 
-from common.hooks import validate_no_spec_dump
 from common.steering import Accept, JudgeResult, Retry
 from implementer.finish import FinishReport, FinishSink
 
@@ -95,17 +93,14 @@ def allow() -> SyncHookJSONOutput:
 
 
 def deny_post(reason: str) -> SyncHookJSONOutput:
-    """Return a PostToolUse JSON output that asks Claude to retry."""
-    return cast(
-        "SyncHookJSONOutput",
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            },
-        },
-    )
+    """Return a PostToolUse JSON output that asks Claude to retry.
+
+    ``permissionDecision`` is PreToolUse-only — ``PostToolUseHookSpecificOutput``
+    has no such field, so emitting it here is silently ignored and the
+    hook becomes a no-op. PostToolUse feedback goes through the
+    top-level ``decision`` / ``reason`` pair, same as :func:`block_stop`.
+    """
+    return cast("SyncHookJSONOutput", {"decision": "block", "reason": reason})
 
 
 async def deny_dangerous_bash(
@@ -187,33 +182,23 @@ async def audit_log_writes(
 def judge_finish_report(args: dict[str, Any]) -> JudgeResult:
     """Judge a ``finish`` payload — pure function, no SDK types.
 
-    Catches two failure modes:
-
-      * Malformed payloads that slipped past the tool's own
-        ``model_validate`` (paranoid second line of defense).
-      * Summaries that quote spec-document headings verbatim (spec leak
-        heuristic — see :func:`common.hooks.validate_no_spec_dump`).
+    Catches malformed payloads that slipped past the tool's own
+    ``model_validate`` (paranoid second line of defense): a summary over
+    500 characters, a status outside ``done``/``blocked``, or a blocked
+    report with no ``blocked_reason``.
 
     Args:
         args: The ``tool_input`` dict the agent passed to ``finish``.
 
     Returns:
-        :class:`Accept` when the report is well-formed and not a spec
-        dump; :class:`Retry` (with an actionable reason) otherwise.
+        :class:`Accept` when the report is well-formed; :class:`Retry`
+        (with an actionable reason) otherwise.
     """
     try:
-        report = FinishReport.model_validate(args)
+        FinishReport.model_validate(args)
     except ValidationError as exc:
         return Retry(
             reason=f"FinishReport validation failed: {exc.errors(include_url=False)!r}",
-        )
-    leak_reason = validate_no_spec_dump(report.summary)
-    if leak_reason is not None:
-        return Retry(
-            reason=(
-                f"`finish` summary appears to dump spec content ({leak_reason}). "
-                "Rewrite as one paragraph in your own words and call `finish` again."
-            ),
         )
     return Accept()
 
@@ -227,8 +212,8 @@ async def validate_finish_report(
 
     The pure judgement lives in :func:`judge_finish_report` so it can be
     tested without the Claude Agent SDK types. This wrapper converts a
-    :class:`Retry` verdict into ``permissionDecision="deny"`` (which
-    prompts Claude to retry with the reason as guidance).
+    :class:`Retry` verdict into the PostToolUse block shape, which feeds
+    the reason back to Claude as retry guidance.
     """
     raw = cast("dict[str, Any]", input_data)
     args = raw.get("tool_input", {})

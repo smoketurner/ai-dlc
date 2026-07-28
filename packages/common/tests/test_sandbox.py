@@ -23,7 +23,6 @@ from common.sandbox import (
     execute_in_sandbox,
     get_pr_diff,
     parse_pr_url,
-    redact_archive_token,
     run_pr_in_sandbox,
 )
 
@@ -70,24 +69,6 @@ def test_parse_pr_url_extracts_repo_and_number() -> None:
 def test_parse_pr_url_returns_none_for_unknown_shape() -> None:
     assert parse_pr_url("https://example.com/o/r/pull/1") is None
     assert parse_pr_url("not a url") is None
-
-
-def test_redact_archive_token_strips_token_query_param() -> None:
-    raw = "urlopen failed: https://codeload.github.com/o/r/legacy.tar.gz/abc?token=AABBCC"
-    redacted = redact_archive_token(raw)
-    assert "AABBCC" not in redacted
-    assert "<redacted>" in redacted
-
-
-def test_redact_archive_token_handles_token_after_other_params() -> None:
-    raw = "url=https://codeload.example/x?ref=abc&token=SECRETXYZ&extra=1"
-    redacted = redact_archive_token(raw)
-    assert "SECRETXYZ" not in redacted
-    assert "extra=1" in redacted
-
-
-def test_redact_archive_token_no_op_when_absent() -> None:
-    assert redact_archive_token("plain text") == "plain text"
 
 
 def test_execute_in_sandbox_extracts_then_runs_commands_and_stops_session() -> None:

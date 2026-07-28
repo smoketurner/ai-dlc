@@ -174,6 +174,10 @@ def publish_run_failed(payload: CodeCriticInput, exc: BaseException) -> None:
             error_class=type(exc).__name__,
             error_message=str(exc)[:1024],
             retryable=True,
+            # The retrospector dispatcher drops RUN.FAILED when it can't
+            # identify a PR or issue to attach the lesson to.
+            pr_url=payload.pr_url,
+            source_issue_url=payload.source_issue_url or "",
         ),
     )
     try_publish(envelope)

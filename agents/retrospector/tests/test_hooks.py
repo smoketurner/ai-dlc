@@ -47,6 +47,22 @@ def test_get_artifact_capped_at_limit() -> None:
     assert f"cap of {GET_ARTIFACT_CAP}" in over.cancel_tool
 
 
+def test_cap_covers_a_full_revision_cap_capture_round() -> None:
+    """A cap-hit RUN.FAILED hands the agent 3 validators x 4 rounds = 12 keys.
+
+    Plus the PR, the issue thread, the plan and MEMORY.md. Truncating
+    here is exactly what breaks cross-round pattern detection.
+    """
+    counter = build_hooks()[0]
+    for _ in range(12 + 4):
+        assert call(counter, "get_artifact").cancel_tool is None
+
+
+def test_cap_covers_the_maximum_artifact_key_list() -> None:
+    """``RetrospectorInput.validation_artifact_keys`` is bounded at 64."""
+    assert GET_ARTIFACT_CAP >= 64
+
+
 def test_write_memory_md_blocked_before_read_memory_md() -> None:
     require = build_hooks()[1]
     event = call(require, "write_memory_md")

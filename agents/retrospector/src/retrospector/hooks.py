@@ -6,10 +6,8 @@ Two rules guard the lesson-extraction pass:
    retrospector must see the current ``MEMORY.md`` before proposing
    updates to it. Otherwise the agent can wholesale-overwrite an
    established index it has never inspected.
-2. ``get_artifact`` is capped at 4 calls per invocation. Reading the
-   PR, related issue threads, and the prior plan accounts for at most
-   a handful of fetches; a higher count is a stuck loop, not legitimate
-   re-reading.
+2. ``get_artifact`` is capped per invocation as a stuck-loop backstop,
+   not as a budget — see :data:`GET_ARTIFACT_CAP`.
 """
 
 from __future__ import annotations
@@ -20,7 +18,17 @@ from strands.hooks import HookCallback, HookProvider
 
 from common.hooks import RequirePriorCall, ToolCallCounter
 
-GET_ARTIFACT_CAP = 4
+GET_ARTIFACT_CAP = 64
+"""Ceiling on ``get_artifact`` calls in one invocation.
+
+Capture mode hands the agent one validator artifact key per validator
+per revision round — ``3 * (revision_count + 1)``, so 12 keys on a
+revision-cap failure and up to 51 at the ``revision_count`` ceiling —
+and the capture template tells it to read every one. Anything lower
+truncates exactly the multi-round history the retrospector exists to
+find patterns in. Matches the ``max_length=64`` bound on
+``RetrospectorInput.validation_artifact_keys``.
+"""
 
 
 def build_hooks() -> list[HookProvider | HookCallback[Any]]:

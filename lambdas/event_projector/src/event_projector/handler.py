@@ -264,8 +264,14 @@ def apply_metadata_projections(
     Always-on (set_if_not_exists): ``project_slug``,
     ``source_issue_url`` + ``gsi1pk`` / ``gsi1sk`` (for issue
     lookup), ``source_issue_title``, ``source_issue_body``,
-    ``requestor``, ``requestor_sub``, ``target_repo``, ``intent``.
-    These are all invariant for the lifetime of a run.
+    ``issue_number``, ``requestor``, ``requestor_sub``,
+    ``target_repo``, ``intent``. These are all invariant for the
+    lifetime of a run.
+
+    The SUMMARY attribute names are ``source_issue_*`` while
+    ``RequestReceived`` declares them as ``issue_title`` / ``issue_body``
+    — the rename happens here, and reading the wrong name silently
+    leaves the dashboard's issue title blank.
 
     Per-event: ``pr_url`` + ``gsi_pr`` on ``IMPL_PR.OPENED`` (PR
     lookup index for webhooks).
@@ -280,18 +286,11 @@ def apply_metadata_projections(
         update.set_if_not_exists("gsi1pk", f"ISSUE#{source_issue_url}")
         update.set_if_not_exists("gsi1sk", f"RUN#{run_id}")
         update.set_if_not_exists("source_issue_url", source_issue_url)
-    set_if_truthy(
-        update,
-        "source_issue_title",
-        payload.get("source_issue_title"),
-        if_not_exists=True,
-    )
-    set_if_truthy(
-        update,
-        "source_issue_body",
-        payload.get("source_issue_body"),
-        if_not_exists=True,
-    )
+    set_if_truthy(update, "source_issue_title", payload.get("issue_title"), if_not_exists=True)
+    set_if_truthy(update, "source_issue_body", payload.get("issue_body"), if_not_exists=True)
+    issue_number = payload.get("issue_number")
+    if isinstance(issue_number, int) and issue_number >= 1:
+        update.set_if_not_exists("issue_number", issue_number)
     if event_type == "IMPL_PR.OPENED":
         pr_url = payload.get("pr_url")
         if isinstance(pr_url, str) and pr_url:

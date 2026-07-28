@@ -159,6 +159,9 @@ def publish_run_failed(payload: TriageInput, exc: BaseException) -> None:
             error_class=type(exc).__name__,
             error_message=str(exc)[:1024],
             retryable=True,
+            # The retrospector dispatcher drops RUN.FAILED when it can't
+            # identify a PR or issue to attach the lesson to.
+            source_issue_url=payload.issue_url,
         ),
     )
     try_publish(envelope)

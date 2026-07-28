@@ -102,7 +102,7 @@ def secrets_client() -> SecretsManagerClient:
     return boto3.client("secretsmanager")
 
 
-secret_cache: dict[str, tuple[str, float]] = {}
+secret_cache: dict[str, tuple[AppCredentials, float]] = {}
 
 
 def app_credentials() -> AppCredentials:
@@ -111,12 +111,17 @@ def app_credentials() -> AppCredentials:
     Cached for ``SECRET_TTL_SECONDS`` so a rotated secret flows in without
     a redeploy. Lives in this module so Lambdas, agents, and the dashboard
     share the same code path regardless of which logger each caller uses.
+
+    Only *validated* credentials are cached. Caching the raw string first
+    would poison the entry for the whole TTL when the secret is malformed
+    (``strict=True`` makes e.g. a string ``app_id`` fail), so correcting
+    the secret in Secrets Manager wouldn't recover a warm process.
     """
     secret_id = os.environ["AIDLC_GITHUB_APP_SECRET_ARN"]
     now = time.time()
     cached = secret_cache.get(secret_id)
     if cached is not None and cached[1] > now:
-        return AppCredentials.model_validate_json(cached[0])
+        return cached[0]
     response = secrets_client().get_secret_value(SecretId=secret_id)
     raw = response.get("SecretString")
     if raw is None:
@@ -125,8 +130,9 @@ def app_credentials() -> AppCredentials:
     if not isinstance(raw, str):
         msg = f"Expected SecretString, got {type(raw).__name__}"
         raise TypeError(msg)
-    secret_cache[secret_id] = (raw, now + SECRET_TTL_SECONDS)
-    return AppCredentials.model_validate_json(raw)
+    credentials = AppCredentials.model_validate_json(raw)
+    secret_cache[secret_id] = (credentials, now + SECRET_TTL_SECONDS)
+    return credentials
 
 
 def oauth_provider_name() -> str:

@@ -274,8 +274,10 @@ def build_capture_input(envelope: UntypedEnvelope) -> dict[str, Any] | None:
     capture-mode prompt sees the highest-signal context for each
     trigger.
 
-    On ``RUN.FAILED`` with ``revision_count > 0`` (cap-hit), enumerates
-    the validator artifact S3 keys across every revision round.
+    Enumerates the validator artifact S3 keys across every revision
+    round for each capture event — ``3 * (revision_count + 1)`` keys, so
+    a single round for a fresh PR and up to 12 on a revision-cap
+    ``RUN.FAILED``.
     """
     payload = envelope.payload or {}
     project_slug = payload.get("project_slug")

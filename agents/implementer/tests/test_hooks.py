@@ -84,44 +84,31 @@ async def test_validate_finish_report_allows_clean_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validate_finish_report_denies_invalid_payload() -> None:
+async def test_validate_finish_report_blocks_invalid_payload() -> None:
+    """PostToolUse feedback rides on top-level ``decision``/``reason``.
+
+    ``permissionDecision`` is PreToolUse-only; emitting it here would be
+    silently dropped by the CLI, making the validator a no-op.
+    """
     # blocked status with no blocked_reason — should fail Pydantic validation
     args = {"summary": "x", "status": "blocked"}
     result = await validate_finish_report(hook_input(args), None, stub_context())
-    output = cast("dict[str, Any]", result["hookSpecificOutput"])
-    assert output["permissionDecision"] == "deny"
-    assert "validation failed" in output["permissionDecisionReason"].lower()
+    output = cast("dict[str, Any]", result)
+    assert output["decision"] == "block"
+    assert "validation failed" in output["reason"].lower()
+    assert "hookSpecificOutput" not in output
 
 
 @pytest.mark.asyncio
-async def test_validate_finish_report_denies_spec_dump() -> None:
-    args = {
-        "summary": "Did the work.\n\n# Requirements\n\nThe agent shall...",
-        "files_changed": ["app/main.py"],
-        "tests_run": [],
-        "risks": [],
-        "status": "done",
-    }
+async def test_validate_finish_report_blocks_oversized_summary() -> None:
+    args = {"summary": "x" * 501, "status": "done"}
     result = await validate_finish_report(hook_input(args), None, stub_context())
-    output = cast("dict[str, Any]", result["hookSpecificOutput"])
-    assert output["permissionDecision"] == "deny"
-    assert "spec" in output["permissionDecisionReason"].lower()
+    assert cast("dict[str, Any]", result)["decision"] == "block"
 
 
 @pytest.mark.asyncio
-async def test_validate_finish_report_denies_tasks_md_leak() -> None:
-    args = {
-        "summary": "Did stuff.\n\n## tasks.md\n\nfoo",
-        "status": "done",
-    }
-    result = await validate_finish_report(hook_input(args), None, stub_context())
-    output = cast("dict[str, Any]", result["hookSpecificOutput"])
-    assert output["permissionDecision"] == "deny"
-
-
-@pytest.mark.asyncio
-async def test_validate_finish_report_allows_design_in_normal_text() -> None:
-    """Words like 'design' inside normal prose must not trip the heuristic."""
+async def test_validate_finish_report_allows_spec_words_in_prose() -> None:
+    """The old spec-dump heuristic is gone — it guarded documents we no longer emit."""
     args = {
         "summary": "Refactored the design of the cache layer to use LRU.",
         "status": "done",
@@ -301,7 +288,8 @@ def test_judge_finish_report_retries_on_invalid_payload() -> None:
     assert "validation failed" in verdict.reason.lower()
 
 
-def test_judge_finish_report_retries_on_spec_dump() -> None:
+def test_judge_finish_report_accepts_headings_in_the_summary() -> None:
+    """The spec-dump heuristic guarded requirements/design/tasks docs we no longer emit."""
     args = {
         "summary": "Did the work.\n\n# Requirements\n\nThe agent shall...",
         "files_changed": ["app/main.py"],
@@ -309,9 +297,12 @@ def test_judge_finish_report_retries_on_spec_dump() -> None:
         "risks": [],
         "status": "done",
     }
-    verdict = judge_finish_report(args)
+    assert judge_finish_report(args) == Accept()
+
+
+def test_judge_finish_report_retries_when_blocked_reason_is_missing() -> None:
+    verdict = judge_finish_report({"summary": "Stuck.", "status": "blocked"})
     assert isinstance(verdict, Retry)
-    assert "spec content" in verdict.reason
 
 
 def stop_input(*, stop_hook_active: bool) -> HookInput:

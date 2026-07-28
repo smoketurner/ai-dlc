@@ -39,6 +39,7 @@ from common.runtime import (
     IssueCommentMentionFeedback,
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
+    ReviewMentionFeedback,
 )
 from common.templating import make_template_env
 from implementer.finish import FinishReport, FinishSink
@@ -51,6 +52,7 @@ from implementer.repo_ops import (
     create_branch,
     fetch_plan,
     has_uncommitted_changes,
+    head_sha,
     impl_branch_name,
     invoke_repo_helper,
     make_session,
@@ -63,6 +65,20 @@ from implementer.repo_ops import (
 )
 
 logger = structlog.get_logger()
+
+
+def raise_if_blocked(report: FinishReport | None) -> None:
+    """Abort the pass when the agent reported it could not finish.
+
+    A blocked report means the agent hit something it can't resolve. Both
+    the implementation and revision paths must stop here — pushing anyway
+    emits a ready event, re-runs all three validators against a diff the
+    agent already disowned, and hides the blocker from the human until
+    the revision cap fires.
+    """
+    if report is not None and report.status == "blocked":
+        msg = f"implementer blocked: {report.blocked_reason or 'agent reported blocked'}"
+        raise RuntimeError(msg)
 
 
 async def execute_implementation(payload: ImplementerInput) -> ImplementerResult:
@@ -93,9 +109,7 @@ async def execute_implementation(payload: ImplementerInput) -> ImplementerResult
         user_prompt = compose_implementation_prompt(payload)
         report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
-        if report is not None and report.status == "blocked":
-            msg = f"implementer blocked: {report.blocked_reason or 'agent reported blocked'}"
-            raise RuntimeError(msg)
+        raise_if_blocked(report)
         if not repo_made_real_changes():
             msg = "implementer produced no diff — nothing to PR"
             raise RuntimeError(msg)
@@ -163,12 +177,20 @@ async def execute_revision(payload: ImplementerInput) -> ImplementerRevisionResu
             revision_number=revision_number,
             inputs=inputs,
         )
+        head_before = head_sha()
         report, usage = await drive_agent(user_prompt, run_id=payload.run_id)
 
+        raise_if_blocked(report)
         if has_uncommitted_changes():
             commit_changes(
                 f"revision r{revision_number}: address aggregated feedback",
             )
+        # Compare against the pre-agent HEAD, not origin/main — the impl
+        # branch already carries the first pass's commits, so only a moved
+        # HEAD proves *this* revision did something.
+        if head_sha() == head_before:
+            msg = f"implementer revision r{revision_number} produced no changes"
+            raise RuntimeError(msg)
         push_branch(impl_branch)
 
         if report is not None and report.inline_replies and payload.pr_url is not None:
@@ -463,7 +485,13 @@ def pr_body_summary(
 
 
 def format_feedback_item(item: FeedbackItem) -> str:
-    """Render one ``FeedbackItem`` into the revision prompt as a bullet."""
+    """Render one ``FeedbackItem`` into the revision prompt as a bullet.
+
+    Only ``ReviewCommentMentionFeedback`` exposes a ``comment_id``: it is
+    the sole kind whose id is addressable by GitHub's reply-to-review-comment
+    endpoint. Advertising an id for the other kinds invites the agent to
+    put it in ``inline_replies``, where it 404s.
+    """
     if isinstance(item, CiFailureFeedback):
         return (
             f"- **CI failure** in workflow `{item.workflow_name}` "
@@ -472,6 +500,9 @@ def format_feedback_item(item: FeedbackItem) -> str:
     if isinstance(item, ReviewChangesRequestedFeedback):
         body = item.body.strip() or "(no review body)"
         return f"- **Review requested changes** by @{item.reviewer}: {body}"
+    if isinstance(item, ReviewMentionFeedback):
+        body = item.body.strip() or "(no review body)"
+        return f"- **Review comment** from @{item.reviewer}: {body}"
     if isinstance(item, ReviewCommentMentionFeedback):
         loc = f"`{item.path}`" + (f":{item.line}" if item.line else "")
         return (
@@ -479,10 +510,7 @@ def format_feedback_item(item: FeedbackItem) -> str:
             f"(comment_id={item.comment_id}): {item.body.strip()}"
         )
     if isinstance(item, IssueCommentMentionFeedback):
-        return (
-            f"- **PR comment** from @{item.commenter} "
-            f"(comment_id={item.comment_id}): {item.body.strip()}"
-        )
+        return f"- **PR comment** from @{item.commenter}: {item.body.strip()}"
     msg = f"unknown feedback kind: {item!r}"
     raise TypeError(msg)
 

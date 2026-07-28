@@ -34,6 +34,7 @@ from botocore.exceptions import ClientError
 
 from common.github_app import token_for_call
 from common.memory_md import write_stack_profile
+from common.redaction import redact_secrets
 from common.stack_discovery import discover_stack
 
 if TYPE_CHECKING:
@@ -77,12 +78,19 @@ def clone_target_repo(
     target.parent.mkdir(parents=True, exist_ok=True)
     token = token_for_call(repo=target_repo, requestor_sub=requestor_sub)
     url = f"https://x-access-token:{token}@github.com/{target_repo}.git"
-    subprocess.run(  # noqa: S603 - args are well-formed
+    # check=False: CalledProcessError stringifies the whole argv, and ``url``
+    # carries the installation token. Raise a redacted error instead.
+    proc = subprocess.run(  # noqa: S603 - args are well-formed
         [GIT_BIN, "clone", "--depth", "1", url, str(target)],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        msg = redact_secrets(
+            f"git clone {target_repo} failed (exit {proc.returncode}) stderr={proc.stderr!r}",
+        )
+        raise RuntimeError(msg)
     logger.info("architect cloned target repo", target_repo=target_repo, path=str(target))
     return target
 
@@ -104,14 +112,25 @@ def refresh_clone(
 
 
 def git(*args: str, cwd: Path) -> str:
-    """Run a git command in ``cwd`` and return stdout."""
+    """Run a git command in ``cwd`` and return stdout.
+
+    Raises:
+        RuntimeError: On a non-zero exit. The message is redacted because
+            ``remote set-url`` passes a tokenised URL as an argument.
+    """
     proc = subprocess.run(  # noqa: S603 - args are well-formed
         [GIT_BIN, *args],
         cwd=cwd,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if proc.returncode != 0:
+        msg = redact_secrets(
+            f"git {' '.join(args)} failed (exit {proc.returncode}) "
+            f"cwd={cwd} stderr={proc.stderr!r}",
+        )
+        raise RuntimeError(msg)
     return proc.stdout
 
 

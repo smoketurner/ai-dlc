@@ -161,7 +161,13 @@ class UpdateBuilder:
         return self
 
     def to_item(self) -> TransactWriteItemTypeDef:
-        """Render the final ``TransactWriteItem`` Update dict."""
+        """Render the final ``TransactWriteItem`` Update dict.
+
+        DynamoDB rejects an ``ExpressionAttributeValues`` that is present
+        but empty, so it is attached only when populated. A remove-only
+        update (``.remove(...)`` / ``.condition_not_exists(...)``) aliases
+        names without ever binding a value.
+        """
         parts: list[str] = []
         if self._set_parts:
             parts.append("SET " + ", ".join(self._set_parts))
@@ -173,9 +179,11 @@ class UpdateBuilder:
             "TableName": self.table,
             "Key": {k: _serialize(v) for k, v in self.key.items()},
             "UpdateExpression": " ".join(parts),
-            "ExpressionAttributeNames": self._names,
-            "ExpressionAttributeValues": self._values,
         }
+        if self._names:
+            update["ExpressionAttributeNames"] = self._names
+        if self._values:
+            update["ExpressionAttributeValues"] = self._values
         if self._condition is not None:
             update["ConditionExpression"] = self._condition
         return cast("TransactWriteItemTypeDef", {"Update": update})

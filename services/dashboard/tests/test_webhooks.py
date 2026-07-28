@@ -354,16 +354,23 @@ async def test_review_changes_requested_with_mention_emits_iteration(
 
 
 @pytest.mark.asyncio
-async def test_review_commented_with_mention_emits_iteration(
+@pytest.mark.parametrize("state", ["commented", "approved"])
+async def test_review_with_mention_emits_review_mention(
     monkeypatch: pytest.MonkeyPatch,
     captured_events: list[EventEnvelope[Any]],
+    state: str,
 ) -> None:
-    """Plain comment review w/ @-mention emits ``source=issue_comment_mention``."""
+    """A non-blocking review w/ @-mention is a review, not a PR comment.
+
+    The review's id belongs to the review namespace — passing it as
+    ``comment_id`` makes any inline reply hit
+    ``/pulls/comments/{review_id}/replies`` and 404.
+    """
     stub_pr_lookup(monkeypatch)
     payload = {
         "action": "submitted",
         "review": {
-            "state": "commented",
+            "state": state,
             "user": {"login": "alice"},
             "body": f"@{BOT_LOGIN} please look at this",
             "id": 99,
@@ -372,9 +379,9 @@ async def test_review_commented_with_mention_emits_iteration(
     }
     await post_webhook(event_type="pull_request_review", payload=payload)
     assert captured_events[0].type == "IMPL.ITERATION_REQUESTED"
-    assert captured_events[0].payload.source == "issue_comment_mention"
-    assert captured_events[0].payload.comment_id == 99
-    assert captured_events[0].payload.review_id is None
+    assert captured_events[0].payload.source == "review_mention"
+    assert captured_events[0].payload.review_id == 99
+    assert captured_events[0].payload.comment_id is None
 
 
 # ---------------------------------------------------------------------------

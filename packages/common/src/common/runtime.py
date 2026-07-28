@@ -128,6 +128,20 @@ class ReviewChangesRequestedFeedback(_Frozen):
     review_id: Annotated[int, Field(ge=1)]
 
 
+class ReviewMentionFeedback(_Frozen):
+    """A PR review (approved / commented) whose body @-mentions the bot.
+
+    Distinct from :class:`ReviewCommentMentionFeedback`: a review is not
+    line-anchored and its id belongs to the review namespace, so it
+    cannot be replied to via ``/pulls/comments/{id}/replies``.
+    """
+
+    kind: Literal["review_mention"] = "review_mention"
+    reviewer: Annotated[str, Field(min_length=1, max_length=128)]
+    body: Annotated[str, Field(max_length=8192)] = ""
+    review_id: Annotated[int, Field(ge=1)]
+
+
 class ReviewCommentMentionFeedback(_Frozen):
     """A line-anchored PR review comment that @-mentions the bot."""
 
@@ -153,6 +167,7 @@ class IssueCommentMentionFeedback(_Frozen):
 type FeedbackItem = Annotated[
     CiFailureFeedback
     | ReviewChangesRequestedFeedback
+    | ReviewMentionFeedback
     | ReviewCommentMentionFeedback
     | IssueCommentMentionFeedback,
     Field(discriminator="kind"),

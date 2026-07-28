@@ -171,6 +171,54 @@ def test_requestor_sub_is_projected_onto_summary(runs_table: Any) -> None:
     assert summary["requestor"]["S"] == "alice@example.com"
 
 
+def test_issue_context_is_projected_onto_summary(runs_table: Any) -> None:
+    """``RequestReceived`` declares ``issue_title``/``issue_body``, not ``source_issue_*``.
+
+    The dashboard reads ``source_issue_title`` off the SUMMARY row, so
+    reading the wrong payload key leaves every run's title blank.
+    """
+    env = envelope(
+        event_type="REQUEST.RECEIVED",
+        event_id="evt-issue",
+        payload={
+            "project_slug": "demo",
+            "intent": "fix bug",
+            "requestor": "alice",
+            "target_repo": "alice/repo",
+            "source_issue_url": "https://github.com/alice/repo/issues/1",
+            "issue_number": 1,
+            "issue_title": "Bug: Login fails on mobile",
+            "issue_body": "Steps to reproduce...",
+        },
+    )
+
+    assert project_event(eb_event(env), ctx())["committed"] is True
+
+    summary = state_of("run-1", runs_table)
+    assert summary["source_issue_title"]["S"] == "Bug: Login fails on mobile"
+    assert summary["source_issue_body"]["S"] == "Steps to reproduce..."
+    assert summary["issue_number"]["N"] == "1"
+
+
+def test_dashboard_runs_without_an_issue_omit_issue_attributes(runs_table: Any) -> None:
+    env = envelope(
+        event_type="REQUEST.RECEIVED",
+        event_id="evt-form",
+        payload={
+            "project_slug": "demo",
+            "intent": "fix bug",
+            "requestor": "alice",
+            "target_repo": "alice/repo",
+        },
+    )
+
+    project_event(eb_event(env), ctx())
+
+    summary = state_of("run-1", runs_table)
+    assert "source_issue_title" not in summary
+    assert "issue_number" not in summary
+
+
 def test_design_ready_accumulates_usage_and_advances_status(runs_table: Any) -> None:
     """``DESIGN.READY`` updates the status and adds token/cost totals."""
     project_event(

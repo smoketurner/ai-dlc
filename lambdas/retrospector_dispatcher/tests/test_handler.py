@@ -220,6 +220,31 @@ def test_handler_ignores_event_with_neither_pr_nor_issue(monkeypatch: pytest.Mon
     fake.invoke_agent_runtime.assert_not_called()
 
 
+def test_agent_crash_with_only_an_issue_url_still_dispatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Crash handlers propagate source_issue_url so the lesson isn't dropped."""
+    fake = MagicMock()
+    monkeypatch.setattr(dispatcher, "agentcore_client", lambda: fake)
+    monkeypatch.setenv("AIDLC_RETROSPECTOR_RUNTIME_ARN", "arn:aws:bedrock-agentcore:x:y:z/r")
+
+    out = handler(
+        envelope(
+            "RUN.FAILED",
+            pr_url="",
+            source_issue_url="https://github.com/smoketurner/ai-dlc/issues/9",
+            failed_state="architect_running",
+            error_class="RuntimeError",
+            error_message="boom",
+            retryable=True,
+        ),
+        ctx(),
+    )
+
+    assert out.get("ignored") != "missing_fields"
+    fake.invoke_agent_runtime.assert_called_once()
+
+
 def test_handler_returns_validation_error_for_malformed_envelope() -> None:
     out = handler({"source": "ai-dlc.test"}, ctx())
     assert out == {"ok": False, "error": "validation_error"}
