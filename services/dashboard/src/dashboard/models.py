@@ -34,6 +34,7 @@ class RunSummary(_Frozen):
     total_duration_ms: int = 0
     target_repo: str | None = None
     source_issue_url: str | None = None
+    issue_number: int | None = None
     issue_title: str | None = None
     pr_url: str | None = None
 

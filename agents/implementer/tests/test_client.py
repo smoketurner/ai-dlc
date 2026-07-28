@@ -173,6 +173,127 @@ async def test_execute_implementation_blocked_finish_raises(
         await client.execute_implementation(payload)
 
 
+@pytest.fixture
+def revision_payload() -> ImplementerInput:
+    return ImplementerInput(
+        project_slug="ai-dlc",
+        run_id="01999999-9999-7999-9999-999999999999",
+        correlation_id="01999999-9999-7999-9999-999999999998",
+        target_repo="owner/name",
+        mode="revision",
+        revision_number=1,
+        pr_url="https://github.com/owner/name/pull/77",
+        source_issue_url="https://github.com/owner/name/issues/42",
+    )
+
+
+def install_revision_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fake_session: RepoSession,
+    drive_agent_report: FinishReport | None,
+    head_moved: bool,
+    has_uncommitted_changes: bool = True,
+) -> dict[str, list[Any]]:
+    """Wire the side-effecting helpers in ``execute_revision`` to fakes."""
+    calls: dict[str, list[Any]] = {"commit_changes": [], "push_branch": []}
+    shas = iter(["sha-before", "sha-after" if head_moved else "sha-before"])
+
+    fake_client = MagicMock()
+    fake_client.__enter__.return_value = fake_client
+    fake_client.__exit__.return_value = False
+
+    monkeypatch.setattr(client, "gateway_mcp_client", lambda: fake_client)
+    monkeypatch.setattr(client, "make_session", lambda **_: fake_session)
+    monkeypatch.setattr(client, "clone_repo", lambda *_a, **_kw: None)
+    monkeypatch.setattr(client, "checkout_impl_branch", lambda *_a, **_kw: None)
+    monkeypatch.setattr(client, "fetch_plan", lambda *_a, **_kw: None)
+    monkeypatch.setattr(client, "fetch_revision_inputs", lambda *_a, **_kw: {})
+    monkeypatch.setattr(client, "compose_revision_prompt", lambda *_a, **_kw: "prompt")
+    monkeypatch.setattr(client, "head_sha", lambda: next(shas))
+    monkeypatch.setattr(client, "has_uncommitted_changes", lambda: has_uncommitted_changes)
+    monkeypatch.setattr(client, "commit_changes", calls["commit_changes"].append)
+    monkeypatch.setattr(client, "push_branch", calls["push_branch"].append)
+    monkeypatch.setattr(client, "short_diff_summary", lambda: "diff stat")
+
+    usage = {"token_in": 100, "token_out": 50, "cost_usd": 0.01, "duration_ms": 1234}
+
+    async def fake_drive_agent(
+        _prompt: str,
+        *,
+        run_id: str,
+    ) -> tuple[FinishReport | None, dict[str, Any]]:
+        del run_id
+        return drive_agent_report, usage
+
+    monkeypatch.setattr(client, "drive_agent", fake_drive_agent)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_happy_path_pushes(
+    monkeypatch: pytest.MonkeyPatch,
+    revision_payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    calls = install_revision_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=FinishReport(summary="Fixed the null check.", status="done"),
+        head_moved=True,
+    )
+
+    result = await client.execute_revision(revision_payload)
+
+    assert result.revision_number == 1
+    assert calls["push_branch"] == ["aidlc/impl/01999999-9999-7999-9999-999999999999"]
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_blocked_finish_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    revision_payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """A blocked revision must surface the reason, not push and re-run validators."""
+    calls = install_revision_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=FinishReport(
+            summary="Could not proceed.",
+            status="blocked",
+            blocked_reason="Validator feedback contradicts the plan.",
+        ),
+        head_moved=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Validator feedback contradicts the plan"):
+        await client.execute_revision(revision_payload)
+
+    assert calls["push_branch"] == []
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_without_new_commits_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    revision_payload: ImplementerInput,
+    fake_session: RepoSession,
+) -> None:
+    """A no-op revision would otherwise re-run all three validators on an unchanged diff."""
+    calls = install_revision_mocks(
+        monkeypatch,
+        fake_session=fake_session,
+        drive_agent_report=FinishReport(summary="Nothing needed changing.", status="done"),
+        head_moved=False,
+        has_uncommitted_changes=False,
+    )
+
+    with pytest.raises(RuntimeError, match="produced no changes"):
+        await client.execute_revision(revision_payload)
+
+    assert calls["push_branch"] == []
+
+
 def test_render_pr_body_includes_summary_and_issue_link() -> None:
     """The PR body picks up the agent's summary and Closes <issue>."""
     report = FinishReport(

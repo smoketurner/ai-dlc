@@ -53,7 +53,7 @@ from common.gateway_tools import (
     extract_envelope,
     gateway_mcp_client,
 )
-from common.memory_md import MemoryDoc, parse, render
+from common.memory_md import MemoryDoc, MemoryDocParseError, parse, render
 from common.runtime import RetrospectorInput
 from retrospector.agent import build_agent, capture, consolidate
 from retrospector.decision import (
@@ -99,7 +99,7 @@ def dispatch_by_mode(payload: RetrospectorInput, async_task_id: int) -> None:
     """Build the agent for the right mode and run the corresponding flow."""
     try:
         with gateway_mcp_client() as mcp_client:  # ty: ignore[invalid-context-manager]
-            agent = build_agent(payload.run_id, mode=payload.mode, mcp_client=mcp_client)
+            agent = build_agent(mode=payload.mode, mcp_client=mcp_client)
             if payload.mode == "capture":
                 run_capture(agent, payload=payload)
             else:
@@ -326,14 +326,32 @@ def memory_files_for(
     payload: RetrospectorInput,
     additions: list[MemoryAddition],
 ) -> list[dict[str, str]]:
-    """Read each affected MEMORY.md, append per section, return the new file contents."""
+    """Read each affected MEMORY.md, append per section, return the new file contents.
+
+    ``parse`` is strict (unknown headers, duplicate or out-of-order
+    sections all raise). The files come from the target repo's main
+    branch, so a human-merged edit can make one unparseable — skip that
+    scope rather than aborting the whole consolidation, which would also
+    take down the independent skills PR and leave the consumed events
+    undeleted to re-wedge next week.
+    """
     by_scope: dict[str, list[MemoryAddition]] = {}
     for addition in additions:
         by_scope.setdefault(addition.scope, []).append(addition)
     files: list[dict[str, str]] = []
     for scope, scope_additions in by_scope.items():
         existing = fetch_file(mcp_client, repo=payload.target_repo, path=scope)
-        doc = parse(existing) if existing.strip() else MemoryDoc()
+        try:
+            doc = parse(existing) if existing.strip() else MemoryDoc()
+        except MemoryDocParseError:
+            logger.warning(
+                "skipping malformed MEMORY.md",
+                scope=scope,
+                repo=payload.target_repo,
+                dropped_additions=len(scope_additions),
+                exc_info=True,
+            )
+            continue
         for addition in scope_additions:
             doc = doc.with_appended(addition.section, addition.addition.strip())
         files.append({"path": scope, "content": render(doc)})

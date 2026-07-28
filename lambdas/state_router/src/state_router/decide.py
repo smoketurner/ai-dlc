@@ -16,7 +16,9 @@ Properties — verified by unit tests:
 * **Order-aware**. Decisions look at the *latest* event for human-driven
   branches (``IMPL.ITERATION_REQUESTED``, ``CHECKS.FAILED``,
   ``VALIDATION.REQUESTED``); the linear pre-PR pipeline branches on the
-  *set* of event types seen.
+  *set* of event types seen. The reviewer's verdict is the exception —
+  the three validators finish in any order, so it is looked up within
+  the current validation pass rather than at the tail.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from common.events import (
     EventEnvelope,
     EventType,
     RunCancelRequested,
+    RunFailed,
 )
 from common.ids import CorrelationId, RunId, new_event_id
 from state_router.actions import (
@@ -37,7 +40,7 @@ from state_router.actions import (
     InvokeAgent,
     Noop,
 )
-from state_router.extract import EnvelopeLike, get
+from state_router.extract import EnvelopeLike, get, pr_url, source_issue_url
 
 TERMINAL_EVENTS: frozenset[EventType] = frozenset(
     {"RUN.COMPLETED", "RUN.FAILED", "RUN.CANCEL_REQUESTED"},
@@ -60,6 +63,15 @@ running (or has run) for this trigger — don't dispatch again."
 
 # Triage outcomes that terminate the run with a cancel.
 CANCEL_TRIAGE_ACTIONS: frozenset[str] = frozenset({"ask", "defer", "decline"})
+
+MAX_REVISIONS = 3
+"""Ceiling on *automated* revision passes (reviewer verdict + CI failure).
+
+Past this the loop has stopped converging and burning more tokens is
+waste — the run fails with ``error_class="RevisionCapReached"`` so a
+human picks it up. Revisions a human asked for via an ``@aidlc-bot``
+mention are deliberately uncapped: someone is already steering.
+"""
 
 
 def decide(events: Sequence[EnvelopeLike]) -> Action:
@@ -139,19 +151,16 @@ def decide_after_pr_open(events: Sequence[EnvelopeLike]) -> Action:
 
     Auto-dispatches validators when the impl PR first opens or after the
     implementer pushes a revision. Auto-dispatches the implementer in
-    revision mode when CI fails or a human ``@aidlc-bot`` mention asks
-    for changes. ``VALIDATION.REQUESTED`` is the manual nudge path —
-    same target as the IMPL_PR.OPENED / REVISION.READY branch.
+    revision mode when CI fails, when the reviewer returns
+    ``request_changes``, or when a human ``@aidlc-bot`` mention asks for
+    changes. ``VALIDATION.REQUESTED`` is the manual nudge path — same
+    target as the IMPL_PR.OPENED / REVISION.READY branch.
     """
     last = events[-1]
     if last.type in ("IMPL.ITERATION_REQUESTED", "CHECKS.FAILED"):
-        return invoke_unless_dispatched(
-            events,
-            "implementer",
-            mode="revision",
-            revision_number=current_revision_number(events) + 1,
-            trigger_event_id=last.event_id,
-        )
+        # Human mentions steer the run directly and stay uncapped; CI
+        # failures are automated and count toward MAX_REVISIONS.
+        return revise(events, last, capped=last.type == "CHECKS.FAILED")
     if last.type in ("IMPL_PR.OPENED", "REVISION.READY", "VALIDATION.REQUESTED"):
         return invoke_unless_dispatched(
             events,
@@ -159,7 +168,85 @@ def decide_after_pr_open(events: Sequence[EnvelopeLike]) -> Action:
             revision_number=current_revision_number(events),
             trigger_event_id=last.event_id,
         )
+    blocking_review = pending_blocking_review(events)
+    if blocking_review is not None:
+        return revise(events, blocking_review, capped=True)
     return Noop(f"waiting after {last.type}")
+
+
+def pending_blocking_review(events: Sequence[EnvelopeLike]) -> EnvelopeLike | None:
+    """Return the ``REVIEW.READY`` that should trigger a revision, if any.
+
+    The three validators run concurrently, so ``REVIEW.READY`` is rarely
+    the tail event — the code-critic or tester usually lands after it.
+    Scope the lookup to the current validation pass (everything after the
+    most recent ``VALIDATORS.DISPATCHED`` marker) instead of inspecting
+    only ``events[-1]``, so a ``request_changes`` verdict is still seen
+    when another validator reports last.
+    """
+    for event in reversed(events_since_last_validation(events)):
+        if event.type == "REVIEW.READY":
+            verdict = get(event, "verdict", "")
+            return event if verdict == "request_changes" else None
+    return None
+
+
+def events_since_last_validation(events: Sequence[EnvelopeLike]) -> Sequence[EnvelopeLike]:
+    """Slice the history down to the current validation pass."""
+    for index in range(len(events) - 1, -1, -1):
+        if events[index].type == "VALIDATORS.DISPATCHED":
+            return events[index + 1 :]
+    return events
+
+
+def revise(
+    events: Sequence[EnvelopeLike],
+    trigger: EnvelopeLike,
+    *,
+    capped: bool,
+) -> Action:
+    """Dispatch an implementer revision, honouring the automated-revision cap."""
+    revision_number = current_revision_number(events) + 1
+    if capped and revision_number > MAX_REVISIONS:
+        return emit_revision_cap_reached(events)
+    return invoke_unless_dispatched(
+        events,
+        "implementer",
+        mode="revision",
+        revision_number=revision_number,
+        trigger_event_id=trigger.event_id,
+    )
+
+
+def emit_revision_cap_reached(events: Sequence[EnvelopeLike]) -> Action:
+    """Terminate the run once the automated revision loop stops converging."""
+    # No "already emitted" guard needed — RUN.FAILED is in TERMINAL_EVENTS,
+    # so decide() short-circuits to Noop before reaching this branch again.
+    request = first_of(events, "REQUEST.RECEIVED")
+    if request is None:
+        return Noop("cannot fail without REQUEST.RECEIVED")
+    revision_count = current_revision_number(events)
+    envelope = EventEnvelope[RunFailed](
+        event_id=new_event_id(),
+        type="RUN.FAILED",
+        run_id=RunId(str(request.run_id)),
+        correlation_id=CorrelationId(str(request.correlation_id)),
+        actor_id="state_router",
+        payload=RunFailed(
+            project_slug=get(request, "project_slug", ""),
+            failed_state="revising",
+            error_class="RevisionCapReached",
+            error_message=(
+                f"automated revision loop hit the cap of {MAX_REVISIONS} "
+                f"after {revision_count} revisions — a human needs to take over"
+            ),
+            retryable=False,
+            pr_url=pr_url(events),
+            source_issue_url=source_issue_url(events) or "",
+            revision_count=revision_count,
+        ),
+    )
+    return Compound((EmitEvent(envelope=envelope),))
 
 
 def invoke_unless_dispatched(

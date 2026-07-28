@@ -26,7 +26,6 @@ from strands.tools.mcp import MCPClient
 
 from common.gateway_tools import gateway_tools
 from common.memory import agent_memory_preamble
-from common.routing import pick_variant
 from common.runtime import default_retry_strategy, run_for_structured_output
 from common.templating import make_template_env
 from retrospector.decision import CaptureDecision, ConsolidationPlan
@@ -56,18 +55,16 @@ def model_id() -> str:
     return os.environ.get("AIDLC_BEDROCK_MODEL_ID", DEFAULT_MODEL_ID)
 
 
-def build_agent(run_id: str, *, mode: Mode, mcp_client: MCPClient) -> Agent:
+def build_agent(*, mode: Mode, mcp_client: MCPClient) -> Agent:
     """Build a fresh Strands Agent for one retrospective in ``mode``.
 
     The caller is responsible for starting ``mcp_client`` (typically via
     ``with gateway_mcp_client() as mcp_client:``) and keeping it open
     for the lifetime of the agent call.
 
-    The Retrospector's prompts (capture vs consolidate) are selected
-    by ``mode`` directly — A/B of either prompt would land via
-    ``prompts_b.py`` in a future PR.
+    Unlike the other agents, the Retrospector selects its prompt by
+    ``mode`` (capture vs consolidate) rather than by A/B variant.
     """
-    pick_variant(run_id, "retrospector")
     bedrock_model_id = model_id()
     return Agent(
         model=BedrockModel(

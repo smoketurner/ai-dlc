@@ -284,7 +284,11 @@ def handle_pull_request_review(payload: dict[str, Any], delivery_id: str) -> dic
     Emits ``IMPL.ITERATION_REQUESTED`` only when the review body @-mentions
     the bot. ``state == "changes_requested"`` carries
     ``source="review_changes_requested"``; everything else with a mention
-    carries ``source="issue_comment_mention"``. No mention → no event.
+    carries ``source="review_mention"``. No mention → no event.
+
+    Both cases identify the review by ``review_id``. A review id is not
+    valid in the comment namespace, so it must never be passed as
+    ``comment_id`` — doing so makes any inline reply 404.
     """
     if payload.get("action") != "submitted":
         return {"ok": True, "ignored": True}
@@ -300,10 +304,9 @@ def handle_pull_request_review(payload: dict[str, Any], delivery_id: str) -> dic
         return {"ok": True, "ignored": "no mention"}
     state = review.get("state")
     review_source: Literal[
-        "issue_comment_mention",
-        "review_comment_mention",
         "review_changes_requested",
-    ] = "review_changes_requested" if state == "changes_requested" else "issue_comment_mention"
+        "review_mention",
+    ] = "review_changes_requested" if state == "changes_requested" else "review_mention"
     commenter = (review.get("user") or {}).get("login", "unknown")
     review_id_raw = review.get("id")
     review_id = review_id_raw if isinstance(review_id_raw, int) and review_id_raw >= 1 else None
@@ -314,8 +317,8 @@ def handle_pull_request_review(payload: dict[str, Any], delivery_id: str) -> dic
         source=review_source,
         commenter=commenter,
         feedback_body=body,
-        review_id=review_id if review_source == "review_changes_requested" else None,
-        comment_id=review_id if review_source == "issue_comment_mention" else None,
+        review_id=review_id,
+        comment_id=None,
     )
 
 
@@ -708,6 +711,7 @@ def emit_impl_iteration(
         "issue_comment_mention",
         "review_comment_mention",
         "review_changes_requested",
+        "review_mention",
     ],
     commenter: str,
     feedback_body: str,

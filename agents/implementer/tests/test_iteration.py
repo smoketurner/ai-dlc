@@ -16,6 +16,7 @@ from common.runtime import (
     IssueCommentMentionFeedback,
     ReviewChangesRequestedFeedback,
     ReviewCommentMentionFeedback,
+    ReviewMentionFeedback,
 )
 from implementer.app import emit_impl_pr_opened, emit_revision_ready
 from implementer.client import (
@@ -105,7 +106,50 @@ def test_format_issue_comment_mention_feedback() -> None:
     out = format_feedback_item(item)
     assert "PR comment" in out
     assert "@bob" in out
-    assert "comment_id=12" in out
+    assert "take another look" in out
+
+
+def test_only_inline_comments_advertise_a_comment_id() -> None:
+    """An id the reply endpoint can't address must not reach the prompt.
+
+    ``/pulls/comments/{id}/replies`` accepts review-comment ids only. If
+    an issue-comment or review id is shown as ``comment_id=``, the agent
+    can put it in ``inline_replies`` and the reply 404s.
+    """
+    non_repliable = [
+        IssueCommentMentionFeedback(comment_id=12, body="x", commenter="bob"),
+        ReviewMentionFeedback(reviewer="alice", body="x", review_id=99),
+        ReviewChangesRequestedFeedback(reviewer="alice", body="x", review_id=42),
+    ]
+    for item in non_repliable:
+        assert "comment_id=" not in format_feedback_item(item)
+
+    repliable = ReviewCommentMentionFeedback(
+        path="src/handler.py",
+        commit_id="abcdef0",
+        comment_id=7,
+        body="x",
+        commenter="alice",
+    )
+    assert "comment_id=7" in format_feedback_item(repliable)
+
+
+def test_format_review_mention_feedback() -> None:
+    item = ReviewMentionFeedback(
+        reviewer="alice",
+        body="@ai-dlc[bot] please double-check the retry logic",
+        review_id=99,
+    )
+    out = format_feedback_item(item)
+    assert "Review comment" in out
+    assert "@alice" in out
+    assert "retry logic" in out
+
+
+def test_format_review_mention_handles_empty_body() -> None:
+    assert "(no review body)" in format_feedback_item(
+        ReviewMentionFeedback(reviewer="alice", review_id=99),
+    )
 
 
 def test_any_ci_failure_feedback_detects_ci() -> None:

@@ -1,16 +1,10 @@
 """Shared hook helpers used by ai-dlc agents.
 
-Two flavors live side by side:
-
-  - :func:`validate_no_spec_dump` is pure Python — used by both Strands
-    agents (in their ``hooks.py``) and the Implementer (Claude Agent SDK
-    ``PostToolUse`` validator).
-  - :class:`ToolCallCounter`, :class:`RequirePriorCall`,
-    :class:`RequireAllPriorCalls`, and :class:`InputValidator` are
-    Strands ``HookProvider`` instances. The ``strands.hooks`` import is
-    deferred until ``register_hooks`` is called so this module can be
-    imported by Strands-free code (e.g. the Implementer) without
-    dragging Strands in.
+:class:`ToolCallCounter`, :class:`RequirePriorCall`,
+:class:`RequireAllPriorCalls`, and :class:`InputValidator` are Strands
+``HookProvider`` instances. The ``strands.hooks`` import is deferred
+until ``register_hooks`` is called so this module can be imported by
+Strands-free code (e.g. the Implementer) without dragging Strands in.
 
 For SDK-agnostic decision and judge-result types, plus reusable
 validator functions composable with :class:`InputValidator`, see
@@ -22,7 +16,6 @@ concurrently inside one agent invocation.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Mapping
 from threading import Lock
 from typing import TYPE_CHECKING, Any
@@ -33,9 +26,6 @@ if TYPE_CHECKING:
         BeforeToolCallEvent,
         HookRegistry,
     )
-
-
-SPEC_LEAK_PATTERN = re.compile(r"(?im)^\s{0,3}#{1,6}\s+(requirements|design|tasks)(?:\.md)?\s*$")
 
 
 def effective_tool_name(tool_use: Mapping[str, Any]) -> str:
@@ -74,24 +64,6 @@ def effective_tool_name(tool_use: Mapping[str, Any]) -> str:
     return name
 
 
-def validate_no_spec_dump(text: str) -> str | None:
-    """Detect raw spec-document headings leaking into agent output.
-
-    Catches the obvious failure mode where an agent quotes the spec
-    document headers verbatim into a PR body, summary, or critique.
-
-    Args:
-        text: Candidate output — PR body, summary, etc.
-
-    Returns:
-        A short reason string when a leak is detected; ``None`` otherwise.
-    """
-    match = SPEC_LEAK_PATTERN.search(text)
-    if match is None:
-        return None
-    return f"detected spec heading leak: {match.group(0).strip()!r}"
-
-
 class ToolCallCounter:
     """Strands hook: cap how many times a given tool may be called per invocation.
 
@@ -99,8 +71,8 @@ class ToolCallCounter:
     per-invocation, not per-process.
 
     Example:
-        ``ToolCallCounter({"read_spec_doc": 3})`` denies the 4th call to
-        ``read_spec_doc`` within one invocation.
+        ``ToolCallCounter({"get_artifact": 3})`` denies the 4th call to
+        ``get_artifact`` within one invocation.
     """
 
     def __init__(self, limits: dict[str, int]) -> None:
@@ -151,8 +123,8 @@ class RequirePriorCall:
     """Strands hook: deny ``target`` until ``prerequisite`` has been called.
 
     Useful when an agent must read context before producing output —
-    e.g., the Architect must call ``read_memory_md`` before
-    ``write_spec_doc``.
+    e.g., the Retrospector must call ``read_memory_md`` before
+    ``write_memory_md``.
     """
 
     def __init__(self, *, target: str, prerequisite: str) -> None:

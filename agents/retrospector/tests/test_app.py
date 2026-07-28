@@ -325,6 +325,71 @@ def test_memory_files_for_groups_by_scope(monkeypatch: pytest.MonkeyPatch) -> No
     assert paths == ["MEMORY.md", "src/api/MEMORY.md"]
 
 
+MALFORMED_MEMORY_MD = """\
+# Project Memory
+
+## Conventions
+
+- Sections are out of canonical order.
+
+## Overview
+
+Project summary.
+"""
+
+
+def test_memory_files_for_skips_malformed_scope_and_keeps_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unparseable MEMORY.md must not wedge the whole consolidation."""
+    contents = {
+        "MEMORY.md": MALFORMED_MEMORY_MD,
+        "src/api/MEMORY.md": EXISTING_MEMORY_MD,
+    }
+
+    def fake(_mcp_client: Any, **kw: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "result": {
+                "exists": True,
+                "content": contents[kw["path"]],
+                "sha": "abc",
+                "ref": "main",
+            },
+        }
+
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
+    additions = [
+        MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Root rule."),
+        MemoryAddition(scope="src/api/MEMORY.md", section="conventions", addition="- API rule."),
+    ]
+
+    files = memory_files_for(MagicMock(), payload=make_payload(), additions=additions)
+
+    assert [f["path"] for f in files] == ["src/api/MEMORY.md"]
+    assert "API rule" in files[0]["content"]
+
+
+def test_memory_files_for_returns_empty_when_every_scope_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = MagicMock(
+        return_value={
+            "ok": True,
+            "result": {
+                "exists": True,
+                "content": MALFORMED_MEMORY_MD,
+                "sha": "abc",
+                "ref": "main",
+            },
+        },
+    )
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
+    additions = [MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Rule.")]
+
+    assert memory_files_for(MagicMock(), payload=make_payload(), additions=additions) == []
+
+
 def test_render_skill_file_emits_frontmatter() -> None:
     skill = SkillFile(
         scope=".aidlc/skills/handle-pagination",

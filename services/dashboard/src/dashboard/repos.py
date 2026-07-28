@@ -79,6 +79,7 @@ def run_summary_from_item(item: dict[str, Any]) -> RunSummary:
         total_duration_ms=int(item.get("total_duration_ms", {}).get("N", "0")),
         target_repo=item.get("target_repo", {}).get("S") or None,
         source_issue_url=item.get("source_issue_url", {}).get("S") or None,
+        issue_number=int(item["issue_number"]["N"]) if "issue_number" in item else None,
         issue_title=item.get("source_issue_title", {}).get("S") or None,
         pr_url=item.get("pr_url", {}).get("S") or None,
     )

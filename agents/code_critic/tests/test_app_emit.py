@@ -13,7 +13,17 @@ import pytest
 
 from code_critic import app
 from common import event_emit
+from common.events import EventEnvelope
 from common.runtime import CodeCriticInput
+
+
+@pytest.fixture
+def captured(monkeypatch: pytest.MonkeyPatch) -> list[EventEnvelope[Any]]:
+    """Capture every envelope passed to ``publish`` or ``try_publish``."""
+    out: list[EventEnvelope[Any]] = []
+    monkeypatch.setattr(app, "publish", out.append)
+    monkeypatch.setattr(app, "try_publish", out.append)
+    return out
 
 
 class RejectingEventsClient:
@@ -38,3 +48,24 @@ def test_publish_run_failed_does_not_cascade(monkeypatch: pytest.MonkeyPatch) ->
     )
 
     app.publish_run_failed(payload, RuntimeError("simulated agent crash"))
+
+
+def test_publish_run_failed_carries_pr_and_issue_urls(
+    captured: list[EventEnvelope[Any]],
+) -> None:
+    """``CodeCriticInput.pr_url`` is required, so this is always available."""
+    payload = CodeCriticInput(
+        project_slug="demo",
+        plan_s3_key="runs/r-1/plan.md",
+        pr_url="https://github.com/owner/repo/pull/1",
+        run_id="r-1",
+        correlation_id="c-1",
+        source_issue_url="https://github.com/owner/repo/issues/9",
+    )
+
+    app.publish_run_failed(payload, RuntimeError("critic crashed"))
+
+    assert len(captured) == 1
+    failed = captured[0].payload
+    assert failed.pr_url == "https://github.com/owner/repo/pull/1"
+    assert failed.source_issue_url == "https://github.com/owner/repo/issues/9"

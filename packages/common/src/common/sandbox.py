@@ -29,6 +29,7 @@ from bedrock_agentcore.tools.code_interpreter_client import CodeInterpreter
 
 from common import agentcore_code_interpreter as ci
 from common.errors import AgentCoreCodeInterpreterError
+from common.redaction import redact_secrets
 
 if TYPE_CHECKING:
     from mypy_boto3_lambda.client import LambdaClient
@@ -36,7 +37,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 PR_URL_PATTERN = re.compile(r"^https://github\.com/(?P<repo>[\w.-]+/[\w.-]+)/pull/(?P<num>\d+)$")
-ARCHIVE_TOKEN_REDACT_PATTERN = re.compile(r"([?&]token=)[^&\s]+")
 SANDBOX_OUTPUT_TAIL_BYTES = 4096
 SANDBOX_EXTRACT_STDERR_TAIL_BYTES = 2048
 
@@ -68,11 +68,6 @@ def parse_pr_url(pr_url: str) -> tuple[str, int] | None:
     if match is None:
         return None
     return match.group("repo"), int(match.group("num"))
-
-
-def redact_archive_token(text: str) -> str:
-    """Redact any ``?token=<token>`` query parameter from log-bound text."""
-    return ARCHIVE_TOKEN_REDACT_PATTERN.sub(r"\1<redacted>", text)
 
 
 def invoke_repo_helper(*, op: str, **fields: Any) -> dict[str, Any]:
@@ -265,7 +260,7 @@ def run_extract_step(
     result = ci.execute_code(sdk_client, code=code, language="python")
     summary = {
         "exit_code": result.exit_code,
-        "stderr": redact_archive_token(result.stderr)[-SANDBOX_EXTRACT_STDERR_TAIL_BYTES:],
+        "stderr": redact_secrets(result.stderr)[-SANDBOX_EXTRACT_STDERR_TAIL_BYTES:],
         "is_error": result.is_error,
     }
     ok = not result.is_error and (result.exit_code == 0 or result.exit_code is None)

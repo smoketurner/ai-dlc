@@ -160,8 +160,8 @@ def revision_feedback(
     revision-driving signal in that window:
 
     * ``IMPL.ITERATION_REQUESTED`` → ``issue_comment_mention`` /
-      ``review_comment_mention`` / ``review_changes_requested`` based on
-      the envelope's ``source``.
+      ``review_comment_mention`` / ``review_changes_requested`` /
+      ``review_mention`` based on the envelope's ``source``.
     * ``CHECKS.FAILED`` → ``ci_failure``.
 
     The implementer's ``ImplementerInput.revision_feedback`` accepts
@@ -253,6 +253,23 @@ def _review_changes_requested(
     }
 
 
+def _review_mention(
+    event: EnvelopeLike,
+    body: str,
+    commenter: str,
+) -> dict[str, Any] | None:
+    """Build a ``review_mention`` FeedbackItem, or ``None`` if id missing."""
+    review_id = get(event, "review_id")
+    if not isinstance(review_id, int) or review_id < 1:
+        return None
+    return {
+        "kind": "review_mention",
+        "reviewer": commenter,
+        "body": body,
+        "review_id": review_id,
+    }
+
+
 _ITERATION_BUILDERS: dict[
     str,
     Any,
@@ -260,6 +277,7 @@ _ITERATION_BUILDERS: dict[
     "issue_comment_mention": _issue_comment_mention,
     "review_comment_mention": _review_comment_mention,
     "review_changes_requested": _review_changes_requested,
+    "review_mention": _review_mention,
 }
 
 

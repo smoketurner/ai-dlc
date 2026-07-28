@@ -62,6 +62,9 @@ from state_router.extract import (
 from state_router.extract import (
     run_id as extract_run_id,
 )
+from state_router.extract import (
+    source_issue_url as extract_source_issue_url,
+)
 from state_router.payload import (
     architect_payload,
     implementer_payload,
@@ -283,6 +286,10 @@ def emit_run_failed(events: Sequence[EnvelopeLike], *, reason: str) -> None:
         error_class="DispatchFailed",
         error_message=reason[:512],
         retryable=False,
+        # The retrospector dispatcher drops RUN.FAILED when it can't
+        # identify a PR or issue to attach the lesson to.
+        pr_url=extract_pr_url(events),
+        source_issue_url=extract_source_issue_url(events) or "",
     )
     envelope = build_envelope("RUN.FAILED", payload, events)
     publish(envelope)

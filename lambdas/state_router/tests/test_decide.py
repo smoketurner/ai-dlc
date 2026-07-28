@@ -77,6 +77,47 @@ def dispatched(agent: str, event_id: str = "dispatch-1") -> Env:
     return Env(event_type=type_map[agent], event_id=event_id, payload={"project_slug": "demo"})
 
 
+def review_ready(*, verdict: str, event_id: str = "evt-review") -> Env:
+    return Env(
+        event_type="REVIEW.READY",
+        event_id=event_id,
+        payload={
+            "project_slug": "demo",
+            "pr_url": "https://github.com/x/y/pull/1",
+            "verdict": verdict,
+        },
+    )
+
+
+def code_critique_ready(event_id: str = "evt-critique") -> Env:
+    return Env(
+        event_type="CODE_CRITIQUE.READY",
+        event_id=event_id,
+        payload={"project_slug": "demo"},
+    )
+
+
+def revision_ready(number: int) -> Env:
+    return Env(
+        event_type="REVISION.READY",
+        event_id=f"evt-revready-{number}",
+        payload={"project_slug": "demo", "revision_number": number},
+    )
+
+
+def through_pr_open() -> list[Env]:
+    """The common prefix: issue → triage → architect → implementer → PR."""
+    return [
+        request_received(),
+        dispatched("triage"),
+        issue_triaged(action="proceed"),
+        dispatched("architect"),
+        design_ready(),
+        dispatched("implementer"),
+        impl_pr_opened(),
+    ]
+
+
 def test_no_events_returns_noop() -> None:
     assert isinstance(decide([]), Noop)
 
@@ -172,16 +213,7 @@ def test_revision_ready_auto_dispatches_validators() -> None:
         dispatched("implementer"),
         impl_pr_opened(),
         dispatched("validators"),
-        Env(
-            event_type="REVIEW.READY",
-            event_id="evt-rev1",
-            payload={"project_slug": "demo", "verdict": "request_changes"},
-        ),
-        Env(
-            event_type="IMPL.ITERATION_REQUESTED",
-            event_id="evt-it1",
-            payload={"project_slug": "demo", "source": "review_changes_requested"},
-        ),
+        review_ready(verdict="request_changes"),
         Env(
             event_type="IMPLEMENTER.DISPATCHED",
             event_id="evt-impl2",
@@ -225,6 +257,147 @@ def test_iteration_request_dispatches_implementer_revision() -> None:
     assert isinstance(action, InvokeAgent)
     assert action.agent == "implementer"
     assert action.mode == "revision"
+
+
+def test_review_request_changes_dispatches_implementer_revision() -> None:
+    """The reviewer's verdict gates the run — ``request_changes`` means revise."""
+    events = [*through_pr_open(), dispatched("validators"), review_ready(verdict="request_changes")]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "implementer"
+    assert action.mode == "revision"
+    assert action.revision_number == 1
+
+
+def test_review_request_changes_seen_when_another_validator_reports_last() -> None:
+    """Validators run concurrently, so REVIEW.READY is rarely the tail event."""
+    events = [
+        *through_pr_open(),
+        dispatched("validators"),
+        review_ready(verdict="request_changes"),
+        code_critique_ready(),
+        Env(event_type="TEST_REPORT.READY", event_id="evt-test", payload={"project_slug": "demo"}),
+    ]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "implementer"
+    assert action.mode == "revision"
+
+
+@pytest.mark.parametrize("verdict", ["approve", "comment"])
+def test_non_blocking_review_waits_for_checks(verdict: str) -> None:
+    """approve/comment hand the PR to the human; CI drives the next transition."""
+    events = [*through_pr_open(), dispatched("validators"), review_ready(verdict=verdict)]
+    assert isinstance(decide(events), Noop)
+
+
+def test_review_request_changes_not_redispatched_once_implementer_is_running() -> None:
+    events = [
+        *through_pr_open(),
+        dispatched("validators"),
+        review_ready(verdict="request_changes"),
+        Env(event_type="IMPLEMENTER.DISPATCHED", event_id="evt-impl2", payload={}),
+    ]
+    assert isinstance(decide(events), Noop)
+
+
+def test_stale_review_from_a_prior_pass_does_not_retrigger() -> None:
+    """A verdict is scoped to its own validation pass, not the whole history."""
+    events = [
+        *through_pr_open(),
+        dispatched("validators", event_id="vd-0"),
+        review_ready(verdict="request_changes", event_id="evt-review-0"),
+        Env(event_type="IMPLEMENTER.DISPATCHED", event_id="evt-impl2", payload={}),
+        revision_ready(1),
+        dispatched("validators", event_id="vd-1"),
+        review_ready(verdict="approve", event_id="evt-review-1"),
+    ]
+    assert isinstance(decide(events), Noop)
+
+
+def test_checks_failed_counts_toward_the_revision_cap() -> None:
+    events = [
+        *through_pr_open(),
+        dispatched("validators"),
+        Env(event_type="CHECKS.FAILED", event_id="evt-ci", payload={"project_slug": "demo"}),
+    ]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "implementer"
+    assert action.revision_number == 1
+
+
+def test_revision_cap_emits_run_failed() -> None:
+    """Past MAX_REVISIONS the automated loop has stopped converging."""
+    events = [
+        *through_pr_open(),
+        revision_ready(1),
+        revision_ready(2),
+        revision_ready(3),
+        dispatched("validators"),
+        review_ready(verdict="request_changes"),
+    ]
+    result = decide(events)
+    assert isinstance(result, Compound)
+    emitted = [sub for sub in result.actions if isinstance(sub, EmitEvent)]
+    assert len(emitted) == 1
+    envelope = emitted[0].envelope
+    assert envelope.type == "RUN.FAILED"
+    assert envelope.payload.error_class == "RevisionCapReached"
+    assert envelope.payload.revision_count == 3
+    assert envelope.payload.pr_url == "https://github.com/x/y/pull/1"
+    assert envelope.payload.retryable is False
+
+
+def test_final_automated_revision_is_allowed_before_the_cap() -> None:
+    """Two completed revisions still leave room for the third."""
+    events = [
+        *through_pr_open(),
+        revision_ready(1),
+        revision_ready(2),
+        dispatched("validators"),
+        review_ready(verdict="request_changes"),
+    ]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.revision_number == 3
+
+
+def test_human_mention_revisions_are_uncapped() -> None:
+    """A human asking for changes is actively steering — don't fail the run."""
+    events = [
+        *through_pr_open(),
+        revision_ready(1),
+        revision_ready(2),
+        revision_ready(3),
+        Env(
+            event_type="IMPL.ITERATION_REQUESTED",
+            event_id="evt-it",
+            payload={"project_slug": "demo", "source": "issue_comment_mention"},
+        ),
+    ]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "implementer"
+    assert action.revision_number == 4
+
+
+def test_revision_cap_failure_is_terminal() -> None:
+    """Once the cap fires, replaying the history must not emit a second failure."""
+    events = [
+        *through_pr_open(),
+        revision_ready(1),
+        revision_ready(2),
+        revision_ready(3),
+        dispatched("validators"),
+        review_ready(verdict="request_changes"),
+        Env(
+            event_type="RUN.FAILED",
+            event_id="evt-failed",
+            payload={"project_slug": "demo", "error_class": "RevisionCapReached"},
+        ),
+    ]
+    assert isinstance(decide(events), Noop)
 
 
 def test_validation_request_dispatches_validators() -> None:

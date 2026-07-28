@@ -114,6 +114,25 @@ def test_remove_renders_remove_clause() -> None:
     assert item["ExpressionAttributeNames"] == {"#a0": "delivery_ids"}
 
 
+def test_remove_only_update_omits_empty_expression_values() -> None:
+    """DynamoDB rejects a present-but-empty ``ExpressionAttributeValues``."""
+    update = (
+        UpdateBuilder(table=TABLE, key={"pk": "p", "sk": "s"})
+        .remove("temp")
+        .condition_not_exists("status")
+    )
+    item = update.to_item()["Update"]
+    assert "ExpressionAttributeValues" not in item
+    assert item["ExpressionAttributeNames"] == {"#a0": "temp", "#a1": "status"}
+    assert item["ConditionExpression"] == "attribute_not_exists(#a1)"
+
+
+def test_update_with_values_still_attaches_them() -> None:
+    update = UpdateBuilder(table=TABLE, key={"pk": "p", "sk": "s"}).set("status", "done")
+    item = update.to_item()["Update"]
+    assert item["ExpressionAttributeValues"] == {":v0": {"S": "done"}}
+
+
 def test_mixed_set_add_remove_composes_one_expression() -> None:
     update = (
         UpdateBuilder(table=TABLE, key={"pk": "p", "sk": "s"})

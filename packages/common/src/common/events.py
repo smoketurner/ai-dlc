@@ -32,9 +32,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from common.ids import CorrelationId, EventId, RunId, new_event_id
+from common.redaction import redact_secrets
 
 EventType = Literal[
     # External triggers
@@ -289,9 +290,15 @@ class ImplIterationRequested(Payload):
 
     ``comment_id`` is populated for ``issue_comment_mention`` and
     ``review_comment_mention``; ``review_id`` is populated for
-    ``review_changes_requested``. Both are nullable on the envelope so
-    the schema is permissive, but the projector drops the feedback item
-    when the id required by the discriminator is missing.
+    ``review_changes_requested`` and ``review_mention``. Both are
+    nullable on the envelope so the schema is permissive, but the
+    projector drops the feedback item when the id required by the
+    discriminator is missing.
+
+    Review ids and comment ids live in different GitHub namespaces —
+    a review id is not addressable as ``/pulls/comments/{id}`` — so a
+    review that merely mentions the bot carries ``review_mention``
+    rather than being folded into ``issue_comment_mention``.
     """
 
     project_slug: str
@@ -304,6 +311,7 @@ class ImplIterationRequested(Payload):
         "issue_comment_mention",
         "review_comment_mention",
         "review_changes_requested",
+        "review_mention",
     ]
     commenter: Annotated[str, Field(min_length=1, max_length=128)]
     feedback_body: Annotated[str, Field(min_length=1, max_length=8192)]
@@ -376,8 +384,8 @@ class ReviewReady(UsagePayload):
     """Reviewer agent code-reviewed the unified impl PR — gating.
 
     Reviewer runs once per validation pass, against the integrated impl
-    PR. Its ``verdict`` drives the run-level state machine: ``approve`` /
-    ``comment`` / ``approve`` mean the PR is in the human's hands;
+    PR. Its ``verdict`` drives the run: ``approve`` / ``comment`` mean
+    the PR is in the human's hands once Checks are green;
     ``request_changes`` triggers an implementer revision. Comments
     land on the impl PR via ``repo_helper.comment_pr``.
     """
@@ -480,6 +488,11 @@ class RunFailed(Payload):
     S3 keys (``runs/{run_id}/validation/{reviewer,tester,code_critic}-r{N}.md``)
     so the retrospector can read every revision's findings and propose
     prompt / ``MEMORY.md`` updates that would have prevented the failure.
+
+    ``error_message`` is usually ``str(exc)`` from an agent's crash handler.
+    Git failures put a tokenised clone URL in there, and the projector
+    persists this payload verbatim for the dashboard to render — so the
+    field is redacted on construction rather than at any display site.
     """
 
     project_slug: str
@@ -490,6 +503,12 @@ class RunFailed(Payload):
     pr_url: Annotated[str, Field(max_length=512)] = ""
     source_issue_url: Annotated[str, Field(max_length=512)] = ""
     revision_count: Annotated[int, Field(ge=0, le=16)] = 0
+
+    @field_validator("error_message", mode="after")
+    @classmethod
+    def redact_error_message(cls, value: str) -> str:
+        """Strip credentials that leaked in from a failed git command."""
+        return redact_secrets(value)
 
 
 class EventEnvelope[PayloadT: Payload](BaseModel):

@@ -11,20 +11,17 @@ behaviour is steered by the target repo's ``MEMORY.md`` / ``AGENTS.md``
 and not by editing agent prompt files. Agent prompt evolution lives in
 the agent platform's own repo, separate from any target project.
 
-The :class:`Proposal` also enforces that ``pr_body`` does not quote spec
-documents verbatim (the ``validate_no_spec_dump`` heuristic from
-:mod:`common.hooks`). Strands' structured-output mode surfaces Pydantic
-errors to the agent so it can self-correct.
+Strands' structured-output mode surfaces Pydantic errors to the agent
+so it can self-correct.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Annotated, Self
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from common.hooks import validate_no_spec_dump
 from common.validators import NoneSafeList
 
 # Allowed: MEMORY.md or AGENTS.md, at the repo root or under docs/.
@@ -92,15 +89,3 @@ class Proposal(_Frozen):
     proposed_issues: Annotated[NoneSafeList[ProposedIssue], Field(max_length=16)] = Field(
         default_factory=list,
     )
-
-    @model_validator(mode="after")
-    def pr_body_must_not_dump_spec(self) -> Self:
-        """Reject pr_body text that quotes spec headings (``# Requirements`` etc.)."""
-        leak = validate_no_spec_dump(self.pr_body)
-        if leak is not None:
-            msg = (
-                f"pr_body must not quote spec documents verbatim — {leak}. "
-                "Rewrite the section in your own words."
-            )
-            raise ValueError(msg)
-        return self

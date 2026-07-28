@@ -11,7 +11,6 @@ from common.hooks import (
     RequirePriorCall,
     ToolCallCounter,
     effective_tool_name,
-    validate_no_spec_dump,
 )
 
 GATEWAY_NAME = "artifact-tool___artifact_tool"
@@ -69,92 +68,63 @@ def call_required(hook: RequirePriorCall, name: str, *, gateway: bool = True) ->
     return event
 
 
-def test_validate_no_spec_dump_clean_text_returns_none() -> None:
-    assert validate_no_spec_dump("This PR adds a `/healthz` endpoint.") is None
-
-
-def test_validate_no_spec_dump_flags_requirements_heading() -> None:
-    body = "## Summary\n\nstuff\n\n# Requirements\n\nfoo"
-    reason = validate_no_spec_dump(body)
-    assert reason is not None
-    assert "Requirements" in reason
-
-
-def test_validate_no_spec_dump_flags_tasks_md_filename() -> None:
-    body = "Some text\n\n## tasks.md\n\ntext"
-    reason = validate_no_spec_dump(body)
-    assert reason is not None
-    assert "tasks" in reason
-
-
-def test_validate_no_spec_dump_does_not_flag_design_considerations() -> None:
-    """`# Design considerations` is a normal heading, not a spec dump."""
-    body = "## Design considerations\n\nWe chose Option A because..."
-    assert validate_no_spec_dump(body) is None
-
-
-def test_validate_no_spec_dump_handles_indented_headings() -> None:
-    body = "  # Requirements\n"
-    assert validate_no_spec_dump(body) is not None
-
-
 def test_tool_call_counter_allows_under_limit() -> None:
-    counter = ToolCallCounter({"read_spec_doc": 3})
+    counter = ToolCallCounter({"get_artifact": 3})
     for _ in range(3):
-        event = call(counter, "read_spec_doc")
+        event = call(counter, "get_artifact")
         assert event.cancel_tool is None
 
 
 def test_tool_call_counter_denies_over_limit() -> None:
-    counter = ToolCallCounter({"read_spec_doc": 3})
+    counter = ToolCallCounter({"get_artifact": 3})
     for _ in range(3):
-        call(counter, "read_spec_doc")
-    fourth = call(counter, "read_spec_doc")
+        call(counter, "get_artifact")
+    fourth = call(counter, "get_artifact")
     assert fourth.cancel_tool is not None
     assert "cap of 3" in fourth.cancel_tool
 
 
 def test_tool_call_counter_ignores_unlimited_tools() -> None:
-    counter = ToolCallCounter({"read_spec_doc": 1})
+    counter = ToolCallCounter({"get_artifact": 1})
     for _ in range(5):
         event = call(counter, "other_tool", gateway=False)
         assert event.cancel_tool is None
 
 
 def test_tool_call_counter_resets_on_invocation() -> None:
-    counter = ToolCallCounter({"read_spec_doc": 2})
-    call(counter, "read_spec_doc")
-    call(counter, "read_spec_doc")
+    counter = ToolCallCounter({"get_artifact": 2})
+    call(counter, "get_artifact")
+    call(counter, "get_artifact")
     counter.reset(StubBeforeInvocation())  # ty: ignore[invalid-argument-type]
-    after_reset = call(counter, "read_spec_doc")
+    after_reset = call(counter, "get_artifact")
     assert after_reset.cancel_tool is None
 
 
 def test_require_prior_call_denies_target_before_prerequisite() -> None:
-    hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
-    event = call_required(hook, "write_spec_doc")
+    hook = RequirePriorCall(target="write_memory_md", prerequisite="read_memory_md")
+    event = call_required(hook, "write_memory_md")
     assert event.cancel_tool is not None
     assert "read_memory_md" in event.cancel_tool
 
 
 def test_require_prior_call_allows_target_after_prerequisite() -> None:
-    hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
+    hook = RequirePriorCall(target="write_memory_md", prerequisite="read_memory_md")
     call_required(hook, "read_memory_md")
-    second = call_required(hook, "write_spec_doc")
+    second = call_required(hook, "write_memory_md")
     assert second.cancel_tool is None
 
 
 def test_require_prior_call_resets_on_invocation() -> None:
-    hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
+    hook = RequirePriorCall(target="write_memory_md", prerequisite="read_memory_md")
     call_required(hook, "read_memory_md")
-    call_required(hook, "write_spec_doc")
+    call_required(hook, "write_memory_md")
     hook.reset(StubBeforeInvocation())  # ty: ignore[invalid-argument-type]
-    after_reset = call_required(hook, "write_spec_doc")
+    after_reset = call_required(hook, "write_memory_md")
     assert after_reset.cancel_tool is not None
 
 
 def test_require_prior_call_ignores_unrelated_tools() -> None:
-    hook = RequirePriorCall(target="write_spec_doc", prerequisite="read_memory_md")
+    hook = RequirePriorCall(target="write_memory_md", prerequisite="read_memory_md")
     event = call_required(hook, "search_codebase", gateway=False)
     assert event.cancel_tool is None
 

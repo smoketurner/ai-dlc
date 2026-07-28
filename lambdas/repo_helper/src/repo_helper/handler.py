@@ -446,6 +446,11 @@ def create_branch(req: CreateBranchInput, client: httpx.Client) -> dict[str, Any
     fetched and returned so callers don't need to special-case re-runs.
     The returned SHA is whatever the branch points at today, which may
     have advanced past the requested base.
+
+    GitHub also returns 422 for "Object does not exist" and invalid ref
+    names. Only treat the 422 as idempotent when the branch really is
+    there; otherwise fall through so the caller sees the original error
+    instead of a 404 from the follow-up lookup.
     """
     base_ref = client.get(f"/repos/{req.repo}/git/refs/heads/{req.base}")
     base_ref.raise_for_status()
@@ -456,14 +461,14 @@ def create_branch(req: CreateBranchInput, client: httpx.Client) -> dict[str, Any
     )
     if response.status_code == httpx.codes.UNPROCESSABLE_ENTITY:
         existing = client.get(f"/repos/{req.repo}/git/refs/heads/{req.branch}")
-        existing.raise_for_status()
-        body = existing.json()
-        return {
-            "branch": req.branch,
-            "ref": body["ref"],
-            "sha": body["object"]["sha"],
-            "reused": True,
-        }
+        if existing.status_code == httpx.codes.OK:
+            body = existing.json()
+            return {
+                "branch": req.branch,
+                "ref": body["ref"],
+                "sha": body["object"]["sha"],
+                "reused": True,
+            }
     response.raise_for_status()
     body = response.json()
     return {
