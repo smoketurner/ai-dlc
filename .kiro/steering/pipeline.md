@@ -71,17 +71,16 @@ All three write Markdown to `s3://{bucket}/runs/{run_id}/validation/{kind}-r{N}.
 
 The Reviewer's `REVIEW.READY` event carries a `verdict`:
 
-- **`approve` / `comment`** -- state-router checks the PR's aggregate GitHub Check state via `repo_helper.get_check_state(pr_url)`:
-  - Checks passed -> `awaiting_human_merge`
-  - Checks pending -> `awaiting_checks`
-  - Checks failed -> `revising` (CI-driven revision, counts toward cap)
+- **`approve` / `comment`** -- the router waits. GitHub Check webhooks drive the rest: the dashboard aggregates them via `repo_helper.get_check_state` and emits `CHECKS.PASSED` (PR is in the human's hands) or `CHECKS.FAILED` (CI-driven revision, counts toward the cap).
 - **`request_changes`** -- `revising`. Implementer runs in `mode=revision`.
+
+The verdict is looked up within the current validation pass rather than at the tail of the event log -- the three validators finish concurrently, so `REVIEW.READY` is usually not the last event.
 
 The Reviewer also performs per-assumption checks: it verifies each architect assumption against the source issue text.
 
 ## Revision Triggers
 
-While in `awaiting_checks` or `awaiting_human_merge`:
+Two further signals trigger revisions once the PR is open:
 
 - `CHECKS.FAILED` (a required check went red) -> `revising` (counts toward automated cap)
 - `IMPL.ITERATION_REQUESTED` (human `@aidlc-bot` mention) -> `revising` (uncapped)
@@ -95,7 +94,7 @@ In revision mode, the Implementer:
 
 ## Automated Revision Cap
 
-`MAX_REVISIONS = 3` (defined in `dispatch_run.py`). This cap covers:
+`MAX_REVISIONS = 3` (defined in `decide.py`). This cap covers:
 - Reviewer `request_changes` verdicts
 - `CHECKS.FAILED` transitions
 
@@ -135,13 +134,11 @@ stateDiagram-v2
 
 ## Terminal States
 
+`RUN.COMPLETED`, `RUN.FAILED`, and `RUN.CANCEL_REQUESTED` are terminal: `decide()` returns `Noop` as soon as any of them appears in the history.
+
 - **done** -- PR merged (`RUN.COMPLETED`)
 - **failed** -- revision cap hit or dispatch error (`RUN.FAILED`)
 - **cancelled** -- triage declined, issue closed, or manual cancel (`RUN.CANCEL_REQUESTED`)
-
-## Wildcard Transitions
-
-`RUN.FAILED` and `RUN.CANCEL_REQUESTED` advance any non-terminal state to `failed` or `cancelled` respectively.
 
 ## The State Cursor
 
@@ -159,4 +156,4 @@ Fires on every terminal event (capture mode) and weekly per destination (consoli
 
 ## Proposer (Research Path)
 
-When triage classifies a run as `research`, the Proposer agent is dispatched instead of the Architect. The Proposer reads external docs and opens PRs proposing prompt or `MEMORY.md` edits.
+When triage classifies a run as `research`, the Proposer agent is dispatched instead of the Architect. The Proposer reads external docs and opens PRs proposing `MEMORY.md` / `AGENTS.md` edits, and may propose follow-up issues.

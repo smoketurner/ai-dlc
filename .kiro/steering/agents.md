@@ -73,7 +73,7 @@ Container credentials are scoped to Bedrock + project S3 + GitHub App for the ta
 
 - **Model**: Claude Opus 4.6
 - **Framework**: Strands Agents
-- **Role**: Handles research-path runs (when triage classifies as `research`). Reads external docs and opens PRs proposing prompt or `MEMORY.md` edits.
+- **Role**: Handles research-path runs (when triage classifies as `research`). Reads external docs and opens PRs proposing `MEMORY.md` / `AGENTS.md` edits, and may propose follow-up issues.
 - **Input**: Issue context, current MEMORY.md, prompts
 - **Output**: `RUN.COMPLETED` event (after opening proposal PRs)
 
@@ -116,7 +116,7 @@ Seven-step process:
 4. Register the agent in `terraform/modules/agents/variables.tf` (`var.agents`); apply (creates IAM, gateway, workload identity -- no ECR repo, no runtime yet).
 5. Push the image via the `images-build` workflow. The ECR repo `${project}/<name>` is auto-created on first push by `aws_ecr_repository_creation_template.agents`.
 6. Add `<name> = "latest"` to `agent_image_tags` in `terraform/envs/<env>/main.tf` and apply again to create the AgentCore Runtime.
-7. Add the corresponding state(s) to `packages/common/src/common/state.py`, transitions to `state_transitions.py`, and a dispatch handler in `lambdas/state_router/src/state_router/dispatch_run.py` -- only if the agent participates in the run state machine (out-of-band agents like the Retrospector skip this step).
+7. Add the agent to `AgentKind` + `DISPATCH_MARKERS` and a branch in `decide()` (`lambdas/state_router/src/state_router/decide.py`), a payload builder in `payload.py`, and its event types to `packages/common/src/common/events.py` -- only if the agent participates in a run (out-of-band agents like the Retrospector skip this step).
 
 ## Runtime Details
 
