@@ -296,11 +296,16 @@ def test_memory_files_for_appends_to_existing_section(
             addition="- **Frontend stack**: FastAPI + Jinja2.",
         ),
     ]
-    files = memory_files_for(MagicMock(), payload=payload, additions=additions)
+    files, scopes_written = memory_files_for(
+        MagicMock(),
+        payload=payload,
+        additions=additions,
+    )
     assert len(files) == 1
     assert files[0]["path"] == "MEMORY.md"
     assert "Use Python 3.14" in files[0]["content"]  # existing bullet survives
     assert "Frontend stack" in files[0]["content"]
+    assert scopes_written == {"MEMORY.md"}
 
 
 def test_memory_files_for_groups_by_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -320,9 +325,14 @@ def test_memory_files_for_groups_by_scope(monkeypatch: pytest.MonkeyPatch) -> No
             addition="- API rule.",
         ),
     ]
-    files = memory_files_for(MagicMock(), payload=payload, additions=additions)
+    files, scopes_written = memory_files_for(
+        MagicMock(),
+        payload=payload,
+        additions=additions,
+    )
     paths = sorted(f["path"] for f in files)
     assert paths == ["MEMORY.md", "src/api/MEMORY.md"]
+    assert scopes_written == {"MEMORY.md", "src/api/MEMORY.md"}
 
 
 MALFORMED_MEMORY_MD = """\
@@ -341,7 +351,12 @@ Project summary.
 def test_memory_files_for_skips_malformed_scope_and_keeps_the_rest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One unparseable MEMORY.md must not wedge the whole consolidation."""
+    """One unparseable MEMORY.md must not wedge the whole consolidation.
+
+    The malformed scope is dropped from ``files`` AND from
+    ``scopes_written`` so the caller can detect the partial failure and
+    avoid deleting events whose lessons were never written to a PR.
+    """
     contents = {
         "MEMORY.md": MALFORMED_MEMORY_MD,
         "src/api/MEMORY.md": EXISTING_MEMORY_MD,
@@ -364,10 +379,16 @@ def test_memory_files_for_skips_malformed_scope_and_keeps_the_rest(
         MemoryAddition(scope="src/api/MEMORY.md", section="conventions", addition="- API rule."),
     ]
 
-    files = memory_files_for(MagicMock(), payload=make_payload(), additions=additions)
+    files, scopes_written = memory_files_for(
+        MagicMock(),
+        payload=make_payload(),
+        additions=additions,
+    )
 
     assert [f["path"] for f in files] == ["src/api/MEMORY.md"]
     assert "API rule" in files[0]["content"]
+    assert scopes_written == {"src/api/MEMORY.md"}
+    assert "MEMORY.md" not in scopes_written
 
 
 def test_memory_files_for_returns_empty_when_every_scope_is_malformed(
@@ -387,7 +408,14 @@ def test_memory_files_for_returns_empty_when_every_scope_is_malformed(
     monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
     additions = [MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Rule.")]
 
-    assert memory_files_for(MagicMock(), payload=make_payload(), additions=additions) == []
+    files, scopes_written = memory_files_for(
+        MagicMock(),
+        payload=make_payload(),
+        additions=additions,
+    )
+
+    assert files == []
+    assert scopes_written == set()
 
 
 def test_render_skill_file_emits_frontmatter() -> None:
@@ -426,8 +454,13 @@ def test_open_consolidation_prs_opens_zero_when_plan_empty(
     )
     payload = make_payload(mode="consolidate", destination="target_repo")
     plan = ConsolidationPlan(rationale="Everything deferred.")
-    pr_urls = open_consolidation_prs(MagicMock(), payload=payload, plan=plan)
+    pr_urls, scopes_written = open_consolidation_prs(
+        MagicMock(),
+        payload=payload,
+        plan=plan,
+    )
     assert pr_urls == []
+    assert scopes_written == set()
 
 
 def test_open_consolidation_prs_opens_two_when_both_artifact_types_ship(
@@ -466,8 +499,265 @@ def test_open_consolidation_prs_opens_two_when_both_artifact_types_ship(
         ],
         rationale="One of each.",
     )
-    pr_urls = open_consolidation_prs(MagicMock(), payload=payload, plan=plan)
+    pr_urls, scopes_written = open_consolidation_prs(
+        MagicMock(),
+        payload=payload,
+        plan=plan,
+    )
     assert pr_urls == ["https://x/pr/1", "https://x/pr/2"]
+    assert scopes_written == {"MEMORY.md"}
+
+
+def test_open_consolidation_prs_returns_scopes_written_empty_when_all_scopes_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every scope skipped → no memory PR opened, scopes_written empty.
+
+    The caller uses an empty ``scopes_written`` (against non-empty
+    ``memory_additions``) to detect total failure and avoid deleting
+    shipped events.
+    """
+    fake = MagicMock(
+        side_effect=[
+            # get_file for the one malformed scope; no further repo_helper
+            # calls expected (no create_branch / commit_files / open_pr).
+            {"ok": True, "result": {"exists": True, "content": MALFORMED_MEMORY_MD, "ref": "main"}},
+        ],
+    )
+    monkeypatch.setattr(retrospector_app, "invoke_repo_helper", fake)
+    payload = make_payload(mode="consolidate", destination="target_repo")
+    plan = ConsolidationPlan(
+        memory_additions=[
+            MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Rule."),
+        ],
+        rationale="Ship it.",
+    )
+    pr_urls, scopes_written = open_consolidation_prs(
+        MagicMock(),
+        payload=payload,
+        plan=plan,
+    )
+    assert pr_urls == []
+    assert scopes_written == set()
+
+
+def _stub_consolidate_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    plan: ConsolidationPlan,
+    stored_events: list[StoredEvent],
+) -> MagicMock:
+    """Wire up the run_consolidate dependencies to use ``plan`` and ``events``.
+
+    Returns the ``delete_event`` mock so the caller can assert which event
+    IDs were deleted.
+    """
+    monkeypatch.setattr(
+        retrospector_app,
+        "list_events",
+        lambda *args, **kwargs: stored_events,
+    )
+    monkeypatch.setattr(retrospector_app, "agentcore_client", MagicMock())
+    monkeypatch.setattr(retrospector_app, "memory_id", lambda: "mem-1")
+    monkeypatch.setattr(
+        retrospector_app,
+        "consolidate",
+        lambda *args, **kwargs: plan,
+    )
+    delete_mock = MagicMock()
+    monkeypatch.setattr(retrospector_app, "delete_event", delete_mock)
+    return delete_mock
+
+
+def test_run_consolidate_deletes_shipped_and_discarded_when_all_scopes_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Happy path: all scopes written → both shipped and discarded events deleted."""
+    plan = ConsolidationPlan(
+        memory_additions=[
+            MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Rule."),
+        ],
+        shipped_event_ids=["evt-ship-1", "evt-ship-2"],
+        discarded_event_ids=["evt-disc-1"],
+        rationale="All good.",
+    )
+    events = [
+        make_stored_event(
+            "evt-ship-1",
+            bullet=make_memory_bullet(),
+            when=dt.datetime(2026, 5, 15, 10, 0, tzinfo=dt.UTC),
+        ),
+        make_stored_event(
+            "evt-ship-2",
+            bullet=make_memory_bullet(delta="- Another."),
+            when=dt.datetime(2026, 5, 15, 11, 0, tzinfo=dt.UTC),
+        ),
+        make_stored_event(
+            "evt-disc-1",
+            bullet=make_memory_bullet(delta="- Noisy."),
+            when=dt.datetime(2026, 5, 15, 12, 0, tzinfo=dt.UTC),
+        ),
+    ]
+    delete_mock = _stub_consolidate_flow(monkeypatch, plan=plan, stored_events=events)
+    monkeypatch.setattr(
+        retrospector_app,
+        "invoke_repo_helper",
+        MagicMock(
+            side_effect=[
+                {
+                    "ok": True,
+                    "result": {"exists": True, "content": EXISTING_MEMORY_MD, "ref": "main"},
+                },
+                {"ok": True, "result": {"branch": "x"}},
+                {"ok": True, "result": {"commit_sha": "newsha"}},
+                {"ok": True, "result": {"pr_url": "https://x/pr/1"}},
+            ],
+        ),
+    )
+
+    payload = make_payload(
+        mode="consolidate",
+        event_type="SCHEDULED.LESSONS_CONSOLIDATE",
+        destination="target_repo",
+    )
+    run_consolidate(MagicMock(), payload=payload, mcp_client=MagicMock())
+
+    deleted_ids = {call.kwargs["event_id"] for call in delete_mock.call_args_list}
+    assert deleted_ids == {"evt-ship-1", "evt-ship-2", "evt-disc-1"}
+
+
+def test_run_consolidate_skips_shipped_event_deletion_on_partial_scope_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Partial scope failure → shipped events NOT deleted (data-loss fix).
+
+    One scope's MEMORY.md is malformed, the other is valid. The PR opens
+    for the valid scope, but the shipped events (which include events for
+    the malformed scope) must NOT be deleted — they resurface next week.
+    Discarded events are still deleted (the agent explicitly dropped them).
+    """
+    plan = ConsolidationPlan(
+        memory_additions=[
+            MemoryAddition(scope="MEMORY.md", section="conventions", addition="- Root rule."),
+            MemoryAddition(
+                scope="src/api/MEMORY.md",
+                section="conventions",
+                addition="- API rule.",
+            ),
+        ],
+        shipped_event_ids=["evt-root", "evt-api"],
+        discarded_event_ids=["evt-noise"],
+        rationale="Two scopes, one malformed.",
+    )
+    events = [
+        make_stored_event(
+            "evt-root",
+            bullet=make_memory_bullet(),
+            when=dt.datetime(2026, 5, 15, 10, 0, tzinfo=dt.UTC),
+        ),
+        make_stored_event(
+            "evt-api",
+            bullet=make_memory_bullet(delta="- API lesson."),
+            when=dt.datetime(2026, 5, 15, 11, 0, tzinfo=dt.UTC),
+        ),
+        make_stored_event(
+            "evt-noise",
+            bullet=make_memory_bullet(delta="- Noise."),
+            when=dt.datetime(2026, 5, 15, 12, 0, tzinfo=dt.UTC),
+        ),
+    ]
+    delete_mock = _stub_consolidate_flow(monkeypatch, plan=plan, stored_events=events)
+    # get_file(MEMORY.md=malformed) → get_file(src/api=valid) →
+    # create_branch → commit_files → open_pr
+    monkeypatch.setattr(
+        retrospector_app,
+        "invoke_repo_helper",
+        MagicMock(
+            side_effect=[
+                {
+                    "ok": True,
+                    "result": {"exists": True, "content": MALFORMED_MEMORY_MD, "ref": "main"},
+                },
+                {
+                    "ok": True,
+                    "result": {"exists": True, "content": EXISTING_MEMORY_MD, "ref": "main"},
+                },
+                {"ok": True, "result": {"branch": "x"}},
+                {"ok": True, "result": {"commit_sha": "newsha"}},
+                {"ok": True, "result": {"pr_url": "https://x/pr/1"}},
+            ],
+        ),
+    )
+
+    payload = make_payload(
+        mode="consolidate",
+        event_type="SCHEDULED.LESSONS_CONSOLIDATE",
+        destination="target_repo",
+    )
+    run_consolidate(MagicMock(), payload=payload, mcp_client=MagicMock())
+
+    deleted_ids = {call.kwargs["event_id"] for call in delete_mock.call_args_list}
+    assert deleted_ids == {"evt-noise"}
+    assert "evt-root" not in deleted_ids
+    assert "evt-api" not in deleted_ids
+
+
+def test_run_consolidate_deletes_all_events_when_no_memory_additions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skills-only plan → no memory scopes → all shipped events deleted.
+
+    With no ``memory_additions``, ``intended_scopes`` is empty and equals
+    ``scopes_written`` (also empty), so the gating check passes and
+    shipped events are deleted normally.
+    """
+    plan = ConsolidationPlan(
+        skill_files=[
+            SkillFile(
+                scope=".aidlc/skills/foo",
+                name="foo",
+                description="Use foo when bar.",
+                body="Body.",
+            ),
+        ],
+        shipped_event_ids=["evt-skill"],
+        discarded_event_ids=["evt-disc"],
+        rationale="Skills only.",
+    )
+    events = [
+        make_stored_event(
+            "evt-skill",
+            bullet=make_skill_bullet(),
+            when=dt.datetime(2026, 5, 15, 10, 0, tzinfo=dt.UTC),
+        ),
+        make_stored_event(
+            "evt-disc",
+            bullet=make_memory_bullet(delta="- Noise."),
+            when=dt.datetime(2026, 5, 15, 11, 0, tzinfo=dt.UTC),
+        ),
+    ]
+    delete_mock = _stub_consolidate_flow(monkeypatch, plan=plan, stored_events=events)
+    monkeypatch.setattr(
+        retrospector_app,
+        "invoke_repo_helper",
+        MagicMock(
+            side_effect=[
+                {"ok": True, "result": {"branch": "x"}},
+                {"ok": True, "result": {"commit_sha": "newsha"}},
+                {"ok": True, "result": {"pr_url": "https://x/pr/1"}},
+            ],
+        ),
+    )
+
+    payload = make_payload(
+        mode="consolidate",
+        event_type="SCHEDULED.LESSONS_CONSOLIDATE",
+        destination="target_repo",
+    )
+    run_consolidate(MagicMock(), payload=payload, mcp_client=MagicMock())
+
+    deleted_ids = {call.kwargs["event_id"] for call in delete_mock.call_args_list}
+    assert deleted_ids == {"evt-skill", "evt-disc"}
 
 
 # --- shared helpers --------------------------------------------------------
