@@ -18,6 +18,12 @@ The dispatcher invokes this in one of two modes:
   deletes the shipped + discarded events. Anything left over is
   deferred automatically — no buffer to re-render.
 
+  Shipped events are only deleted when every intended MEMORY.md scope
+  was written successfully; if a malformed MEMORY.md on main causes a
+  scope to be skipped, shipped events are kept so they resurface next
+  week (the lesson text lives only in the plan, which is not
+  persisted).
+
 The dispatcher Lambda invokes synchronously; we hand off to a
 daemon thread so the HTTP response returns immediately. Failures
 are logged and swallowed — the platform never wedges on the
@@ -152,7 +158,14 @@ def run_consolidate(
     payload: RetrospectorInput,
     mcp_client: MCPClient,
 ) -> None:
-    """List pending events, run the agent, open PRs, delete shipped + discarded."""
+    """List pending events, run the agent, open PRs, delete shipped + discarded.
+
+    Event deletion is gated on every intended MEMORY.md scope being written
+    successfully. If ``memory_files_for`` skipped any scope (malformed
+    MEMORY.md on main), NO shipped events are deleted — they resurface next
+    week so the lessons are not permanently lost. Discarded events are
+    always deleted (the agent explicitly chose not to ship them).
+    """
     if payload.destination is None:
         msg = "consolidate mode requires destination on the input"
         raise ValueError(msg)
@@ -181,11 +194,31 @@ def run_consolidate(
         target_repo=payload.target_repo,
         buffer_content=buffer_content,
     )
-    pr_urls = open_consolidation_prs(mcp_client, payload=payload, plan=plan)
-    removed = delete_consumed_events(
-        session=session,
-        event_ids=[*plan.shipped_event_ids, *plan.discarded_event_ids],
+    pr_urls, scopes_written = open_consolidation_prs(
+        mcp_client,
+        payload=payload,
+        plan=plan,
     )
+    intended_scopes = {addition.scope for addition in plan.memory_additions}
+    if intended_scopes == scopes_written:
+        removed = delete_consumed_events(
+            session=session,
+            event_ids=[*plan.shipped_event_ids, *plan.discarded_event_ids],
+        )
+    else:
+        logger.warning(
+            "consolidate: skipping event deletion — some MEMORY.md scopes "
+            "were skipped due to parse errors; events will resurface next week",
+            destination=payload.destination,
+            project_slug=payload.project_slug,
+            intended_scopes=sorted(intended_scopes),
+            written_scopes=sorted(scopes_written),
+            skipped_scopes=sorted(intended_scopes - scopes_written),
+        )
+        removed = delete_consumed_events(
+            session=session,
+            event_ids=plan.discarded_event_ids,
+        )
     logger.info(
         "consolidate: completed",
         destination=payload.destination,
@@ -282,26 +315,35 @@ def open_consolidation_prs(
     *,
     payload: RetrospectorInput,
     plan: ConsolidationPlan,
-) -> list[str]:
-    """Open up to two PRs: one for MEMORY.md additions, one for SKILL.md files."""
+) -> tuple[list[str], set[str]]:
+    """Open up to two PRs: one for MEMORY.md additions, one for SKILL.md files.
+
+    Returns ``(pr_urls, scopes_written)`` where ``scopes_written`` is the set
+    of MEMORY.md scopes whose file was successfully rendered and committed.
+    Empty when there are no ``memory_additions`` or when every scope was
+    skipped due to a malformed MEMORY.md. The caller uses this to decide
+    whether it is safe to delete shipped events.
+    """
     pr_urls: list[str] = []
+    scopes_written: set[str] = set()
     timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H%M%S")
     if plan.memory_additions:
-        memory_files = memory_files_for(
+        memory_files, scopes_written = memory_files_for(
             mcp_client,
             payload=payload,
             additions=plan.memory_additions,
         )
-        pr_urls.append(
-            commit_and_open_pr(
-                mcp_client,
-                payload=payload,
-                plan=plan,
-                branch=branch_name(payload=payload, kind="memory", timestamp=timestamp),
-                files=memory_files,
-                title_kind="memory",
-            ),
-        )
+        if memory_files:
+            pr_urls.append(
+                commit_and_open_pr(
+                    mcp_client,
+                    payload=payload,
+                    plan=plan,
+                    branch=branch_name(payload=payload, kind="memory", timestamp=timestamp),
+                    files=memory_files,
+                    title_kind="memory",
+                ),
+            )
     if plan.skill_files:
         skill_files = [
             {"path": f"{skill.scope}/SKILL.md", "content": render_skill_file(skill)}
@@ -317,7 +359,7 @@ def open_consolidation_prs(
                 title_kind="skills",
             ),
         )
-    return pr_urls
+    return pr_urls, scopes_written
 
 
 def memory_files_for(
@@ -325,20 +367,25 @@ def memory_files_for(
     *,
     payload: RetrospectorInput,
     additions: list[MemoryAddition],
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], set[str]]:
     """Read each affected MEMORY.md, append per section, return the new file contents.
 
-    ``parse`` is strict (unknown headers, duplicate or out-of-order
-    sections all raise). The files come from the target repo's main
-    branch, so a human-merged edit can make one unparseable — skip that
-    scope rather than aborting the whole consolidation, which would also
-    take down the independent skills PR and leave the consumed events
-    undeleted to re-wedge next week.
+    Returns ``(files, scopes_written)`` where ``scopes_written`` is the set of
+    scopes whose MEMORY.md was successfully read and rendered. A scope whose
+    existing MEMORY.md fails strict parsing is skipped — ``parse`` rejects
+    unknown headers, duplicate or out-of-order sections. The files come from
+    the target repo's main branch, so a human-merged edit can make one
+    unparseable. Skipping a scope keeps consolidation moving (the independent
+    skills PR still opens), but the caller MUST NOT delete events whose
+    additions were silently dropped — otherwise those lessons are lost
+    permanently (the PR body lists only ``scope → section``, not the lesson
+    text, and the plan is not persisted anywhere).
     """
     by_scope: dict[str, list[MemoryAddition]] = {}
     for addition in additions:
         by_scope.setdefault(addition.scope, []).append(addition)
     files: list[dict[str, str]] = []
+    scopes_written: set[str] = set()
     for scope, scope_additions in by_scope.items():
         existing = fetch_file(mcp_client, repo=payload.target_repo, path=scope)
         try:
@@ -355,7 +402,8 @@ def memory_files_for(
         for addition in scope_additions:
             doc = doc.with_appended(addition.section, addition.addition.strip())
         files.append({"path": scope, "content": render(doc)})
-    return files
+        scopes_written.add(scope)
+    return files, scopes_written
 
 
 def render_skill_file(skill: SkillFile) -> str:
