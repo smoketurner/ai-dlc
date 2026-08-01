@@ -9,7 +9,7 @@ dependencies = [
     "botocore==1.43.6",
     "httpx==0.28.1",
     "pydantic==2.13.4",
-    "pyjwt[crypto]==2.12.1",
+    "pyjwt[crypto]==2.13.0",
 ]
 
 [build-system]
