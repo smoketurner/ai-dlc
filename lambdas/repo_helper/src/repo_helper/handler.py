@@ -756,6 +756,9 @@ the run can advance back into validation.
 CHECK_PASSED_CONCLUSIONS: frozenset[str] = frozenset({"success", "neutral", "skipped"})
 """Conclusions that count as ``passed`` for aggregate purposes."""
 
+GET_CHECK_STATE_PER_PAGE = 100
+"""Page size used when paginating check-runs + check-suites for ``get_check_state``."""
+
 
 def get_check_state(req: GetCheckStateInput, client: httpx.Client) -> dict[str, Any]:
     """Aggregate the GitHub Checks for a PR's HEAD sha into a single verdict.
@@ -764,24 +767,27 @@ def get_check_state(req: GetCheckStateInput, client: httpx.Client) -> dict[str, 
     check-suites for that sha, and returns one of:
     ``{passed, failed, pending}``. ``head_sha`` is echoed back so
     callers can use it to key idempotent state writes.
+
+    Both endpoints are paginated: a failing check past the first 100
+    items would otherwise be silently truncated and the aggregate could
+    return ``"passed"`` for a commit with failing CI. We page until a
+    short (``< per_page``) batch is returned, the same pattern used by
+    :func:`get_pr_diff`.
     """
     pr = client.get(f"/repos/{req.repo}/pulls/{req.pr_number}")
     pr.raise_for_status()
     head_sha = str(pr.json()["head"]["sha"])
 
-    runs_resp = client.get(
+    runs = _paginate_check_list(
+        client,
         f"/repos/{req.repo}/commits/{head_sha}/check-runs",
-        params={"per_page": "100"},
+        collection_key="check_runs",
     )
-    runs_resp.raise_for_status()
-    runs = runs_resp.json().get("check_runs", []) or []
-
-    suites_resp = client.get(
+    suites = _paginate_check_list(
+        client,
         f"/repos/{req.repo}/commits/{head_sha}/check-suites",
-        params={"per_page": "100"},
+        collection_key="check_suites",
     )
-    suites_resp.raise_for_status()
-    suites = suites_resp.json().get("check_suites", []) or []
 
     state = aggregate_check_state(runs=runs, suites=suites)
     return {
@@ -790,6 +796,37 @@ def get_check_state(req: GetCheckStateInput, client: httpx.Client) -> dict[str, 
         "run_count": len(runs),
         "suite_count": len(suites),
     }
+
+
+def _paginate_check_list(
+    client: httpx.Client,
+    url: str,
+    *,
+    collection_key: str,
+) -> list[dict[str, Any]]:
+    """Page through a GitHub Checks list endpoint until exhausted.
+
+    GitHub's ``check-runs`` and ``check-suites`` endpoints wrap results
+    in ``{"<collection_key>": [...]}`` and cap each page at
+    :data:`GET_CHECK_STATE_PER_PAGE`. A short page (fewer items than
+    requested) signals the end of results, matching the convention used
+    by :func:`get_pr_diff`.
+    """
+    items: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        response = client.get(
+            url,
+            params={"per_page": str(GET_CHECK_STATE_PER_PAGE), "page": str(page)},
+        )
+        response.raise_for_status()
+        body = response.json()
+        batch = body.get(collection_key, []) or [] if isinstance(body, dict) else []
+        items.extend(batch)
+        if len(batch) < GET_CHECK_STATE_PER_PAGE:
+            break
+        page += 1
+    return items
 
 
 def aggregate_check_state(

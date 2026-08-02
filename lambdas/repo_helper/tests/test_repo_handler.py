@@ -1540,6 +1540,265 @@ def test_get_check_state_failure_in_suite_wins_over_passing_run(
     assert out["result"]["state"] == "failed"
 
 
+def test_get_check_state_paginates_check_runs_and_detects_failure_beyond_first_page(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A failing run on page 2 must trip the aggregate to ``failed``.
+
+    Regression test for the pagination bug: with ``per_page=100`` and no
+    pagination, a failure past the first page was silently truncated and
+    the aggregate incorrectly returned ``"passed"``.
+    """
+    run_pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            page = int(request.url.params["page"])
+            run_pages_seen.append(page)
+            if page == 1:
+                # Full first page, all passing — would mask the failure
+                # without pagination.
+                return httpx.Response(
+                    200,
+                    json={
+                        "check_runs": [
+                            {
+                                "id": i,
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                            for i in range(h.GET_CHECK_STATE_PER_PAGE)
+                        ]
+                    },
+                )
+            # Short second page carrying the failure.
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {"id": 100, "status": "completed", "conclusion": "failure"},
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert run_pages_seen == [1, 2]
+    assert out["result"]["state"] == "failed"
+    assert out["result"]["run_count"] == h.GET_CHECK_STATE_PER_PAGE + 1
+    assert out["result"]["suite_count"] == 0
+
+
+def test_get_check_state_paginates_check_suites_and_detects_failure_beyond_first_page(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A failing suite on page 2 must trip the aggregate to ``failed``.
+
+    Mirrors the check-runs regression test for the suites endpoint, which
+    shares the same pagination bug.
+    """
+    suite_pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            # Passing run on a single short page.
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {"id": 1, "status": "completed", "conclusion": "success"},
+                    ]
+                },
+            )
+        if request.url.path.endswith("/check-suites"):
+            page = int(request.url.params["page"])
+            suite_pages_seen.append(page)
+            if page == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "check_suites": [
+                            {
+                                "id": i,
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                            for i in range(h.GET_CHECK_STATE_PER_PAGE)
+                        ]
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "check_suites": [
+                        {"id": 100, "status": "completed", "conclusion": "failure"},
+                    ]
+                },
+            )
+        msg = f"unexpected request: {request.method} {request.url.path}"
+        raise AssertionError(msg)
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert suite_pages_seen == [1, 2]
+    assert out["result"]["state"] == "failed"
+    assert out["result"]["run_count"] == 1
+    assert out["result"]["suite_count"] == h.GET_CHECK_STATE_PER_PAGE + 1
+
+
+def test_get_check_state_stops_when_short_page_returned(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A short page signals end-of-results — no further fetches.
+
+    Guards against infinite loops and unnecessary API calls once the
+    final page is reached.
+    """
+    run_pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            page = int(request.url.params["page"])
+            run_pages_seen.append(page)
+            # A single short page of passing runs.
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {"id": 1, "status": "completed", "conclusion": "success"},
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert run_pages_seen == [1]
+    assert out["result"]["state"] == "passed"
+
+
+def test_get_check_state_paginates_all_passing_and_reports_full_counts(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """>100 all-passing runs aggregate to ``passed`` with accurate counts.
+
+    Ensures pagination does not break the happy path: all pages are
+    fetched, the verdict is ``passed``, and counts reflect the full set.
+    """
+    run_pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            page = int(request.url.params["page"])
+            run_pages_seen.append(page)
+            if page == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "check_runs": [
+                            {
+                                "id": i,
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                            for i in range(h.GET_CHECK_STATE_PER_PAGE)
+                        ]
+                    },
+                )
+            # Second page: 3 more passing runs, short → stop.
+            return httpx.Response(
+                200,
+                json={
+                    "check_runs": [
+                        {
+                            "id": h.GET_CHECK_STATE_PER_PAGE + i,
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                        for i in range(3)
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
+        ctx(),
+    )
+    assert out["ok"] is True
+    assert run_pages_seen == [1, 2]
+    assert out["result"]["state"] == "passed"
+    assert out["result"]["run_count"] == h.GET_CHECK_STATE_PER_PAGE + 3
+    assert out["result"]["suite_count"] == 0
+
+
+def test_get_check_state_propagates_http_error_on_check_runs_page(
+    patch_client: Callable[[httpx.MockTransport], None],
+) -> None:
+    """A non-2xx response while paginating propagates as a github_http_error.
+
+    ``raise_for_status`` must still be applied on every page so a 5xx on
+    page 2 is not silently swallowed into an incomplete (and possibly
+    wrong) verdict.
+    """
+    run_pages_seen: list[int] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/pulls/1"):
+            return httpx.Response(200, json={"head": {"sha": "abc"}})
+        if request.url.path.endswith("/check-runs"):
+            page = int(request.url.params["page"])
+            run_pages_seen.append(page)
+            if page == 1:
+                return httpx.Response(
+                    200,
+                    json={
+                        "check_runs": [
+                            {
+                                "id": i,
+                                "status": "completed",
+                                "conclusion": "success",
+                            }
+                            for i in range(h.GET_CHECK_STATE_PER_PAGE)
+                        ]
+                    },
+                )
+            return httpx.Response(503, json={"message": "server error"})
+        return httpx.Response(200, json={"check_suites": []})
+
+    patch_client(httpx.MockTransport(respond))
+    out = h.handler(
+        {"op": "get_check_state", "repo": "o/r", "pr_number": 1},
+        ctx(),
+    )
+    assert out["ok"] is False
+    assert out["error"]["kind"] == "github_http_error"
+    assert out["error"]["detail"]["status_code"] == 503
+    assert run_pages_seen == [1, 2]
+
+
 def test_open_spec_pr_op_no_longer_registered() -> None:
     """The legacy spec PR opcode was removed in the single-PR-per-issue refactor."""
     out = h.handler({"op": "open_spec_pr"}, ctx())
