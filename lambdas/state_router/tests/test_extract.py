@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from common.runtime import ImplementerInput
+from common.runtime import ImplementerInput, ReviewCommentMentionFeedback
 from state_router.extract import revision_feedback
 
 
@@ -137,3 +137,72 @@ def test_feedback_resets_after_each_completed_revision() -> None:
 
     assert len(feedback) == 1
     assert feedback[0]["kind"] == "issue_comment_mention"
+
+
+def test_review_comment_mention_threads_path_line_commit_id() -> None:
+    """Webhook-provided file/line/commit context reaches the feedback item."""
+    feedback = revision_feedback(
+        [
+            pr_opened(),
+            iteration(
+                source="review_comment_mention",
+                comment_id=8,
+                path="src/handler.py",
+                line=42,
+                commit_id="abcdef0",
+            ),
+        ],
+    )
+
+    assert feedback[0] == {
+        "kind": "review_comment_mention",
+        "path": "src/handler.py",
+        "line": 42,
+        "commit_id": "abcdef0",
+        "comment_id": 8,
+        "body": "@aidlc-bot take another look",
+        "commenter": "alice",
+    }
+
+
+def test_review_comment_mention_validates_against_implementer_input_with_real_context() -> None:
+    """The extracted item with real values satisfies the discriminated union."""
+    events = [
+        pr_opened(),
+        iteration(
+            source="review_comment_mention",
+            comment_id=8,
+            path="src/handler.py",
+            line=42,
+            commit_id="abcdef0123456",
+        ),
+    ]
+    payload = ImplementerInput.model_validate(
+        {
+            "project_slug": "demo",
+            "run_id": "019e0e69-198d-7263-8bfc-7ea2d077b3a6",
+            "correlation_id": "019e0e69-198d-7263-8bfc-7eb9e8ae05df",
+            "target_repo": "o/r",
+            "mode": "revision",
+            "revision_number": 1,
+            "revision_feedback": list(revision_feedback(events)),
+        },
+    )
+    item = payload.revision_feedback
+    assert item is not None
+    feedback_item = item[0]
+    assert isinstance(feedback_item, ReviewCommentMentionFeedback)
+    assert feedback_item.path == "src/handler.py"
+    assert feedback_item.line == 42
+    assert feedback_item.commit_id == "abcdef0123456"
+
+
+def test_review_comment_mention_falls_back_when_context_missing() -> None:
+    """Legacy events without path/commit_id still produce a schema-valid item."""
+    feedback = revision_feedback(
+        [pr_opened(), iteration(source="review_comment_mention", comment_id=8)],
+    )
+
+    assert feedback[0]["path"] == "(unknown)"
+    assert feedback[0]["line"] is None
+    assert feedback[0]["commit_id"] == "0" * 7

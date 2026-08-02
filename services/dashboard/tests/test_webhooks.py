@@ -412,6 +412,58 @@ async def test_review_comment_with_mention_emits_iteration(
     assert [e.type for e in captured_events] == ["IMPL.ITERATION_REQUESTED"]
     assert captured_events[0].payload.source == "review_comment_mention"
     assert captured_events[0].payload.comment_id == 1
+    assert captured_events[0].payload.path == "src/foo.py"
+    assert captured_events[0].payload.line == 42
+    assert captured_events[0].payload.commit_id == "deadbeef"
+
+
+@pytest.mark.asyncio
+async def test_review_comment_threads_inline_context_to_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """File path, line, and commit SHA from the webhook reach the event payload."""
+    stub_pr_lookup(monkeypatch)
+    payload = {
+        "action": "created",
+        "comment": {
+            "body": f"@{BOT_LOGIN} this null-check is wrong",
+            "id": 7,
+            "user": {"login": "alice"},
+            "path": "src/handler.py",
+            "line": 123,
+            "commit_id": "abcdef0123456789",
+        },
+        "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
+    }
+    await post_webhook(event_type="pull_request_review_comment", payload=payload)
+    envelope = captured_events[0]
+    assert envelope.payload.path == "src/handler.py"
+    assert envelope.payload.line == 123
+    assert envelope.payload.commit_id == "abcdef0123456789"
+
+
+@pytest.mark.asyncio
+async def test_review_comment_without_inline_context_emits_none_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    captured_events: list[EventEnvelope[Any]],
+) -> None:
+    """A review-comment payload missing path/line/commit_id emits None fields."""
+    stub_pr_lookup(monkeypatch)
+    payload = {
+        "action": "created",
+        "comment": {
+            "body": f"@{BOT_LOGIN} please look at this",
+            "id": 1,
+            "user": {"login": "alice"},
+        },
+        "pull_request": {"html_url": "https://github.com/o/r/pull/1"},
+    }
+    await post_webhook(event_type="pull_request_review_comment", payload=payload)
+    envelope = captured_events[0]
+    assert envelope.payload.path is None
+    assert envelope.payload.line is None
+    assert envelope.payload.commit_id is None
 
 
 @pytest.mark.asyncio

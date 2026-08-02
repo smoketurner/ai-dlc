@@ -346,6 +346,10 @@ def handle_pull_request_review_comment(
     commenter = (comment.get("user") or {}).get("login", "unknown")
     comment_id_raw = comment.get("id")
     comment_id = comment_id_raw if isinstance(comment_id_raw, int) and comment_id_raw >= 1 else None
+    path = comment.get("path") or None
+    line_raw = comment.get("line")
+    line = line_raw if isinstance(line_raw, int) and line_raw >= 1 else None
+    commit_id = comment.get("commit_id") or None
     return emit_impl_iteration(
         row,
         pr_url=pr_url,
@@ -354,6 +358,9 @@ def handle_pull_request_review_comment(
         commenter=commenter,
         feedback_body=body,
         comment_id=comment_id,
+        path=path,
+        line=line,
+        commit_id=commit_id,
     )
 
 
@@ -702,7 +709,7 @@ def issues_action_is_trigger(action: str | None, payload: dict[str, Any]) -> boo
 # ---------------------------------------------------------------------------
 
 
-def emit_impl_iteration(
+def emit_impl_iteration(  # noqa: PLR0913 -- review-comment context is the webhook contract
     row: dict[str, Any],
     *,
     pr_url: str,
@@ -717,6 +724,9 @@ def emit_impl_iteration(
     feedback_body: str,
     comment_id: int | None = None,
     review_id: int | None = None,
+    path: str | None = None,
+    line: int | None = None,
+    commit_id: str | None = None,
 ) -> dict[str, Any]:
     """Publish one IMPL.ITERATION_REQUESTED for a run STATE row + feedback."""
     if not delivery_id:
@@ -734,6 +744,9 @@ def emit_impl_iteration(
         feedback_body=feedback_body,
         comment_id=comment_id,
         review_id=review_id,
+        path=path,
+        line=line,
+        commit_id=commit_id,
     )
     emit(
         envelope_for(
