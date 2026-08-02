@@ -152,13 +152,14 @@ jwt_cache: dict[str, tuple[str, float]] = {}
 def app_jwt() -> str:
     """Return a fresh App-level JWT, cached for ``JWT_TTL_SECONDS`` minus a margin.
 
-    The cache key incorporates a hash of the App private key, so a rotated
-    key (picked up by ``app_credentials``) produces a different cache key
-    and forces a fresh JWT even when the *previous* JWT entry is still
-    within its TTL. Without this, a key rotation during the window where
-    ``secret_cache`` (15 min TTL) outlives ``jwt_cache`` (8.5 min TTL)
-    would leave ``app_jwt`` re-signing with the stale cached key until
-    the secret cache expired — every GitHub call 401-ing for up to 6 min.
+    The cache key incorporates a hash of the App private key, so the moment
+    ``app_credentials`` observes a rotated key this function mints a JWT
+    signed with it — instead of serving a still-valid cache entry signed
+    with the old key for up to the JWT TTL (~510s) after the secret cache
+    refreshed. Note the key itself still comes from ``secret_cache``: a
+    rotation takes up to ``SECRET_TTL_SECONDS`` (900s) to be observed at
+    all, and GitHub calls can 401 for that long. Shrinking that window
+    would require invalidating ``secret_cache`` on a 401 from GitHub.
     """
     now = time.time()
     creds = app_credentials()

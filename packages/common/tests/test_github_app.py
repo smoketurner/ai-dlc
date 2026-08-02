@@ -154,12 +154,14 @@ def test_non_string_secret_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 # --- ``app_jwt`` caching + key-rotation regression tests ---
 #
-# The bug: ``secret_cache`` (15 min TTL) outlives ``jwt_cache`` (8.5 min
-# TTL). After a key rotation, when the JWT cache expires ``app_jwt`` calls
-# ``app_credentials``, which returns the *stale cached* key (secret cache
-# still valid) and re-signs the JWT with it — GitHub 401s for up to 6 min.
-# Fix: the JWT cache key includes a hash of the private key, so a rotated
-# key forces a fresh JWT even when the old JWT entry is still within TTL.
+# The bug: the ``jwt_cache`` and ``secret_cache`` TTL boundaries drift
+# independently, so after ``secret_cache`` refreshed to a rotated key the
+# old static ``"jwt"`` cache entry — signed with the previous key — could
+# still be served for up to its remaining TTL (~510 s of avoidable 401s).
+# Fix: the JWT cache key includes a hash of the private key, so the first
+# call after ``app_credentials`` observes the rotated key mints a fresh
+# JWT. Note: while ``secret_cache`` is still warm the stale key is still
+# used — a rotation takes up to ``SECRET_TTL_SECONDS`` to be observed.
 
 
 def test_app_jwt_caches_within_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,18 +188,19 @@ def test_app_jwt_decodes_with_the_configured_key(monkeypatch: pytest.MonkeyPatch
     assert decoded["iss"] == "12345"
 
 
-def test_app_jwt_uses_new_key_after_rotation_while_secret_cache_still_valid(
+def test_app_jwt_uses_new_key_once_secret_cache_refreshes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Regression: a rotated key must drive the next JWT even when ``secret_cache`` is still warm.
+    """Regression: the first JWT minted after the secret cache refreshes uses the rotated key.
 
-    Reproduces the bug from the report: at T=0 the key is cached in both
-    ``secret_cache`` (900 s TTL) and ``jwt_cache`` (510 s TTL). At T=500
-    the operator rotates the key in Secrets Manager. At T=520 the JWT
-    cache has expired but ``secret_cache`` is still valid for 380 s.
-    Pre-fix ``app_credentials`` returned the stale cached key and
-    ``app_jwt`` re-signed with it → 401 for ~6 min. With the key-hash
-    cache key, ``app_jwt`` observes the new key and signs a fresh JWT.
+    Timeline: at T=0 the key is cached in both ``secret_cache`` (900 s
+    TTL) and ``jwt_cache`` (510 s TTL). At T=500 the operator rotates the
+    key in Secrets Manager. At T=520 the JWT cache has expired but
+    ``secret_cache`` is still warm, so ``app_jwt`` re-signs with the
+    stale key — unchanged by the fix; that window closes only when the
+    secret cache expires. Once it does, the key-hash cache key guarantees
+    the very next call signs with the rotated key instead of serving a
+    still-valid JWT cache entry signed with the old one.
     """
     # Freeze the clock so JWT payloads are byte-identical when re-signed
     # with the same key within the same logical instant. Without this the
@@ -292,6 +295,7 @@ def _expire_all_secret_entries() -> None:
 
 def test_end_to_end_rotation_recovers_after_secret_cache_expires(
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Rotate the key in a real (moto) Secrets Manager and confirm the next JWT uses it.
 
@@ -308,8 +312,11 @@ def test_end_to_end_rotation_recovers_after_secret_cache_expires(
 
     monkeypatch.setenv("AIDLC_GITHUB_APP_SECRET_ARN", secret_id)
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    # Clear the @cache'd secrets_client so it picks up the moto backend.
+    # Clear the @cache'd secrets_client so it picks up the moto backend,
+    # and clear it again on teardown — even when an assertion fails — so
+    # later tests never reuse a client bound to the torn-down backend.
     github_app.secrets_client.cache_clear()
+    request.addfinalizer(github_app.secrets_client.cache_clear)
     with mock_aws():
         boto3.client("secretsmanager").create_secret(
             Name=secret_id,
@@ -360,6 +367,3 @@ def test_end_to_end_rotation_recovers_after_secret_cache_expires(
 
         token = github_app.installation_token_for_repo("owner/repo")
         assert token == "ghs_rotated_ok"  # noqa: S105 - test fixture, not a credential
-
-    # Clear the @cache'd client again on exit so it doesn't leak the moto backend.
-    github_app.secrets_client.cache_clear()
