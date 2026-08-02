@@ -48,7 +48,12 @@
           "enum": ["issue_comment_mention", "review_comment_mention", "review_changes_requested"]
         },
         "commenter": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "feedback_body": { "type": "string", "minLength": 1, "maxLength": 8192 }
+        "feedback_body": { "type": "string", "minLength": 1, "maxLength": 8192 },
+        "comment_id": { "type": ["integer", "null"], "minimum": 1 },
+        "review_id": { "type": ["integer", "null"], "minimum": 1 },
+        "path": { "type": ["string", "null"], "minLength": 1, "maxLength": 1024 },
+        "line": { "type": ["integer", "null"], "minimum": 1 },
+        "commit_id": { "type": ["string", "null"], "minLength": 7, "maxLength": 40 }
       }
     }
   }

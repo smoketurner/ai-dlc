@@ -295,6 +295,12 @@ class ImplIterationRequested(Payload):
     projector drops the feedback item when the id required by the
     discriminator is missing.
 
+    ``path`` / ``line`` / ``commit_id`` are populated only for
+    ``review_comment_mention`` — they carry the inline comment's
+    file location and commit SHA from the GitHub webhook payload so
+    the implementer can render line-anchored context. Other sources
+    leave them ``None``.
+
     Review ids and comment ids live in different GitHub namespaces —
     a review id is not addressable as ``/pulls/comments/{id}`` — so a
     review that merely mentions the bot carries ``review_mention``
@@ -317,6 +323,9 @@ class ImplIterationRequested(Payload):
     feedback_body: Annotated[str, Field(min_length=1, max_length=8192)]
     comment_id: Annotated[int, Field(ge=1)] | None = None
     review_id: Annotated[int, Field(ge=1)] | None = None
+    path: Annotated[str, Field(min_length=1, max_length=1024)] | None = None
+    line: int | None = None
+    commit_id: Annotated[str, Field(min_length=7, max_length=40)] | None = None
 
 
 class ChecksPassed(Payload):

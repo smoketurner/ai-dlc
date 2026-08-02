@@ -11,6 +11,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
+_MIN_COMMIT_SHA_LEN = 7
+"""Minimum length of a GitHub commit SHA — matches ``commit_id`` schema bounds."""
+
 
 @runtime_checkable
 class EnvelopeLike(Protocol):
@@ -222,14 +225,31 @@ def _review_comment_mention(
     body: str,
     commenter: str,
 ) -> dict[str, Any] | None:
-    """Build a ``review_comment_mention`` FeedbackItem, or ``None`` if id missing."""
+    """Build a ``review_comment_mention`` FeedbackItem, or ``None`` if id missing.
+
+    ``path`` / ``line`` / ``commit_id`` come from the GitHub webhook
+    payload via the ``ImplIterationRequested`` envelope. The state router
+    falls back to placeholders only when the upstream fields are absent
+    (legacy events emitted before the fields were wired) so the item
+    still satisfies the discriminated-union schema.
+    """
     comment_id = get(event, "comment_id")
     if not isinstance(comment_id, int) or comment_id < 1:
         return None
+    path = get(event, "path")
+    if not isinstance(path, str) or not path:
+        path = "(unknown)"
+    line = get(event, "line")
+    if not isinstance(line, int):
+        line = None
+    commit_id = get(event, "commit_id")
+    if not isinstance(commit_id, str) or len(commit_id) < _MIN_COMMIT_SHA_LEN:
+        commit_id = "0" * _MIN_COMMIT_SHA_LEN
     return {
         "kind": "review_comment_mention",
-        "path": "(unknown)",
-        "commit_id": "0" * 7,
+        "path": path,
+        "line": line,
+        "commit_id": commit_id,
         "comment_id": comment_id,
         "body": body,
         "commenter": commenter,

@@ -223,6 +223,49 @@ def test_impl_iteration_requested_rejects_unknown_source() -> None:
         )
 
 
+def test_impl_iteration_requested_review_comment_context_round_trip() -> None:
+    """``path`` / ``line`` / ``commit_id`` round-trip for review-comment mentions."""
+    payload = ImplIterationRequested(
+        project_slug="demo",
+        pr_url="https://github.com/x/y/pull/1",
+        delivery_id="webhook-67890",
+        source="review_comment_mention",
+        commenter="alice",
+        feedback_body="@aidlc-bot this null-check is wrong",
+        comment_id=42,
+        path="src/handler.py",
+        line=123,
+        commit_id="abcdef0123456789",
+    )
+    env = EventEnvelope[ImplIterationRequested](
+        type="IMPL.ITERATION_REQUESTED",
+        run_id=new_run_id(),
+        correlation_id=new_correlation_id(),
+        actor_id="webhook",
+        payload=payload,
+    )
+    parsed = EventEnvelope[ImplIterationRequested].model_validate_json(env.model_dump_json())
+    assert parsed.payload.path == "src/handler.py"
+    assert parsed.payload.line == 123
+    assert parsed.payload.commit_id == "abcdef0123456789"
+    assert parsed.payload.comment_id == 42
+
+
+def test_impl_iteration_requested_inline_context_defaults_to_none() -> None:
+    """Sources other than review_comment_mention leave inline context as None."""
+    payload = ImplIterationRequested(
+        project_slug="demo",
+        pr_url="https://github.com/x/y/pull/1",
+        delivery_id="webhook-1",
+        source="issue_comment_mention",
+        commenter="alice",
+        feedback_body="@aidlc-bot take another look",
+    )
+    assert payload.path is None
+    assert payload.line is None
+    assert payload.commit_id is None
+
+
 def test_checks_passed_round_trip() -> None:
     payload = ChecksPassed(
         project_slug="demo",
