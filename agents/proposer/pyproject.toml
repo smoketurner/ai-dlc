@@ -5,8 +5,8 @@ description = "ai-dlc Proposer agent — research-driven; reads issue URLs and p
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "aws-opentelemetry-distro==0.17.0",
-    "bedrock-agentcore==1.9.0",
-    "boto3==1.43.6",
+    "bedrock-agentcore==1.18.1",
+    "boto3==1.43.31",
     "common",
     "playwright==1.59.0",
     "pydantic==2.13.4",

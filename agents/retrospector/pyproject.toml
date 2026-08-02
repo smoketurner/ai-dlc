@@ -5,8 +5,8 @@ description = "ai-dlc Retrospector agent — reads closed PRs/issues + comments 
 requires-python = ">=3.14,<3.15"
 dependencies = [
     "aws-opentelemetry-distro==0.17.0",
-    "bedrock-agentcore==1.9.0",
-    "boto3==1.43.6",
+    "bedrock-agentcore==1.18.1",
+    "boto3==1.43.31",
     "common",
     "pydantic==2.13.4",
     "strands-agents==1.38.0",

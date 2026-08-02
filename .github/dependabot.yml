@@ -1,0 +1,44 @@
+# Dependabot configuration.
+#
+# The uv workspace pins exact versions of shared dependencies in every
+# member pyproject.toml (plus mirrored requirements.txt files used for
+# Lambda packaging). A bump to a single member is unsatisfiable — uv
+# resolves the whole workspace, so sibling members still pinning the old
+# version make CI fail (e.g. pyjwt bumped in lambdas/repo_helper while
+# packages/common pins the previous release). Group every Python update
+# into one PR so all pins for a package move together; the uv entry keeps
+# uv.lock in the same PR.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-deps:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: "pip"
+    directories:
+      - "/agents/*"
+      - "/lambdas/*"
+      - "/packages/*"
+      - "/packages/common/layer"
+      - "/services/*"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-deps:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
