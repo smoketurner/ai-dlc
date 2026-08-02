@@ -297,8 +297,8 @@ def emit_cancel(events: Sequence[EnvelopeLike], *, reason: str) -> Action:
         correlation_id=CorrelationId(str(request.correlation_id)),
         actor_id="state_router",
         payload=RunCancelRequested(
-            project_slug=getattr(request.payload, "project_slug", ""),
-            requestor=getattr(request.payload, "requestor", "system"),
+            project_slug=get(request, "project_slug", ""),
+            requestor=get(request, "requestor", "system"),
             source="comment_command",
             reason=reason,
         ),
