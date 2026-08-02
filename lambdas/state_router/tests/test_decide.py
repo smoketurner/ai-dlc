@@ -466,6 +466,28 @@ def test_triage_cancel_outcomes_emit_run_cancel(action: str) -> None:
     )
 
 
+@pytest.mark.parametrize("action", ["ask", "defer", "decline"])
+def test_triage_cancel_carries_through_payload_fields(action: str) -> None:
+    """Cancel envelope must carry the request's project_slug/requestor.
+
+    Regression guard: a prior refactor used ``getattr(request.payload, ...)``
+    on the dict payload, which silently returned the defaults (``""`` /
+    ``"system"``) instead of the real values. The retrospector dispatcher
+    rejects events with an empty ``project_slug``, so triage cancellations
+    captured no lessons.
+    """
+    events = [request_received(), dispatched("triage"), issue_triaged(action=action)]
+    result = decide(events)
+    assert isinstance(result, Compound)
+    emit_action = next(sub for sub in result.actions if isinstance(sub, EmitEvent))
+    envelope = emit_action.envelope
+    assert envelope.type == "RUN.CANCEL_REQUESTED"
+    assert envelope.payload.project_slug == "demo"
+    assert envelope.payload.requestor == "alice"
+    assert envelope.payload.source == "comment_command"
+    assert envelope.payload.reason == f"triage:{action}"
+
+
 def test_triage_research_dispatches_proposer() -> None:
     events = [request_received(), dispatched("triage"), issue_triaged(action="research")]
     action = decide(events)
