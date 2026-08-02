@@ -251,14 +251,26 @@ class TransactWriteItemsBuilder:
 
 
 def is_conditional_check_failed(exc: ClientError) -> bool:
-    """``True`` when a ``TransactWriteItems`` was cancelled by a condition mismatch.
+    """``True`` when a ``TransactWriteItems`` was cancelled solely by condition mismatches.
 
     DDB surfaces the cancellation as ``TransactionCanceledException`` with
-    a per-item ``CancellationReasons`` list. Any ``ConditionalCheckFailed``
-    reason means we lost a race or this is a re-delivery — callers treat
-    both as a silent no-op.
+    a per-item ``CancellationReasons`` list. Items that succeeded carry a
+    ``None`` code; the remaining codes name the per-item failure. We only
+    treat the transaction as an idempotent no-op (lost race / re-delivery)
+    when **every** non-``None`` reason is ``ConditionalCheckFailed``. A mix
+    such as ``[ConditionalCheckFailed, TransactionConflict]`` surfaces a
+    real concurrency error and must not be silenced — otherwise callers
+    skip retries and intended transactional work (e.g. a SUMMARY update)
+    is dropped.
     """
     if exc.response.get("Error", {}).get("Code") != "TransactionCanceledException":
         return False
     reasons = exc.response.get("CancellationReasons", []) or []
-    return any(r.get("Code") == "ConditionalCheckFailed" for r in reasons)
+    non_none_codes = [
+        r.get("Code")
+        for r in reasons
+        if r is not None and r.get("Code") is not None and r.get("Code") != "None"
+    ]
+    if not non_none_codes:
+        return False
+    return all(code == "ConditionalCheckFailed" for code in non_none_codes)
