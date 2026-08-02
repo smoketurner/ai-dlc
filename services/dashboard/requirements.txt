@@ -1,8 +1,8 @@
 authlib==1.7.2
-fastapi==0.136.1
+fastapi==0.140.0
 itsdangerous==2.2.0
 jinja2==3.1.6
 mangum==0.21.0
-markdown-it-py==4.0.0
-python-multipart==0.0.31
-structlog==25.5.0
+markdown-it-py==4.2.0
+python-multipart==0.0.32
+structlog==26.1.0

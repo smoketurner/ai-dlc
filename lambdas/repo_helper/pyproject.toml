@@ -4,14 +4,14 @@ version = "0.0.0"
 description = "AgentCore Gateway tool Lambda for git/GitHub operations."
 requires-python = ">=3.13,<3.15"
 dependencies = [
-    "aws-lambda-powertools[tracer]==3.29.0",
-    "boto3==1.43.31",
-    "botocore==1.43.31",
+    "aws-lambda-powertools[tracer]==3.31.1",
+    "boto3==1.43.56",
+    "botocore==1.43.56",
     "httpx==0.28.1",
     "pydantic==2.13.4",
     "pyjwt[crypto]==2.13.0",
 ]
 
 [build-system]
-requires = ["uv_build>=0.11"]
+requires = ["uv_build>=0.11.32"]
 build-backend = "uv_build"
