@@ -4,19 +4,19 @@ version = "0.0.0"
 description = "ai-dlc Tester agent — flags test gaps in each task PR (advisory)."
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "aws-opentelemetry-distro==0.17.0",
+    "aws-opentelemetry-distro==0.19.0",
     "bedrock-agentcore==1.18.1",
-    "boto3==1.43.31",
+    "boto3==1.43.56",
     "common",
-    "playwright==1.59.0",
+    "playwright==1.61.0",
     "pydantic==2.13.4",
-    "strands-agents==1.38.0",
-    "structlog==25.5.0",
+    "strands-agents==1.50.1",
+    "structlog==26.1.0",
 ]
 
 [tool.uv.sources]
 common = { workspace = true }
 
 [build-system]
-requires = ["uv_build>=0.11"]
+requires = ["uv_build>=0.11.32"]
 build-backend = "uv_build"
