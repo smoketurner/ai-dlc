@@ -14,6 +14,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       python-deps:
         applies-to: version-updates
@@ -33,6 +35,8 @@ updates:
       - "/services/*"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     groups:
       python-deps:
         applies-to: version-updates
