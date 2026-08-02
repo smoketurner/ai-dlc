@@ -38,6 +38,7 @@ invocations.
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import time
@@ -149,12 +150,23 @@ jwt_cache: dict[str, tuple[str, float]] = {}
 
 
 def app_jwt() -> str:
-    """Return a fresh App-level JWT, cached for ``JWT_TTL_SECONDS`` minus a margin."""
+    """Return a fresh App-level JWT, cached for ``JWT_TTL_SECONDS`` minus a margin.
+
+    The cache key incorporates a hash of the App private key, so a rotated
+    key (picked up by ``app_credentials``) produces a different cache key
+    and forces a fresh JWT even when the *previous* JWT entry is still
+    within its TTL. Without this, a key rotation during the window where
+    ``secret_cache`` (15 min TTL) outlives ``jwt_cache`` (8.5 min TTL)
+    would leave ``app_jwt`` re-signing with the stale cached key until
+    the secret cache expired — every GitHub call 401-ing for up to 6 min.
+    """
     now = time.time()
-    cached = jwt_cache.get("jwt")
+    creds = app_credentials()
+    key_hash = hashlib.sha256(creds.private_key_pem()).hexdigest()[:16]
+    cache_key = f"jwt:{key_hash}"
+    cached = jwt_cache.get(cache_key)
     if cached is not None and cached[1] > now:
         return cached[0]
-    creds = app_credentials()
     payload = {
         "iat": int(now) - 60,  # account for clock skew
         "exp": int(now) + JWT_TTL_SECONDS,
@@ -164,7 +176,7 @@ def app_jwt() -> str:
         "iss": str(creds.app_id),
     }
     token = jwt.encode(payload, creds.private_key_pem(), algorithm="RS256")
-    jwt_cache["jwt"] = (token, now + JWT_TTL_SECONDS - JWT_REFRESH_MARGIN)
+    jwt_cache[cache_key] = (token, now + JWT_TTL_SECONDS - JWT_REFRESH_MARGIN)
     return token
 
 
