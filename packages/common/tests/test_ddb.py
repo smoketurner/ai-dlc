@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from decimal import Decimal
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import MagicMock
 
 import boto3
 import pytest
@@ -402,3 +403,87 @@ def test_is_conditional_check_failed_false_when_no_reason_matches() -> None:
         "TransactWriteItems",
     )
     assert is_conditional_check_failed(exc) is False
+
+
+# ---------------------------------------------------------------------------
+# is_conditional_check_failed — multi-item / mixed cancellation reasons
+#
+# AWS DDB returns one CancellationReason per transaction item, ordered to
+# match the request. Successful items are reported with ``"Code": "None"``.
+# A transaction is only an idempotent no-op when *every* non-``None`` reason
+# is ``ConditionalCheckFailed``; any other code (e.g. ``TransactionConflict``)
+# signals a real error the caller must surface/retry.
+# ---------------------------------------------------------------------------
+
+
+def _cancel_exc(reasons: list[dict[str, Any] | None]) -> ClientError:
+    return ClientError(
+        {
+            "Error": {"Code": "TransactionCanceledException", "Message": "x"},
+            "CancellationReasons": reasons,
+        },  # ty: ignore[invalid-argument-type]
+        "TransactWriteItems",
+    )
+
+
+def test_is_conditional_check_failed_true_when_all_reasons_are_ccfe() -> None:
+    """Multiple items, all ConditionalCheckFailed → idempotent (lost race)."""
+    exc = _cancel_exc(
+        [
+            {"Code": "ConditionalCheckFailed"},
+            {"Code": "ConditionalCheckFailed"},
+        ],
+    )
+    assert is_conditional_check_failed(exc) is True
+
+
+def test_is_conditional_check_failed_true_when_ccfe_mixed_with_none_codes() -> None:
+    """Successful items (Code 'None') must not invalidate an idempotent result."""
+    exc = _cancel_exc(
+        [
+            {"Code": "ConditionalCheckFailed"},
+            {"Code": "None"},
+            {"Code": "ConditionalCheckFailed"},
+        ],
+    )
+    assert is_conditional_check_failed(exc) is True
+
+
+def test_is_conditional_check_failed_false_when_ccfe_mixed_with_transaction_conflict() -> None:
+    """A TransactionConflict alongside CCFE must surface, not silence."""
+    exc = _cancel_exc(
+        [
+            {"Code": "ConditionalCheckFailed"},
+            {"Code": "None"},
+            {"Code": "TransactionConflict"},
+        ],
+    )
+    assert is_conditional_check_failed(exc) is False
+
+
+def test_commit_propagates_mixed_cancellation_error() -> None:
+    """``commit`` must re-raise (not swallow) a mixed CCFE + TransactionConflict cancel.
+
+    moto does not synthesise mixed cancellation reasons, so we drive the
+    builder with a ``MagicMock`` client whose ``transact_write_items`` side
+    effect raises a hand-crafted ``TransactionCanceledException`` and assert
+    ``commit`` propagates it rather than returning ``False``.
+    """
+    put = PutBuilder(table=TABLE, item={"pk": "RUN#1", "sk": "EVENT#a"}).condition_not_exists(
+        "sk",
+    )
+
+    mixed_exc = _cancel_exc(
+        [
+            {"Code": "ConditionalCheckFailed"},
+            {"Code": "None"},
+            {"Code": "TransactionConflict"},
+        ],
+    )
+
+    client = MagicMock()
+    client.transact_write_items.side_effect = mixed_exc
+
+    with pytest.raises(ClientError) as exc_info:
+        TransactWriteItemsBuilder().put(put).commit(client)
+    assert exc_info.value is mixed_exc
