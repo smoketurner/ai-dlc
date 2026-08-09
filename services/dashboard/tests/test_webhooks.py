@@ -25,6 +25,7 @@ from common.events import EventEnvelope, RequestReceived
 from common.ids import CorrelationId, RunId, new_correlation_id, new_event_id, new_run_id
 from common.runs import IssueContext
 from dashboard.routes.webhooks import (
+    _webhook_secret_cache,
     build_issue_context,
     lookup_run_by_issue,
     receive_github_webhook,
@@ -44,7 +45,7 @@ BOT_LOGIN = "aidlc-bot"
 @pytest.fixture(autouse=True)
 def stub_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Stub settings + secrets so we never reach AWS."""
-    webhook_secret.cache_clear()
+    _webhook_secret_cache.clear()
     fake = MagicMock()
     fake.github_webhook_secret_id = "/aidlc/dev/github-webhook-secret"  # noqa: S105
     fake.github_bot_login = BOT_LOGIN
@@ -67,7 +68,7 @@ def stub_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # keeps the layer from reaching for the real table.
     monkeypatch.setenv("POWERTOOLS_IDEMPOTENCY_DISABLED", "1")
     yield
-    webhook_secret.cache_clear()
+    _webhook_secret_cache.clear()
 
 
 @pytest.fixture
@@ -213,6 +214,136 @@ def test_verify_signature_rejects_missing_header() -> None:
 def test_verify_signature_rejects_bad_signature() -> None:
     with pytest.raises(HTTPException):
         verify_signature(body=b"x", signature_header="sha256=00")
+
+
+# ---------------------------------------------------------------------------
+# webhook_secret — TTL-based caching + rotation
+# ---------------------------------------------------------------------------
+
+
+def test_webhook_secret_caches_within_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second call within the TTL reuses the cached value without re-fetching."""
+    client = MagicMock()
+    client.get_secret_value.return_value = {"SecretString": SECRET.decode("utf-8")}
+    monkeypatch.setattr("dashboard.routes.webhooks.secrets", lambda: client)
+
+    first = webhook_secret()
+    second = webhook_secret()
+
+    assert first == second == SECRET
+    client.get_secret_value.assert_called_once()
+
+
+def test_webhook_secret_refetches_after_ttl_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a rotated secret is picked up once the cache entry expires.
+
+    The bug: ``@cache`` memoized the secret forever, so a rotated secret was
+    never observed until the Lambda cold-started (hours in practice). The
+    fix keys the cache by ``secret_id`` with a TTL, mirroring
+    ``common.github_app.app_credentials``.
+    """
+    old_secret = b"old-webhook-secret"
+    new_secret = b"new-webhook-secret-rotated"
+    client = MagicMock()
+    client.get_secret_value.side_effect = [
+        {"SecretString": old_secret.decode()},
+        {"SecretString": new_secret.decode()},
+    ]
+    monkeypatch.setattr("dashboard.routes.webhooks.secrets", lambda: client)
+
+    # Step 1: fetch caches the old secret.
+    assert webhook_secret() == old_secret
+    assert client.get_secret_value.call_count == 1
+
+    # Step 2: rotate the secret in Secrets Manager. Without expiring the
+    # cache entry the new value must NOT be served (TTL still valid).
+    assert webhook_secret() == old_secret
+    assert client.get_secret_value.call_count == 1
+
+    # Step 3: expire the cache entry (simulate TTL elapsing). The next
+    # fetch must observe the rotated secret.
+    _expire_webhook_secret_cache()
+    assert webhook_secret() == new_secret
+    assert client.get_secret_value.call_count == 2
+
+
+def test_webhook_secret_caches_per_secret_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Different ``secret_id`` values are cached independently.
+
+    Guards against a future regression where the cache key is dropped
+    (e.g. reverting to ``@cache``) — that would conflate secrets across
+    environments when the Lambda is reconfigured.
+    """
+    secret_a = b"secret-env-a"
+    secret_b = b"secret-env-b"
+
+    client = MagicMock()
+    client.get_secret_value.side_effect = [
+        {"SecretString": secret_a.decode()},
+        {"SecretString": secret_b.decode()},
+    ]
+    monkeypatch.setattr("dashboard.routes.webhooks.secrets", lambda: client)
+
+    fake = MagicMock()
+    fake.github_webhook_secret_id = "/aidlc/env-a/webhook-secret"  # noqa: S105
+    monkeypatch.setattr("dashboard.routes.webhooks.settings", lambda: fake)
+
+    assert webhook_secret() == secret_a
+
+    fake.github_webhook_secret_id = "/aidlc/env-b/webhook-secret"  # noqa: S105
+    assert webhook_secret() == secret_b
+
+    assert client.get_secret_value.call_count == 2
+    assert client.get_secret_value.call_args_list[0].kwargs["SecretId"] == (
+        "/aidlc/env-a/webhook-secret"
+    )
+    assert client.get_secret_value.call_args_list[1].kwargs["SecretId"] == (
+        "/aidlc/env-b/webhook-secret"
+    )
+
+
+def test_rotation_pickup_end_to_end_via_verify_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: after rotation + TTL expiry, webhooks signed with the
+    new secret are accepted and webhooks signed with the old secret are
+    rejected.
+
+    This is the customer-facing guarantee: a secret rotation stops
+    causing auth failures within ``WEBHOOK_SECRET_TTL_SECONDS``.
+    """
+    old_secret = b"old-webhook-secret"
+    new_secret = b"new-webhook-secret-rotated"
+    client = MagicMock()
+    client.get_secret_value.side_effect = [
+        {"SecretString": old_secret.decode()},
+        {"SecretString": new_secret.decode()},
+    ]
+    monkeypatch.setattr("dashboard.routes.webhooks.secrets", lambda: client)
+
+    body = b'{"action":"opened"}'
+
+    # T=0: secret is old_secret. Webhook signed with old_secret is accepted.
+    verify_signature(body=body, signature_header=_sign(body, old_secret))
+
+    # Rotate the secret in Secrets Manager, then let the cache expire.
+    _expire_webhook_secret_cache()
+
+    # T=900+: secret is new_secret. Webhook signed with new_secret is accepted...
+    verify_signature(body=body, signature_header=_sign(body, new_secret))
+    # ...and a webhook signed with the old (now-rotated) secret is rejected.
+    with pytest.raises(HTTPException):
+        verify_signature(body=body, signature_header=_sign(body, old_secret))
+
+
+def _sign(body: bytes, secret: bytes) -> str:
+    return "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
+
+
+def _expire_webhook_secret_cache() -> None:
+    """Force every ``_webhook_secret_cache`` entry to be considered expired."""
+    for key, (payload, _ttl) in _webhook_secret_cache.items():
+        _webhook_secret_cache[key] = (payload, 0.0)
 
 
 # ---------------------------------------------------------------------------
