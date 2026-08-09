@@ -170,7 +170,7 @@ def decide_after_pr_open(events: Sequence[EnvelopeLike]) -> Action:
         )
     blocking_review = pending_blocking_review(events)
     if blocking_review is not None:
-        return revise(events, blocking_review, capped=True)
+        return revise(events, blocking_review, capped=True, dedup_by_revision=True)
     return Noop(f"waiting after {last.type}")
 
 
@@ -204,9 +204,20 @@ def revise(
     trigger: EnvelopeLike,
     *,
     capped: bool,
+    dedup_by_revision: bool = False,
 ) -> Action:
-    """Dispatch an implementer revision, honouring the automated-revision cap."""
+    """Dispatch an implementer revision, honouring the automated-revision cap.
+
+    By default the dispatch is guarded by :func:`invoke_unless_dispatched`'s
+    trigger-scoped marker check, which prevents duplicates from the *same*
+    trigger event (e.g. a redelivered beacon). Set ``dedup_by_revision=True``
+    for cross-trigger paths — ``REVIEW.READY`` arriving after a
+    ``CHECKS.FAILED`` dispatch for the same revision — where the marker sits
+    *before* the trigger and the trigger-scoped check would miss it.
+    """
     revision_number = current_revision_number(events) + 1
+    if dedup_by_revision and has_implementer_dispatch_for_revision(events, revision_number):
+        return Noop(f"implementer already dispatched for revision {revision_number}")
     if capped and revision_number > MAX_REVISIONS:
         return emit_revision_cap_reached(events)
     return invoke_unless_dispatched(
@@ -330,6 +341,26 @@ def has_event_after(
             return True
         if str(event.event_id) == after_event_id:
             seen_after = True
+    return False
+
+
+def has_implementer_dispatch_for_revision(
+    events: Sequence[EnvelopeLike],
+    revision_number: int,
+) -> bool:
+    """``True`` iff an ``IMPLEMENTER.DISPATCHED`` marker exists for ``revision_number``.
+
+    Cross-trigger idempotency: unlike :func:`has_event_after` (which is scoped
+    to a single trigger event), this scans the whole history and matches by
+    revision number. A ``CHECKS.FAILED`` dispatch and a later ``REVIEW.READY``
+    both target the same revision, so the marker from either must block the
+    other — regardless of which trigger arrived first.
+    """
+    for event in events:
+        if event.type != "IMPLEMENTER.DISPATCHED":
+            continue
+        if get(event, "revision_number", 0) == revision_number:
+            return True
     return False
 
 
