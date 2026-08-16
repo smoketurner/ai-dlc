@@ -515,17 +515,9 @@ def format_feedback_item(item: FeedbackItem) -> str:
     raise TypeError(msg)
 
 
-def any_ci_failure_feedback(feedback: list[FeedbackItem] | None) -> bool:
-    """``True`` when at least one item in ``feedback`` is a CI failure."""
-    if not feedback:
-        return False
-    return any(isinstance(item, CiFailureFeedback) for item in feedback)
-
-
 # Re-exported so app.py can call run_git directly if needed (kept for
 # future use; not currently wired).
 __all__ = [
-    "any_ci_failure_feedback",
     "build_commit_message",
     "compose_implementation_prompt",
     "compose_revision_prompt",

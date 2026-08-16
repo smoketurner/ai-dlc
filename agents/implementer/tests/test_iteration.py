@@ -20,7 +20,6 @@ from common.runtime import (
 )
 from implementer.app import emit_impl_pr_opened, emit_revision_ready
 from implementer.client import (
-    any_ci_failure_feedback,
     compose_revision_prompt,
     format_feedback_item,
 )
@@ -150,28 +149,6 @@ def test_format_review_mention_handles_empty_body() -> None:
     assert "(no review body)" in format_feedback_item(
         ReviewMentionFeedback(reviewer="alice", review_id=99),
     )
-
-
-def test_any_ci_failure_feedback_detects_ci() -> None:
-    feedback: list[Any] = [
-        IssueCommentMentionFeedback(comment_id=1, body="x", commenter="a"),
-        CiFailureFeedback(
-            workflow_name="CI",
-            conclusion="failure",
-            head_sha="abcdef0",
-            html_url="https://x.example",
-        ),
-    ]
-    assert any_ci_failure_feedback(feedback) is True
-
-
-def test_any_ci_failure_feedback_returns_false_without_ci() -> None:
-    feedback: list[Any] = [IssueCommentMentionFeedback(comment_id=1, body="x", commenter="a")]
-    assert any_ci_failure_feedback(feedback) is False
-
-
-def test_any_ci_failure_feedback_handles_none() -> None:
-    assert any_ci_failure_feedback(None) is False
 
 
 def test_compose_revision_prompt_lists_feedback(monkeypatch: pytest.MonkeyPatch) -> None:
