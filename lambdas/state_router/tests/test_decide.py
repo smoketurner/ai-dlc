@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from state_router.actions import Compound, EmitEvent, InvokeAgent, Noop
-from state_router.decide import decide
+from state_router.decide import decide, has_implementer_dispatch_for_revision
 
 
 class Env:
@@ -315,6 +315,102 @@ def test_stale_review_from_a_prior_pass_does_not_retrigger() -> None:
     assert isinstance(decide(events), Noop)
 
 
+def implementer_dispatched_revision(event_id: str, revision_number: int) -> Env:
+    """An ``IMPLEMENTER.DISPATCHED`` marker carrying a revision number."""
+    return Env(
+        event_type="IMPLEMENTER.DISPATCHED",
+        event_id=event_id,
+        payload={"project_slug": "demo", "revision_number": revision_number},
+    )
+
+
+def test_checks_failed_then_review_ready_does_not_duplicate_dispatch() -> None:
+    """Cross-trigger dedup: CHECKS.FAILED dispatch must block a later REVIEW.READY.
+
+    Regression for the bug introduced in 998a7e8: when ``CHECKS.FAILED``
+    triggers an implementer revision and ``REVIEW.READY(request_changes)``
+    arrives later in the same validation pass, the marker sits *before*
+    ``REVIEW.READY`` so the trigger-scoped check misses it. The decision must
+    return ``Noop`` because the implementer is already dispatched for that
+    revision, not a duplicate ``InvokeAgent``.
+    """
+    events = [
+        *through_pr_open(),
+        dispatched("validators"),
+        Env(event_type="CHECKS.FAILED", event_id="evt-checks", payload={"project_slug": "demo"}),
+        implementer_dispatched_revision("evt-impl-rev1", 1),
+        review_ready(verdict="request_changes", event_id="evt-review"),
+    ]
+    assert isinstance(decide(events), Noop)
+
+
+@pytest.mark.parametrize("order", ["marker_after_review", "marker_before_review"])
+def test_review_ready_noop_when_marker_matches_target_revision_regardless_of_order(
+    order: str,
+) -> None:
+    """A dispatch marker for the target revision blocks REVIEW.READY either way.
+
+    ``marker_after_review`` reproduces the same-trigger case (existing
+    trigger-scoped check handles it). ``marker_before_review`` reproduces the
+    cross-trigger case (the new revision-scoped check handles it). Both must
+    ``Noop`` so one implementer dispatch processes all feedback for a revision.
+    """
+    marker = implementer_dispatched_revision("evt-impl-rev1", 1)
+    review = review_ready(verdict="request_changes", event_id="evt-review")
+    post_pr = [*through_pr_open(), dispatched("validators")]
+    events = post_pr + ([review, marker] if order == "marker_after_review" else [marker, review])
+    assert isinstance(decide(events), Noop)
+
+
+def test_review_ready_with_marker_for_older_revision_still_dispatches() -> None:
+    """A marker for an earlier revision must not block the next revision's dispatch.
+
+    Target revision is ``current_revision_number + 1``. After one completed
+    revision (marker for revision 1 + REVISION.READY(1) + a fresh validation
+    pass), a fresh ``request_changes`` verdict targets revision 2 and must
+    dispatch even though a marker for revision 1 exists earlier in the log.
+    """
+    events = [
+        *through_pr_open(),
+        dispatched("validators", event_id="vd-0"),
+        review_ready(verdict="request_changes", event_id="evt-review-0"),
+        implementer_dispatched_revision("evt-impl-rev1", 1),
+        revision_ready(1),
+        dispatched("validators", event_id="vd-1"),
+        review_ready(verdict="request_changes", event_id="evt-review-1"),
+    ]
+    action = decide(events)
+    assert isinstance(action, InvokeAgent)
+    assert action.agent == "implementer"
+    assert action.mode == "revision"
+    assert action.revision_number == 2
+
+
+def test_checks_failed_then_review_ready_does_not_emit_run_failed_at_cap() -> None:
+    """At the revision cap the cross-trigger dedup short-circuits before the cap.
+
+    With three completed revisions and a marker already present for revision 4
+    (an uncapped human-mention dispatch that beat the REVIEW.READY), the
+    ``REVIEW.READY`` path must ``Noop`` rather than emit a spurious
+    ``RUN.FAILED(RevisionCapReached)``: the dispatch already happened.
+    """
+    events = [
+        *through_pr_open(),
+        revision_ready(1),
+        revision_ready(2),
+        revision_ready(3),
+        dispatched("validators", event_id="vd-0"),
+        Env(
+            event_type="IMPL.ITERATION_REQUESTED",
+            event_id="evt-it",
+            payload={"project_slug": "demo", "source": "issue_comment_mention"},
+        ),
+        implementer_dispatched_revision("evt-impl-rev4", 4),
+        review_ready(verdict="request_changes", event_id="evt-review"),
+    ]
+    assert isinstance(decide(events), Noop)
+
+
 def test_checks_failed_counts_toward_the_revision_cap() -> None:
     events = [
         *through_pr_open(),
@@ -507,3 +603,45 @@ def test_replay_safety_pure_function() -> None:
     assert isinstance(first, InvokeAgent)
     assert isinstance(second, InvokeAgent)
     assert first.agent == second.agent == "architect"
+
+
+def test_has_implementer_dispatch_for_revision_empty_events() -> None:
+    assert has_implementer_dispatch_for_revision([], 1) is False
+
+
+def test_has_implementer_dispatch_for_revision_no_marker() -> None:
+    """A history with no IMPLEMENTER.DISPATCHED returns False for any revision."""
+    events: list[Env] = [*through_pr_open(), dispatched("validators")]
+    assert has_implementer_dispatch_for_revision(events, 1) is False
+
+
+def test_has_implementer_dispatch_for_revision_matching_marker() -> None:
+    """A marker carrying the matching revision_number returns True."""
+    events: list[Env] = [
+        *through_pr_open(),
+        dispatched("validators"),
+        implementer_dispatched_revision("evt-impl-rev1", 1),
+    ]
+    assert has_implementer_dispatch_for_revision(events, 1) is True
+
+
+def test_has_implementer_dispatch_for_revision_non_matching_marker() -> None:
+    """A marker for a different revision_number does not match."""
+    events: list[Env] = [
+        *through_pr_open(),
+        dispatched("validators"),
+        implementer_dispatched_revision("evt-impl-rev1", 1),
+    ]
+    assert has_implementer_dispatch_for_revision(events, 2) is False
+
+
+def test_has_implementer_dispatch_for_revision_initial_marker_matches_zero() -> None:
+    """The initial implementation dispatch (no revision_number) matches revision 0.
+
+    ``get(event, "revision_number", 0)`` defaults the field to 0, matching the
+    initial implementation pass. This keeps the helper consistent with the
+    ``revision_number`` semantics on ``InvokeAgent`` and ``ImplementerDispatched``.
+    """
+    events: list[Env] = [*through_pr_open()]
+    assert has_implementer_dispatch_for_revision(events, 0) is True
+    assert has_implementer_dispatch_for_revision(events, 1) is False
