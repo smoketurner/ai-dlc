@@ -134,7 +134,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "botocore", specifier = "==1.43.31" },
     { name = "pydantic", specifier = "==2.13.4" },
@@ -173,15 +173,15 @@ wheels = [
 
 [[package]]
 name = "aws-lambda-powertools"
-version = "3.29.0"
+version = "3.31.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a5/a0/1b2f916731388692d037f961450ba8e6ec4567e4729a6b0d23a534cea9ec/aws_lambda_powertools-3.29.0.tar.gz", hash = "sha256:a81ce122356343878e095a11bd38f3e9a70f3fa0fea57b10b327d1e8dfe82b6e", size = 785177, upload-time = "2026-05-04T09:49:20.114Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6b/77/8c74a558facb8bebdc6f3f0096ff5735b779d57c7bbdb7948f3e6d873504/aws_lambda_powertools-3.31.1.tar.gz", hash = "sha256:b46e575c7e290c55fe81ae4a38d8b5c91238242a4644438f8b858ce535a4125c", size = 800496, upload-time = "2026-07-13T09:22:11.16Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/0f/ba8da75a8bd0f0c180be1ebf7ff73e8c2843b77ca9cc8a7945e6c92e4e4a/aws_lambda_powertools-3.29.0-py3-none-any.whl", hash = "sha256:e9ca87b5a8a835a7f7e327d5bafa43b6e0c150c6cb8c6b42158b0814377edc7a", size = 935956, upload-time = "2026-05-04T09:49:18.079Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/e1/67a119333cb3656b9b482a77bb4b25e0488ca969218b71479b4ecfc1a5e1/aws_lambda_powertools-3.31.1-py3-none-any.whl", hash = "sha256:cd03f824bc11b59df727744fa9a419a01772d85fd0b15a67eee07f5472b37c77", size = 957593, upload-time = "2026-07-13T09:22:09.354Z" },
 ]
 
 [package.optional-dependencies]
@@ -718,7 +718,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "authlib", specifier = "==1.7.2" },
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "common", editable = "packages/common" },
     { name = "fastapi", specifier = "==0.136.1" },
@@ -781,7 +781,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "botocore", specifier = "==1.43.31" },
     { name = "common", editable = "packages/common" },
@@ -804,7 +804,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "bedrock-agentcore", specifier = "==1.18.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "botocore", specifier = "==1.43.31" },
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "botocore", specifier = "==1.43.31" },
     { name = "httpx", specifier = "==0.28.1" },
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "common", editable = "packages/common" },
     { name = "pydantic", specifier = "==2.13.4" },
@@ -3169,7 +3169,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.29.0" },
+    { name = "aws-lambda-powertools", extras = ["tracer"], specifier = "==3.31.1" },
     { name = "boto3", specifier = "==1.43.31" },
     { name = "botocore", specifier = "==1.43.31" },
     { name = "common", editable = "packages/common" },
