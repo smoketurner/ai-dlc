@@ -39,7 +39,7 @@ import hashlib
 import hmac
 import json
 import os
-from functools import cache
+import time
 from typing import Any, Literal
 
 import httpx
@@ -103,14 +103,29 @@ TERMINAL_LABELS = frozenset({"aidlc:in-progress", "aidlc:deferred", "aidlc:decli
 # ---------------------------------------------------------------------------
 
 
-@cache
+WEBHOOK_SECRET_TTL_SECONDS = 900  # 15 min — picks up rotated secrets without redeploy.
+
+_webhook_secret_cache: dict[str, tuple[bytes, float]] = {}
+
+
 def webhook_secret() -> bytes:
-    """Fetch + cache the GitHub webhook signing secret."""
+    """Fetch + cache the GitHub webhook signing secret.
+
+    Cached per ``secret_id`` for ``WEBHOOK_SECRET_TTL_SECONDS`` so a
+    rotated secret flows in without a cold start or redeploy. Mirrors the
+    TTL pattern already used for GitHub App credentials in
+    ``common.github_app.app_credentials``.
+    """
     secret_id = settings().github_webhook_secret_id
+    now = time.time()
+    cached = _webhook_secret_cache.get(secret_id)
+    if cached is not None and cached[1] > now:
+        return cached[0]
     resp = secrets().get_secret_value(SecretId=secret_id)  # ty: ignore[unresolved-attribute]
     payload = resp.get("SecretString") or resp.get("SecretBinary") or ""
     if isinstance(payload, str):
         payload = payload.encode("utf-8")
+    _webhook_secret_cache[secret_id] = (payload, now + WEBHOOK_SECRET_TTL_SECONDS)
     return payload
 
 
