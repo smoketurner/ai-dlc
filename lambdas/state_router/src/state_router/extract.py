@@ -103,25 +103,34 @@ def source_issue_url(events: Sequence[EnvelopeLike]) -> str | None:
 
 
 def issue_payload(events: Sequence[EnvelopeLike]) -> dict[str, Any]:
-    """Extract issue metadata for triage/research dispatch payloads."""
+    """Extract issue metadata for triage/research dispatch payloads.
+
+    ``ISSUE.TRIAGED`` carries only the triage decision (action, rationale,
+    confidence) — not the issue context. ``issue_title`` / ``issue_body``
+    / ``issue_labels`` live on ``REQUEST.RECEIVED`` and must be sourced
+    from there even after triage, otherwise downstream agent payloads
+    lose the issue body and labels.
+    """
     triaged = next((e for e in events if e.type == "ISSUE.TRIAGED"), None)
-    if triaged is not None:
-        return {
-            "issue_url": get(triaged, "issue_url", ""),
-            "issue_number": get(triaged, "issue_number"),
-            "issue_title": get(triaged, "issue_title", ""),
-            "issue_body": get(triaged, "issue_body", ""),
-            "issue_labels": list(get(triaged, "issue_labels", []) or []),
-        }
     request = next((e for e in events if e.type == "REQUEST.RECEIVED"), None)
-    if request is None:
+
+    # Prefer TRIAGED for url/number (canonical after triage), fall back to REQUEST.
+    if triaged is not None:
+        issue_url = get(triaged, "issue_url", "")
+        issue_number = get(triaged, "issue_number")
+    elif request is not None:
+        issue_url = get(request, "source_issue_url", "")
+        issue_number = get(request, "issue_number")
+    else:
         return {}
+
+    # title/body/labels are only ever on REQUEST.RECEIVED — TRIAGED omits them.
     return {
-        "issue_url": get(request, "source_issue_url", ""),
-        "issue_number": get(request, "issue_number"),
-        "issue_title": get(request, "issue_title", ""),
-        "issue_body": get(request, "issue_body", ""),
-        "issue_labels": list(get(request, "issue_labels", []) or []),
+        "issue_url": issue_url,
+        "issue_number": issue_number,
+        "issue_title": get(request, "issue_title", "") if request else "",
+        "issue_body": get(request, "issue_body", "") if request else "",
+        "issue_labels": list(get(request, "issue_labels", []) or []) if request else [],
     }
 
 

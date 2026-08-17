@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from common.runtime import ImplementerInput, ReviewCommentMentionFeedback
-from state_router.extract import revision_feedback
+from state_router.extract import issue_payload, revision_feedback
 
 
 class Env:
@@ -206,3 +206,146 @@ def test_review_comment_mention_falls_back_when_context_missing() -> None:
     assert feedback[0]["path"] == "(unknown)"
     assert feedback[0]["line"] is None
     assert feedback[0]["commit_id"] == "0" * 7
+
+
+# --- issue_payload -----------------------------------------------------------
+
+
+def _request_received(
+    *,
+    issue_url: str = "https://github.com/x/y/issues/1",
+    issue_number: int = 1,
+    issue_title: str = "Bug: Login fails",
+    issue_body: str = "## Steps to reproduce\n1. Open app\n2. Click login",
+    issue_labels: list[str] | None = None,
+    event_id: str = "evt-1",
+) -> Env:
+    return Env(
+        event_type="REQUEST.RECEIVED",
+        event_id=event_id,
+        payload={
+            "source_issue_url": issue_url,
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "issue_body": issue_body,
+            "issue_labels": ["bug"] if issue_labels is None else issue_labels,
+        },
+    )
+
+
+def _issue_triaged(
+    *,
+    issue_url: str = "https://github.com/x/y/issues/1",
+    issue_number: int = 1,
+    action: str = "proceed",
+    rationale: str = "Clear bug report with repro steps",
+    event_id: str = "evt-2",
+) -> Env:
+    return Env(
+        event_type="ISSUE.TRIAGED",
+        event_id=event_id,
+        payload={
+            "issue_url": issue_url,
+            "issue_number": issue_number,
+            "action": action,
+            "rationale": rationale,
+        },
+    )
+
+
+def test_issue_payload_after_triaged_falls_back_to_request_received() -> None:
+    """After ISSUE.TRIAGED, issue_payload should get body/title from REQUEST.RECEIVED."""
+    events = [
+        _request_received(
+            issue_title="Bug: Login fails",
+            issue_body="## Steps to reproduce\n1. Open app\n2. Click login",
+            issue_labels=["bug"],
+        ),
+        _issue_triaged(),
+    ]
+    result = issue_payload(events)
+    assert result["issue_title"] == "Bug: Login fails", "Title should come from REQUEST.RECEIVED"
+    assert result["issue_body"] == "## Steps to reproduce\n1. Open app\n2. Click login", (
+        "Body should come from REQUEST.RECEIVED"
+    )
+    assert result["issue_labels"] == ["bug"], "Labels should come from REQUEST.RECEIVED"
+
+
+def test_issue_payload_after_triaged_uses_triaged_url_and_number() -> None:
+    """TRIAGED remains the canonical source for url/number after triage."""
+    events = [
+        _request_received(
+            issue_url="https://github.com/x/y/issues/1",
+            issue_number=1,
+        ),
+        _issue_triaged(
+            issue_url="https://github.com/x/y/issues/1",
+            issue_number=1,
+        ),
+    ]
+    result = issue_payload(events)
+    assert result["issue_url"] == "https://github.com/x/y/issues/1"
+    assert result["issue_number"] == 1
+
+
+def test_issue_payload_without_triaged_reads_from_request_received() -> None:
+    """Pre-triage path still sources everything from REQUEST.RECEIVED."""
+    events = [_request_received()]
+    result = issue_payload(events)
+    assert result == {
+        "issue_url": "https://github.com/x/y/issues/1",
+        "issue_number": 1,
+        "issue_title": "Bug: Login fails",
+        "issue_body": "## Steps to reproduce\n1. Open app\n2. Click login",
+        "issue_labels": ["bug"],
+    }
+
+
+def test_issue_payload_returns_empty_when_no_relevant_events() -> None:
+    """No REQUEST.RECEIVED and no ISSUE.TRIAGED → empty dict (no crash)."""
+    events: list[Env] = []
+    assert issue_payload(events) == {}
+
+
+def test_issue_payload_after_triaged_preserves_empty_body_and_labels() -> None:
+    """An issue with no body/labels is passed through as empty, not dropped."""
+    events = [
+        _request_received(
+            issue_title="Empty body issue",
+            issue_body="",
+            issue_labels=[],
+        ),
+        _issue_triaged(),
+    ]
+    result = issue_payload(events)
+    assert result["issue_title"] == "Empty body issue"
+    assert result["issue_body"] == ""
+    assert result["issue_labels"] == []
+
+
+def test_issue_payload_after_triaged_preserves_none_labels_as_empty() -> None:
+    """A missing issue_labels field degrades to [] rather than raising."""
+    events = [
+        Env(
+            event_type="REQUEST.RECEIVED",
+            event_id="evt-1",
+            payload={
+                "source_issue_url": "https://github.com/x/y/issues/1",
+                "issue_number": 1,
+                "issue_title": "No labels here",
+                "issue_body": "body",
+            },
+        ),
+        _issue_triaged(),
+    ]
+    result = issue_payload(events)
+    assert result["issue_labels"] == []
+
+
+def test_issue_payload_returns_new_list_instance_each_call() -> None:
+    """Mutating the returned labels list must not poison subsequent calls."""
+    events = [_request_received(issue_labels=["bug"]), _issue_triaged()]
+    first = issue_payload(events)
+    first["issue_labels"].append("tampered")
+    second = issue_payload(events)
+    assert second["issue_labels"] == ["bug"]
