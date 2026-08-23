@@ -69,22 +69,16 @@ def start_run(  # noqa: PLR0913
     target_repo: str | None = None,
     issue: IssueContext | None = None,
     actor_id: str | None = None,
-    run_id: RunId | None = None,
-    correlation_id: CorrelationId | None = None,
 ) -> tuple[RunId, CorrelationId]:
     """Mint a run and publish ``REQUEST.RECEIVED``.
-
-    ``run_id`` and ``correlation_id`` are accepted to support callers
-    that already minted them (e.g., for idempotent reservation in the
-    dashboard); they default to fresh UUID7s.
 
     For issue-driven runs, the caller supplies an :class:`IssueContext`
     carrying every field the Triage agent's ``TriageInput`` requires —
     the fields ride on the ``REQUEST.RECEIVED`` payload so the router
     can build the triage dispatch from the event log alone.
     """
-    rid = run_id or new_run_id()
-    cid = correlation_id or new_correlation_id()
+    rid = new_run_id()
+    cid = new_correlation_id()
     actor = actor_id or requestor
     publish(
         EventEnvelope[RequestReceived](
