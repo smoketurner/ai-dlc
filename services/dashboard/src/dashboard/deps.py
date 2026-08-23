@@ -19,15 +19,9 @@ class Settings(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
-    env: str
     region: str
-    bus_name: str
     runs_table: str
-    idempotency_table: str
-    artifacts_bucket: str
-    github_app_secret_id: str
     github_webhook_secret_id: str
-    cognito_user_pool_id: str
     cognito_client_id: str
     cognito_client_secret_id: str
     cognito_discovery_url: str
@@ -54,15 +48,9 @@ class Settings(BaseModel):
 def settings() -> Settings:
     """Process-cached :class:`Settings` from env."""
     return Settings(
-        env=os.environ["AIDLC_ENV"],
         region=os.environ["AWS_REGION"],
-        bus_name=os.environ["AIDLC_BUS_NAME"],
         runs_table=os.environ["AIDLC_RUNS_TABLE"],
-        idempotency_table=os.environ["AIDLC_IDEMPOTENCY_TABLE"],
-        artifacts_bucket=os.environ["AIDLC_ARTIFACTS_BUCKET"],
-        github_app_secret_id=os.environ["AIDLC_GITHUB_APP_SECRET_ARN"],
         github_webhook_secret_id=os.environ["AIDLC_GITHUB_WEBHOOK_SECRET_ID"],
-        cognito_user_pool_id=os.environ["AIDLC_COGNITO_USER_POOL_ID"],
         cognito_client_id=os.environ["AIDLC_COGNITO_CLIENT_ID"],
         cognito_client_secret_id=os.environ.get("AIDLC_COGNITO_CLIENT_SECRET_ID", ""),
         cognito_discovery_url=os.environ.get("AIDLC_COGNITO_DISCOVERY_URL", ""),
