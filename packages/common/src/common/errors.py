@@ -57,9 +57,5 @@ class AgentCoreCodeInterpreterError(AidlcError):
     """An AgentCore Code Interpreter operation failed (session lifecycle or invoke)."""
 
 
-class S3ArtifactError(AidlcError):
-    """An S3 artifact read or write failed."""
-
-
 class EventEmitError(AidlcError):
     """An EventBridge ``PutEvents`` call rejected one or more entries."""
