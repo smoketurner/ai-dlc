@@ -60,7 +60,7 @@ class IssueContext:
     triggering_commenter: str = ""
 
 
-def start_run(  # noqa: PLR0913
+def start_run(
     *,
     project_slug: str,
     intent: str,
