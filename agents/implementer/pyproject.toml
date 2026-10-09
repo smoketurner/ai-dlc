@@ -4,19 +4,19 @@ version = "0.0.0"
 description = "ai-dlc Implementer agent — works the tasks list one PR at a time."
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "aws-opentelemetry-distro==0.17.0",
-    "bedrock-agentcore==1.18.1",
-    "boto3==1.43.31",
-    "claude-agent-sdk==0.1.81",
+    "aws-opentelemetry-distro==0.21.0",
+    "bedrock-agentcore==1.24.0",
+    "boto3==1.43.107",
+    "claude-agent-sdk==0.2.163",
     "common",
     "httpx==0.28.1",
-    "pydantic==2.13.4",
-    "pyjwt[crypto]==2.13.0",
+    "pydantic==2.13.5",
+    "pyjwt[crypto]==2.15.1",
     # MCPClient is used (via common.gateway_tools) for the per-agent gateway
     # connection. The implementer's primary loop is Claude Agent SDK, but
     # gateway-routed S3 + GitHub ops still flow through Strands' MCP client.
-    "strands-agents==1.38.0",
-    "structlog==25.5.0",
+    "strands-agents==1.57.2",
+    "structlog==26.1.0",
 ]
 
 [tool.uv.sources]
