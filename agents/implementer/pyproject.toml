@@ -7,7 +7,7 @@ dependencies = [
     "aws-opentelemetry-distro==0.17.0",
     "bedrock-agentcore==1.18.1",
     "boto3==1.43.31",
-    "claude-agent-sdk==0.1.81",
+    "claude-agent-sdk==0.2.121",
     "common",
     "httpx==0.28.1",
     "pydantic==2.13.4",
