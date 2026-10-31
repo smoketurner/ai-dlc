@@ -10,7 +10,7 @@ dependencies = [
     "common",
     "playwright==1.59.0",
     "pydantic==2.13.4",
-    "strands-agents==1.38.0",
+    "strands-agents==1.48.0",
     "structlog==25.5.0",
 ]
 
